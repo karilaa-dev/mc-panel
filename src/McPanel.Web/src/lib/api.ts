@@ -10,9 +10,11 @@ import type {
   JavaRuntimeDto,
   JobDto,
   PlayerDto,
+  RuntimeConfigurationDto,
   ScheduleDto,
   ScheduleWriteDto,
   ServerConfigurationDto,
+  ServerPropertiesDto,
   ServerSummaryDto,
   SystemInfoDto,
 } from "@/lib/contracts"
@@ -132,6 +134,20 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+  properties: (id: string) =>
+    request<ServerPropertiesDto>(`${serverPath(id)}/properties`),
+  saveProperties: (id: string, body: { revision: string; values: Record<string, string> }) =>
+    request<ServerPropertiesDto>(`${serverPath(id)}/properties`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  runtime: (id: string) =>
+    request<RuntimeConfigurationDto>(`${serverPath(id)}/runtime`),
+  saveRuntime: (id: string, body: RuntimeConfigurationDto) =>
+    request<RuntimeConfigurationDto>(`${serverPath(id)}/runtime`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
 
   host: () => request<HostStatusDto>("/system/status"),
   systemInfo: () => request<SystemInfoDto>("/system/info"),
@@ -186,7 +202,7 @@ export const api = {
     id: string,
     name: string,
     action: "whitelist" | "unwhitelist" | "op" | "deop" | "ban" | "pardon" | "kick",
-  ) => request<void>(
+  ) => request<PlayerDto>(
     `${serverPath(id)}/players/${encodeURIComponent(name)}/${action}`,
     { method: "POST" },
   ),

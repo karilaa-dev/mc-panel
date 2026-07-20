@@ -113,6 +113,7 @@ done
             State = ServerState.Stopped,
             Port = 32_123,
             MemoryMb = PanelOptions.MinimumServerMemoryMb,
+            InitialMemoryMb = PanelOptions.MinimumServerMemoryMb,
             JavaRuntimeId = JavaId,
             EulaAcceptedAt = DateTimeOffset.UtcNow
         });
@@ -335,6 +336,350 @@ done
         Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
         using var document = JsonDocument.Parse(await accepted.Content.ReadAsStringAsync());
         Assert.Equal(PanelOptions.MinimumServerMemoryMb, document.RootElement.GetProperty("memoryMb").GetInt32());
+    }
+
+    [Fact]
+    public async Task Properties_preserve_dynamic_content_sync_port_and_reject_stale_revisions()
+    {
+        var file = Path.Combine(_paths!.Instance(_serverId), "server.properties");
+        await File.WriteAllTextAsync(file, "# generated\nunknown-option=keep\nmotd=old\nmotd=effective\nserver-port=32123\n\n");
+        using var loaded = await _client!.GetAsync($"/api/v1/servers/{_serverId}/properties");
+        Assert.Equal(HttpStatusCode.OK, loaded.StatusCode);
+        using var loadedJson = JsonDocument.Parse(await loaded.Content.ReadAsStringAsync());
+        var revision = loadedJson.RootElement.GetProperty("revision").GetString()!;
+        Assert.Equal(["unknown-option", "motd", "server-port"], loadedJson.RootElement.GetProperty("entries").EnumerateArray().Select(entry => entry.GetProperty("key").GetString()!));
+
+        var body = JsonSerializer.Serialize(new
+        {
+            revision,
+            values = new Dictionary<string, string>
+            {
+                ["unknown-option"] = "keep",
+                ["motd"] = "updated",
+                ["server-port"] = "32124"
+            }
+        });
+        using (var saved = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/properties", body))
+            Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+        var text = await File.ReadAllTextAsync(file);
+        Assert.Contains("# generated", text);
+        Assert.Contains("motd=old", text);
+        Assert.Contains("motd=updated", text);
+        Assert.Contains($"server-port=32124{Environment.NewLine}{Environment.NewLine}", text);
+        Assert.Equal(32124, (await ReadServerAsync()).Port);
+
+        using var stale = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/properties", body);
+        await AssertProblemAsync(stale, HttpStatusCode.Conflict, "CONFIGURATION_CHANGED");
+    }
+
+    [Fact]
+    public async Task Runtime_persists_independent_heap_and_aikar_and_rejects_invalid_heap_order()
+    {
+        var runtime = JsonSerializer.Serialize(new
+        {
+            initialMemoryMb = 512,
+            maximumMemoryMb = 1024,
+            javaRuntimeId = JavaId,
+            jvmArguments = "-Dcustom=true",
+            useAikarFlags = true,
+            startOnBoot = true,
+            crashRecovery = false
+        });
+        using (var saved = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/runtime", runtime))
+            Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+        var server = await ReadServerAsync();
+        Assert.Equal(512, server.InitialMemoryMb);
+        Assert.Equal(1024, server.MemoryMb);
+        Assert.True(server.UseAikarFlags);
+        Assert.Equal("-Dcustom=true", server.JvmArguments);
+
+        var invalid = JsonNode.Parse(runtime)!.AsObject();
+        invalid["initialMemoryMb"] = 1536;
+        using var rejected = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/runtime", invalid.ToJsonString());
+        await AssertProblemAsync(rejected, HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+    }
+
+    [Fact]
+    public async Task Legacy_configuration_preserves_aikar_and_only_clamps_xms_when_xmx_is_lowered_below_it()
+    {
+        var runtime = JsonSerializer.Serialize(new
+        {
+            initialMemoryMb = 1024,
+            maximumMemoryMb = 2048,
+            javaRuntimeId = JavaId,
+            jvmArguments = "",
+            useAikarFlags = true,
+            startOnBoot = false,
+            crashRecovery = true
+        });
+        using (var saved = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/runtime", runtime))
+            Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+
+        var raisedMaximum = ValidConfiguration();
+        raisedMaximum["memoryMb"] = 3072;
+        using (var saved = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/configuration", raisedMaximum.ToJsonString()))
+            Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+        var server = await ReadServerAsync();
+        Assert.Equal(1024, server.InitialMemoryMb);
+        Assert.Equal(3072, server.MemoryMb);
+        Assert.True(server.UseAikarFlags);
+
+        var loweredMaximum = ValidConfiguration();
+        loweredMaximum["memoryMb"] = 512;
+        using (var saved = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/configuration", loweredMaximum.ToJsonString()))
+            Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+        server = await ReadServerAsync();
+        Assert.Equal(512, server.InitialMemoryMb);
+        Assert.Equal(512, server.MemoryMb);
+        Assert.True(server.UseAikarFlags);
+    }
+
+    [Fact]
+    public async Task Properties_endpoint_restores_file_and_port_when_database_commit_fails()
+    {
+        var file = Path.Combine(_paths!.Instance(_serverId), "server.properties");
+        var priorBytes = await File.ReadAllBytesAsync(file);
+        using var loaded = await _client!.GetAsync($"/api/v1/servers/{_serverId}/properties");
+        using var loadedJson = JsonDocument.Parse(await loaded.Content.ReadAsStringAsync());
+        var revision = loadedJson.RootElement.GetProperty("revision").GetString()!;
+        await using (var triggerScope = _factory!.Services.CreateAsyncScope())
+        {
+            var stateFactory = triggerScope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+            await using var db = await stateFactory.CreateDbContextAsync();
+            await db.Database.ExecuteSqlRawAsync("""
+CREATE TRIGGER fail_properties_server_update
+BEFORE UPDATE ON Servers
+BEGIN
+    SELECT RAISE(ABORT, 'forced properties update failure');
+END;
+""");
+        }
+        var body = JsonSerializer.Serialize(new
+        {
+            revision,
+            values = new Dictionary<string, string> { ["server-port"] = "32124" }
+        });
+
+        using var response = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/properties", body);
+
+        await AssertProblemAsync(response, HttpStatusCode.InternalServerError, "OPERATION_FAILED");
+        Assert.Equal(priorBytes, await File.ReadAllBytesAsync(file));
+        Assert.Equal(32123, (await ReadServerAsync()).Port);
+        AssertNoPropertyWorkFiles(Path.GetDirectoryName(file)!);
+    }
+
+    [Fact]
+    public async Task Properties_endpoint_rejects_a_port_owned_by_another_server_without_changing_the_file()
+    {
+        var file = Path.Combine(_paths!.Instance(_serverId), "server.properties");
+        var priorBytes = await File.ReadAllBytesAsync(file);
+        await using (var seedScope = _factory!.Services.CreateAsyncScope())
+        {
+            var stateFactory = seedScope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+            await using var db = await stateFactory.CreateDbContextAsync();
+            db.Servers.Add(new ServerEntity
+            {
+                Id = Guid.NewGuid(), Name = "Port owner", Kind = ServerKind.Paper, Version = "1.21.8",
+                State = ServerState.Stopped, Port = 32124, MemoryMb = 512, InitialMemoryMb = 512,
+                JavaRuntimeId = JavaId, EulaAcceptedAt = DateTimeOffset.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+        using var loaded = await _client!.GetAsync($"/api/v1/servers/{_serverId}/properties");
+        using var loadedJson = JsonDocument.Parse(await loaded.Content.ReadAsStringAsync());
+        var body = JsonSerializer.Serialize(new
+        {
+            revision = loadedJson.RootElement.GetProperty("revision").GetString(),
+            values = new Dictionary<string, string> { ["server-port"] = "32124" }
+        });
+
+        using var response = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/properties", body);
+
+        await AssertProblemAsync(response, HttpStatusCode.Conflict, "PORT_IN_USE");
+        Assert.Equal(priorBytes, await File.ReadAllBytesAsync(file));
+        Assert.Equal(32123, (await ReadServerAsync()).Port);
+    }
+
+    [Fact]
+    public async Task Running_properties_and_runtime_only_mark_restart_for_material_changes()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var file = Path.Combine(_paths!.Instance(_serverId), "server.properties");
+        await File.WriteAllTextAsync(file, "motd=Before\nserver-port=32123\n");
+        var started = await QueueActionAndWaitAsync("start");
+        Assert.Equal("Completed", started.GetProperty("state").GetString());
+
+        try
+        {
+            using var loaded = await _client!.GetAsync($"/api/v1/servers/{_serverId}/properties");
+            using var loadedJson = JsonDocument.Parse(await loaded.Content.ReadAsStringAsync());
+            var propertiesBody = JsonSerializer.Serialize(new
+            {
+                revision = loadedJson.RootElement.GetProperty("revision").GetString(),
+                values = new Dictionary<string, string> { ["motd"] = "After" }
+            });
+            using (var changed = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/properties", propertiesBody))
+                Assert.Equal(HttpStatusCode.OK, changed.StatusCode);
+            Assert.True(await ReadRestartRequiredAsync());
+
+            await using (var resetScope = _factory!.Services.CreateAsyncScope())
+            {
+                var stateFactory = resetScope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+                await using var db = await stateFactory.CreateDbContextAsync();
+                var server = await db.Servers.SingleAsync(x => x.Id == _serverId);
+                server.RestartRequired = false;
+                await db.SaveChangesAsync();
+            }
+
+            var nonMaterialRuntime = JsonSerializer.Serialize(new
+            {
+                initialMemoryMb = 512,
+                maximumMemoryMb = 512,
+                javaRuntimeId = JavaId,
+                jvmArguments = "",
+                useAikarFlags = false,
+                startOnBoot = true,
+                crashRecovery = true
+            });
+            using (var saved = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/runtime", nonMaterialRuntime))
+                Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+            Assert.False(await ReadRestartRequiredAsync());
+
+            var materialRuntime = JsonNode.Parse(nonMaterialRuntime)!.AsObject();
+            materialRuntime["useAikarFlags"] = true;
+            using (var saved = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/runtime", materialRuntime.ToJsonString()))
+                Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+            Assert.True(await ReadRestartRequiredAsync());
+        }
+        finally
+        {
+            await StopManagedServerAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Stopped_offline_player_action_writes_authoritative_whitelist_and_returns_player()
+    {
+        await File.WriteAllTextAsync(Path.Combine(_paths!.Instance(_serverId), "server.properties"), "online-mode=false\n");
+
+        using var response = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/players/Notch/whitelist", "{}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("Notch", result.RootElement.GetProperty("name").GetString());
+        Assert.True(result.RootElement.GetProperty("whitelisted").GetBoolean());
+        using var whitelist = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(_paths.Instance(_serverId), "whitelist.json")));
+        var entry = Assert.Single(whitelist.RootElement.EnumerateArray());
+        Assert.Equal("Notch", entry.GetProperty("name").GetString());
+        Assert.Equal("b50ad385-829d-3141-a216-7e7d7539ba7f", entry.GetProperty("uuid").GetString());
+
+        using var removed = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/players/notch/unwhitelist", "{}");
+        Assert.Equal(HttpStatusCode.OK, removed.StatusCode);
+        using var removedResult = JsonDocument.Parse(await removed.Content.ReadAsStringAsync());
+        Assert.False(removedResult.RootElement.GetProperty("whitelisted").GetBoolean());
+        using var emptyWhitelist = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(_paths.Instance(_serverId), "whitelist.json")));
+        Assert.Empty(emptyWhitelist.RootElement.EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Player_list_merges_authoritative_membership_by_uuid_then_case_insensitive_name()
+    {
+        var instance = _paths!.Instance(_serverId);
+        await File.WriteAllTextAsync(Path.Combine(instance, "whitelist.json"),
+            """[{"uuid":"069a79f4-44e9-4726-a5be-fca90e38aaf5","name":"Notch"}]""");
+        await File.WriteAllTextAsync(Path.Combine(instance, "ops.json"),
+            """[{"uuid":"11111111-1111-4111-8111-111111111111","name":"notch","level":4,"bypassesPlayerLimit":false}]""");
+        await File.WriteAllTextAsync(Path.Combine(instance, "banned-players.json"),
+            """[{"uuid":"069a79f4-44e9-4726-a5be-fca90e38aaf5","name":"FormerName","created":"2026-01-01 00:00:00 +0000","source":"Server","expires":"forever","reason":"Banned by an operator."}]""");
+
+        using var response = await _client!.GetAsync($"/api/v1/servers/{_serverId}/players");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var player = Assert.Single(result.RootElement.EnumerateArray());
+        Assert.Equal("Notch", player.GetProperty("name").GetString());
+        Assert.True(player.GetProperty("whitelisted").GetBoolean());
+        Assert.True(player.GetProperty("operator").GetBoolean());
+        Assert.True(player.GetProperty("banned").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Malformed_player_list_is_reported_and_never_replaced()
+    {
+        var path = Path.Combine(_paths!.Instance(_serverId), "ops.json");
+        const string malformed = "{not-json";
+        await File.WriteAllTextAsync(path, malformed);
+
+        using var response = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/players/Notch/op", "{}");
+
+        await AssertProblemAsync(response, HttpStatusCode.Conflict, "PLAYER_LIST_INVALID");
+        Assert.Equal(malformed, await File.ReadAllTextAsync(path));
+        Assert.Empty(Directory.EnumerateFiles(_paths.Instance(_serverId), "*.mcpanel-*", SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
+    public async Task Stopped_player_list_restores_file_state_when_database_commit_fails()
+    {
+        var instance = _paths!.Instance(_serverId);
+        var path = Path.Combine(instance, "banned-players.json");
+        await File.WriteAllTextAsync(Path.Combine(instance, "server.properties"), "online-mode=false\n");
+        await using (var triggerScope = _factory!.Services.CreateAsyncScope())
+        {
+            var stateFactory = triggerScope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+            await using var db = await stateFactory.CreateDbContextAsync();
+            await db.Database.ExecuteSqlRawAsync("""
+CREATE TRIGGER fail_player_insert
+BEFORE INSERT ON Players
+BEGIN
+    SELECT RAISE(ABORT, 'forced player insert failure');
+END;
+""");
+        }
+
+        using var response = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/players/Notch/ban", "{}");
+
+        await AssertProblemAsync(response, HttpStatusCode.InternalServerError, "OPERATION_FAILED");
+        Assert.False(File.Exists(path));
+        Assert.Empty(Directory.EnumerateFiles(instance, "*.mcpanel-*", SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
+    public async Task Running_player_action_uses_console_without_directly_writing_the_list_file()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var instance = _paths!.Instance(_serverId);
+        await File.WriteAllTextAsync(Path.Combine(instance, "usercache.json"),
+            """[{"uuid":"ec561538-f3fd-461d-aff5-086b22154bce","name":"Alex"}]""");
+        var started = await QueueActionAndWaitAsync("start");
+        Assert.Equal("Completed", started.GetProperty("state").GetString());
+
+        try
+        {
+            using var response = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/players/Alex/op", "{}");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            Assert.True(result.RootElement.GetProperty("operator").GetBoolean());
+            Assert.False(File.Exists(Path.Combine(instance, "ops.json")));
+            await using var scope = _factory!.Services.CreateAsyncScope();
+            var stateFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+            await using var db = await stateFactory.CreateDbContextAsync();
+            Assert.True((await db.Players.SingleAsync(x => x.ServerId == _serverId && x.Name == "Alex")).Operator);
+        }
+        finally
+        {
+            await StopManagedServerAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Player_actions_reject_transitional_server_state_before_writing_files()
+    {
+        await SetServerStateAsync(ServerState.Starting);
+
+        using var response = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/players/Notch/whitelist", "{}");
+
+        await AssertProblemAsync(response, HttpStatusCode.Conflict, "SERVER_BUSY");
+        Assert.False(File.Exists(Path.Combine(_paths!.Instance(_serverId), "whitelist.json")));
     }
 
     [Theory]

@@ -34,11 +34,13 @@ them `SessionRevoked`; the bundled client immediately returns to authentication.
 | POST | `/servers/{id}/actions/{start|stop|restart|update}` | `202 Job` |
 | POST | `/servers/{id}/actions/kill` | `{confirm:true}` -> `202 Job` emergency process-tree kill |
 | POST | `/servers/{id}/{start|stop|restart|update}` | compatibility alias for bundled client |
-| GET/PUT | `/servers/{id}/configuration` | curated settings object |
+| GET/PUT | `/servers/{id}/properties` | ordered effective `server.properties` entries with SHA-256 revision / `{revision,values}` |
+| GET/PUT | `/servers/{id}/runtime` | `{initialMemoryMb,maximumMemoryMb,javaRuntimeId,jvmArguments,useAikarFlags,startOnBoot,crashRecovery}` |
+| GET/PUT | `/servers/{id}/configuration` | deprecated curated compatibility adapter |
 | GET | `/servers/{id}/console?after=&limit=` | ordered console events |
 | POST | `/servers/{id}/console` | `{command}` -> `204` |
-| GET | `/servers/{id}/players` | observed player state |
-| POST | `/servers/{id}/players/{name}/{whitelist|unwhitelist|op|deop|ban|pardon|kick}` | `204` |
+| GET | `/servers/{id}/players` | observed players merged with authoritative whitelist, operator, and ban JSON files |
+| POST | `/servers/{id}/players/{name}/{whitelist|unwhitelist|op|deop|ban|pardon|kick}` | resulting `PlayerDto` |
 | GET | `/servers/{id}/files?path=` | directory entries |
 | POST | `/servers/{id}/files` | `{path,directory}` -> `204` |
 | GET/PUT | `/servers/{id}/files/content?path=` | text content / `{content}` |
@@ -64,14 +66,30 @@ them `SessionRevoked`; the bundled client immediately returns to authentication.
 `version`, `javaRuntimeId`, `memoryMb`, `port`, `eulaAccepted`, optional
 `startOnBoot`, optional Paper `build`, optional Fabric `loaderVersion` and
 `installerVersion`. RAM has a 512 MiB minimum and uses 512 MiB increments.
-Legacy entries below the minimum must be raised in Settings before they can
+Legacy entries below the minimum must be raised in Runtime before they can
 start. Only new, verified upstream installs are accepted; arbitrary source
 directories and URLs are never adopted.
 
-Curated configuration limits are 512 characters for the MOTD, 128 characters
+The properties API only updates keys already present in `server.properties` and
+requires the revision returned by GET. It preserves comments, blank lines,
+ordering, unknown keys, and effective last-duplicate behavior. A changed file
+is rejected with `CONFIGURATION_CHANGED`. The deprecated configuration adapter
+continues to enforce its curated limits of 512 characters for the MOTD, 128 characters
 and 255 UTF-8 bytes for the world directory name, and 2,048 characters for
 additional JVM arguments. Schedule names are limited to 96 characters. Control
 characters that could inject extra properties or commands are rejected.
+
+Runtime memory uses 512 MiB increments with `initialMemoryMb <=
+maximumMemoryMb`. JVM launch order is managed Xms, managed Xmx, the optional
+non-memory Aikar preset, custom JVM arguments, then managed `-jar` and `nogui`
+arguments. Custom arguments cannot contain Xms, Xmx, or other managed launch
+arguments.
+
+`whitelist.json`, `ops.json`, and `banned-players.json` are authoritative for
+player membership. Running servers are changed through console commands;
+stopped or crashed servers are changed with locked atomic file replacement.
+Online-mode nickname resolution uses the fixed Minecraft profile lookup service,
+while offline-mode servers derive Java's standard offline UUID.
 
 Configuration and file mutations are serialized with lifecycle operations and
 are accepted only while database state and supervised-process state form a
@@ -105,5 +123,6 @@ console command. Overlapping and missed executions are not replayed.
 `JAVA_VERSION_INCOMPATIBLE`, `PORT_IN_USE`, `MEMORY_LIMIT_EXCEEDED`,
 `MEMORY_LIMIT_TOO_LOW`,
 `INSTALL_DOWNLOAD_REJECTED`, `INSTALL_CHECKSUM_FAILED`, `UPSTREAM_UNAVAILABLE`,
+`CONFIGURATION_CHANGED`, `PLAYER_NOT_FOUND`, `PLAYER_LIST_INVALID`,
 `PATH_OUTSIDE_SERVER`, `FILE_TOO_LARGE`, `ZIP_LIMIT_EXCEEDED`, and
 `OPERATION_FAILED`.

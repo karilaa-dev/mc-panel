@@ -38,6 +38,13 @@ public sealed record ServerConfigurationDto(
     int SimulationDistance, string WorldName, int Port, int MemoryMb, string JavaRuntimeId,
     string JvmArguments, bool StartOnBoot, bool CrashRecovery);
 
+public sealed record ServerPropertyDto(string Key, string Value, string Type, bool Sensitive);
+public sealed record ServerPropertiesDto(string Revision, IReadOnlyList<ServerPropertyDto> Entries);
+public sealed record SaveServerPropertiesRequest(string Revision, IReadOnlyDictionary<string, string> Values);
+public sealed record RuntimeConfigurationDto(
+    int InitialMemoryMb, int MaximumMemoryMb, string JavaRuntimeId, string JvmArguments,
+    bool UseAikarFlags, bool StartOnBoot, bool CrashRecovery);
+
 public sealed record FileEntryDto(string Name, string Path, bool IsDirectory, long Size, DateTimeOffset ModifiedAt);
 public sealed record FileContentDto(string Content);
 public sealed record SaveFileRequest(string Content);

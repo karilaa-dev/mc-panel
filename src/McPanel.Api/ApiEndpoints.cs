@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using McPanel.Api.Configuration;
 using McPanel.Api.Contracts;
 using McPanel.Api.Data;
@@ -32,6 +31,10 @@ public static partial class ApiEndpoints
 
         api.MapGet("/servers/{id:guid}/configuration", (Guid id, PropertiesService service, CancellationToken token) => service.ReadAsync(id, token));
         api.MapPut("/servers/{id:guid}/configuration", (Guid id, ServerConfigurationDto request, PropertiesService service, CancellationToken token) => service.SaveAsync(id, request, token));
+        api.MapGet("/servers/{id:guid}/properties", (Guid id, PropertiesService service, CancellationToken token) => service.ReadPropertiesAsync(id, token));
+        api.MapPut("/servers/{id:guid}/properties", (Guid id, SaveServerPropertiesRequest request, PropertiesService service, CancellationToken token) => service.SavePropertiesAsync(id, request, token));
+        api.MapGet("/servers/{id:guid}/runtime", (Guid id, PropertiesService service, CancellationToken token) => service.ReadRuntimeAsync(id, token));
+        api.MapPut("/servers/{id:guid}/runtime", (Guid id, RuntimeConfigurationDto request, PropertiesService service, CancellationToken token) => service.SaveRuntimeAsync(id, request, token));
 
         api.MapGet("/servers/{id:guid}/console", async (Guid id, long? after, int? limit, IDbContextFactory<StateDbContext> factory, ConsoleService service, CancellationToken token) =>
         {
@@ -40,12 +43,8 @@ public static partial class ApiEndpoints
         api.MapPost("/servers/{id:guid}/console", async (Guid id, CommandRequest request, ProcessSupervisor supervisor, CancellationToken token) =>
         { await supervisor.CommandAsync(id, request.Command, token); return Results.NoContent(); });
 
-        api.MapGet("/servers/{id:guid}/players", async (Guid id, IDbContextFactory<StateDbContext> factory, CancellationToken token) =>
-        {
-            await EnsureServerAsync(factory, id, token); await using var db = await factory.CreateDbContextAsync(token);
-            return await db.Players.Where(x => x.ServerId == id).OrderBy(x => x.Name).Select(x => new PlayerDto(x.Name, x.Uuid, x.Online, x.Whitelisted, x.Operator, x.Banned)).ToListAsync(token);
-        });
-        api.MapPost("/servers/{id:guid}/players/{name}/{action}", PlayerActionAsync);
+        api.MapGet("/servers/{id:guid}/players", (Guid id, PlayerService service, CancellationToken token) => service.ListAsync(id, token));
+        api.MapPost("/servers/{id:guid}/players/{name}/{action}", (Guid id, string name, string action, PlayerService service, CancellationToken token) => service.ActionAsync(id, name, action, token));
 
         api.MapGet("/servers/{id:guid}/files", (Guid id, string? path, FileManagerService files) => files.List(id, path ?? ""));
         api.MapPost("/servers/{id:guid}/files", async (Guid id, CreateFileRequest request, FileManagerService files, CancellationToken token) => { await files.CreateAsync(id, request.Path, request.Directory, token); return Results.NoContent(); });
@@ -156,35 +155,10 @@ public static partial class ApiEndpoints
         await files.UploadAsync(id, path ?? "", file, token); return Results.NoContent();
     }
 
-    private static async Task<IResult> PlayerActionAsync(Guid id, string name, string action, ProcessSupervisor supervisor, IDbContextFactory<StateDbContext> factory, CancellationToken token)
-    {
-        if (!PlayerNameRegex().IsMatch(name)) throw PanelProblems.Validation("Player name is invalid.");
-        var command = action.ToLowerInvariant() switch
-        {
-            "whitelist" => $"whitelist add {name}", "unwhitelist" => $"whitelist remove {name}", "op" => $"op {name}",
-            "deop" => $"deop {name}", "ban" => $"ban {name}", "pardon" => $"pardon {name}", "kick" => $"kick {name}",
-            _ => throw PanelProblems.Validation("Unknown player action.")
-        };
-        await supervisor.CommandAsync(id, command, token);
-        await using var db = await factory.CreateDbContextAsync(token);
-        var player = await db.Players.SingleOrDefaultAsync(x => x.ServerId == id && x.Name == name, token);
-        if (player is null) { player = new PlayerEntity { ServerId = id, Name = name }; db.Players.Add(player); }
-        switch (action.ToLowerInvariant())
-        {
-            case "whitelist": player.Whitelisted = true; break; case "unwhitelist": player.Whitelisted = false; break;
-            case "op": player.Operator = true; break; case "deop": player.Operator = false; break;
-            case "ban": player.Banned = true; player.Online = false; break; case "pardon": player.Banned = false; break;
-            case "kick": player.Online = false; break;
-        }
-        await db.SaveChangesAsync(token); return Results.NoContent();
-    }
-
     private static async Task EnsureServerAsync(IDbContextFactory<StateDbContext> factory, Guid id, CancellationToken token)
     {
         await using var db = await factory.CreateDbContextAsync(token);
         if (!await db.Servers.AnyAsync(x => x.Id == id, token)) throw PanelProblems.NotFound("Server");
     }
 
-    [GeneratedRegex("^[A-Za-z0-9_]{1,16}$")]
-    private static partial Regex PlayerNameRegex();
 }

@@ -12,7 +12,8 @@ import { api } from "@/lib/api"
 const DashboardPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.DashboardPage })))
 const CreateServerPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.CreateServerPage })))
 const ServerOverviewPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.ServerOverviewPage })))
-const SettingsPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.SettingsPage })))
+const ServerPropertiesPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.ServerPropertiesPage })))
+const RuntimeSettingsPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.RuntimeSettingsPage })))
 const ConsolePage = lazy(() => import("@/pages/operations-pages").then((module) => ({ default: module.ConsolePage })))
 const FilesPage = lazy(() => import("@/pages/operations-pages").then((module) => ({ default: module.FilesPage })))
 const PlayersPage = lazy(() => import("@/pages/operations-pages").then((module) => ({ default: module.PlayersPage })))
@@ -49,6 +50,10 @@ function UnavailableScreen({ message }: { message: string }) {
   )
 }
 
+export function LegacySettingsRedirect() {
+  return <Navigate to="../properties" replace relative="path" />
+}
+
 function AppRoutes() {
   const auth = useQuery({
     queryKey: ["auth-status"],
@@ -71,7 +76,9 @@ function AppRoutes() {
         <Route path="create" element={<CreateServerPage />} />
         <Route path="servers/:serverId" element={<ServerOverviewPage />} />
         <Route path="servers/:serverId/console" element={<ConsolePage />} />
-        <Route path="servers/:serverId/settings" element={<SettingsPage />} />
+        <Route path="servers/:serverId/properties" element={<ServerPropertiesPage />} />
+        <Route path="servers/:serverId/runtime" element={<RuntimeSettingsPage />} />
+        <Route path="servers/:serverId/settings" element={<LegacySettingsRedirect />} />
         <Route path="servers/:serverId/files" element={<FilesPage />} />
         <Route path="servers/:serverId/players" element={<PlayersPage />} />
         <Route path="servers/:serverId/backups" element={<BackupsPage />} />

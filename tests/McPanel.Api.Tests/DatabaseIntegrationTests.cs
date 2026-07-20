@@ -65,5 +65,46 @@ public sealed class DatabaseIntegrationTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Existing_servers_gain_runtime_columns_idempotently_and_xms_matches_xmx()
+    {
+        await using (var connection = new SqliteConnection($"Data Source={_file}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE "Admins" (
+                    "Id" INTEGER NOT NULL CONSTRAINT "PK_Admins" PRIMARY KEY,
+                    "Username" TEXT NOT NULL,
+                    "PasswordHash" TEXT NOT NULL,
+                    "SessionStamp" TEXT NOT NULL,
+                    "CreatedAt" INTEGER NOT NULL
+                );
+                CREATE TABLE "Servers" (
+                    "Id" TEXT NOT NULL CONSTRAINT "PK_Servers" PRIMARY KEY,
+                    "MemoryMb" INTEGER NOT NULL
+                );
+                INSERT INTO "Servers" ("Id", "MemoryMb") VALUES ('00000000-0000-0000-0000-000000000001', 6144);
+                """;
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var options = new DbContextOptionsBuilder<StateDbContext>().UseSqlite($"Data Source={_file}").Options;
+        await using (var db = new StateDbContext(options))
+        {
+            await db.EnsureCompatibleSchemaAsync();
+            await db.EnsureCompatibleSchemaAsync();
+        }
+
+        await using var verify = new SqliteConnection($"Data Source={_file}");
+        await verify.OpenAsync();
+        await using var select = verify.CreateCommand();
+        select.CommandText = "SELECT \"InitialMemoryMb\", \"UseAikarFlags\" FROM \"Servers\" LIMIT 1;";
+        await using var reader = await select.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(6144, reader.GetInt32(0));
+        Assert.False(reader.GetBoolean(1));
+    }
+
     public void Dispose() { SqliteConnection.ClearAllPools(); if (File.Exists(_file)) File.Delete(_file); }
 }

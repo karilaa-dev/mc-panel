@@ -24,4 +24,22 @@ public sealed class PropertiesDocumentTests
         var document = PropertiesDocument.Empty();
         Assert.ThrowsAny<Exception>(() => document.Set("motd", "safe\nop=true"));
     }
+
+    [Fact]
+    public void Entries_returns_effective_keys_in_file_order_and_uses_the_last_duplicate()
+    {
+        var document = PropertiesDocument.Parse("# generated\nmotd=first\nunknown-option=keep\nMOTD=effective\nwhite-list=true\n");
+
+        KeyValuePair<string, string>[] expected =
+        [
+            new("unknown-option", "keep"),
+            new("MOTD", "effective"),
+            new("white-list", "true")
+        ];
+        Assert.Equal(expected, document.Entries());
+
+        document.Set("motd", "updated");
+        Assert.Contains("motd=first", document.ToString());
+        Assert.Contains("MOTD=updated", document.ToString());
+    }
 }

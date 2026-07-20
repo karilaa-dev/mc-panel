@@ -98,4 +98,27 @@ describe("AppShell", () => {
 
     await waitFor(() => expect(mockedApi.lifecycle).toHaveBeenCalledWith("server-1", "start"))
   })
+
+  it("orders dashboard, active server, expandable servers, and system navigation", async () => {
+    mockedApi.servers.mockResolvedValue([{
+      id: "server-1", name: "Test server", kind: "Paper", version: "1.21.8", state: "Stopped", port: 25565,
+      memoryMb: 2048, playerCount: 0, maxPlayers: 20, cpuPercent: 0, memoryUsedMb: 0, uptimeSeconds: 0,
+      restartRequired: false, startOnBoot: false,
+    }])
+    const user = userEvent.setup()
+    renderShell("/servers/server-1")
+
+    const dashboard = await screen.findByRole("link", { name: "Dashboard" })
+    const overview = screen.getAllByRole("link", { name: "Overview" }).find((item) => item.tagName === "A")!
+    const serverLink = await screen.findByRole("link", { name: "Test server" })
+    const java = screen.getByRole("link", { name: "Java" })
+    expect(dashboard.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(overview.compareDocumentPosition(serverLink) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(serverLink.compareDocumentPosition(java) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByRole("link", { name: "Server properties" })).toBeVisible()
+    expect(screen.getByRole("link", { name: "Runtime" })).toBeVisible()
+
+    await user.click(screen.getByRole("button", { name: "Servers" }))
+    expect(serverLink).not.toBeVisible()
+  })
 })

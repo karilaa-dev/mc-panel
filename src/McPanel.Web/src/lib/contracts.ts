@@ -87,6 +87,28 @@ export interface ServerConfigurationDto {
   crashRecovery: boolean
 }
 
+export interface ServerPropertyDto {
+  key: string
+  value: string
+  type: "boolean" | "text"
+  sensitive: boolean
+}
+
+export interface ServerPropertiesDto {
+  revision: string
+  entries: ServerPropertyDto[]
+}
+
+export interface RuntimeConfigurationDto {
+  initialMemoryMb: number
+  maximumMemoryMb: number
+  javaRuntimeId: string
+  jvmArguments: string
+  useAikarFlags: boolean
+  startOnBoot: boolean
+  crashRecovery: boolean
+}
+
 export interface FileEntryDto {
   name: string
   path: string

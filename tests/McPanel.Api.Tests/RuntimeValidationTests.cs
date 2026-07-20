@@ -1,5 +1,6 @@
 using McPanel.Api.Services;
 using McPanel.Api.Infrastructure;
+using McPanel.Api.Data;
 
 namespace McPanel.Api.Tests;
 
@@ -36,6 +37,35 @@ public sealed class RuntimeValidationTests
     [InlineData("@arguments.txt")]
     [InlineData("ok\n-Dinjected=true")]
     public void Jvm_parser_rejects_managed_or_unsafe_arguments(string value) => Assert.ThrowsAny<Exception>(() => JvmArgumentParser.Parse(value));
+
+    [Fact]
+    public void Aikar_preset_is_canonical_and_does_not_include_managed_heap_flags()
+    {
+        Assert.Equal("-XX:+UseG1GC", ProcessSupervisor.AikarFlags.First());
+        Assert.Equal("-Daikars.new.flags=true", ProcessSupervisor.AikarFlags.Last());
+        Assert.DoesNotContain(ProcessSupervisor.AikarFlags, value => value.StartsWith("-Xms", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(ProcessSupervisor.AikarFlags, value => value.StartsWith("-Xmx", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Start_arguments_order_managed_heap_aikar_custom_and_jar_arguments()
+    {
+        var server = new ServerEntity
+        {
+            Id = Guid.NewGuid(), Name = "Test", Kind = ServerKind.Paper, Version = "1.21.11",
+            JavaRuntimeId = "java", InitialMemoryMb = 2048, MemoryMb = 4096,
+            UseAikarFlags = true, JvmArguments = "-Dcustom=true", ExecutableJar = "server.jar"
+        };
+        var method = typeof(ProcessSupervisor).GetMethod("BuildStartInfo", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        var start = (System.Diagnostics.ProcessStartInfo)method.Invoke(null, [server, "/usr/bin/java", "/tmp/server.jar"])!;
+        var arguments = start.ArgumentList.ToList();
+
+        Assert.Equal("-Xms2048M", arguments[0]);
+        Assert.Equal("-Xmx4096M", arguments[1]);
+        Assert.Equal(ProcessSupervisor.AikarFlags, arguments.Skip(2).Take(ProcessSupervisor.AikarFlags.Count));
+        Assert.Equal("-Dcustom=true", arguments[2 + ProcessSupervisor.AikarFlags.Count]);
+        Assert.Equal(["-jar", "server.jar", "nogui"], arguments.TakeLast(3));
+    }
 
     [Theory]
     [InlineData("rd-132211", "old_alpha", "2009-05-13T20:11:00Z", false)]

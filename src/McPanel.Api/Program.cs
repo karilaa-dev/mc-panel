@@ -75,6 +75,12 @@ builder.Services.AddHttpClient("upstream", client =>
 {
     client.Timeout = TimeSpan.FromMinutes(10); client.DefaultRequestHeaders.UserAgent.ParseAdd(panelOptions.PaperUserAgent);
 }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, AutomaticDecompression = System.Net.DecompressionMethods.All });
+builder.Services.AddHttpClient("minecraft-profile", client =>
+{
+    client.BaseAddress = new Uri("https://api.minecraftservices.com/");
+    client.Timeout = TimeSpan.FromSeconds(10);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd(panelOptions.PaperUserAgent);
+}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, AutomaticDecompression = System.Net.DecompressionMethods.All });
 
 builder.Services.AddSingleton<AsyncKeyedLock>(); builder.Services.AddSingleton<SafePathResolver>(); builder.Services.AddSingleton<SessionAudience>();
 builder.Services.AddSingleton<ValidatedDownloadClient>(); builder.Services.AddSingleton<DistributionCatalogService>();
@@ -85,7 +91,7 @@ builder.Services.AddSingleton<IServerProcessStatus>(sp => sp.GetRequiredService<
 builder.Services.AddSingleton<HostMetricsService>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<HostMetricsService>());
 builder.Services.AddSingleton<SchedulerService>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<SchedulerService>());
 builder.Services.AddSingleton<ServerInstallerService>(); builder.Services.AddSingleton<PropertiesService>(); builder.Services.AddSingleton<FileManagerService>();
-builder.Services.AddSingleton<BackupService>(); builder.Services.AddSingleton<ServerQueryService>(); builder.Services.AddSingleton<AdminAuthService>();
+builder.Services.AddSingleton<BackupService>(); builder.Services.AddSingleton<PlayerService>(); builder.Services.AddSingleton<ServerQueryService>(); builder.Services.AddSingleton<AdminAuthService>();
 builder.Services.AddSingleton<IPasswordHasher<AdminEntity>, PasswordHasher<AdminEntity>>();
 
 var app = builder.Build();

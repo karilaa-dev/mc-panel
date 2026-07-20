@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using McPanel.Api.Configuration;
 using McPanel.Api.Contracts;
@@ -13,7 +14,9 @@ public sealed class PropertiesDocument
     private readonly List<string> _lines;
 
     private PropertiesDocument(List<string> lines) => _lines = lines;
-    public static PropertiesDocument Parse(string text) => new(text.Replace("\r\n", "\n").Split('\n').ToList());
+    public static PropertiesDocument Parse(string text) => string.IsNullOrEmpty(text)
+        ? new([])
+        : new(text.Replace("\r\n", "\n").Split('\n').ToList());
     public static PropertiesDocument Empty() => new([]);
 
     public string? Get(string key)
@@ -29,24 +32,60 @@ public sealed class PropertiesDocument
         return null;
     }
 
+    public IReadOnlyList<KeyValuePair<string, string>> Entries()
+    {
+        var parsed = new List<(int Index, string Key, string Value)>();
+        var last = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < _lines.Count; i++)
+        {
+            if (!TryEntry(_lines[i], out var key, out var value)) continue;
+            parsed.Add((i, key, value));
+            last[key] = i;
+        }
+        return parsed.Where(entry => last[entry.Key] == entry.Index)
+            .Select(entry => new KeyValuePair<string, string>(entry.Key, entry.Value)).ToList();
+    }
+
     public void Set(string key, string value)
     {
         if (value.Any(c => c is '\r' or '\n' or '\0')) throw PanelProblems.Validation($"Property '{key}' contains invalid characters.");
         for (var i = _lines.Count - 1; i >= 0; i--)
         {
-            var line = _lines[i].TrimStart();
-            if (line.StartsWith('#') || line.StartsWith('!')) continue;
-            var index = line.IndexOf('=');
-            if (index >= 0 && line[..index].Trim().Equals(key, StringComparison.OrdinalIgnoreCase))
+            if (TryEntry(_lines[i], out var existingKey, out _) && existingKey.Equals(key, StringComparison.OrdinalIgnoreCase))
             {
-                _lines[i] = $"{key}={value}";
+                _lines[i] = $"{existingKey}={value}";
                 return;
             }
         }
         _lines.Add($"{key}={value}");
     }
 
-    public override string ToString() => string.Join(Environment.NewLine, _lines).TrimEnd() + Environment.NewLine;
+
+    private static bool TryEntry(string source, out string key, out string value)
+    {
+        var line = source.TrimStart();
+        if (line.StartsWith('#') || line.StartsWith('!'))
+        {
+            key = value = "";
+            return false;
+        }
+        var index = line.IndexOf('=');
+        if (index < 0 || string.IsNullOrWhiteSpace(line[..index]))
+        {
+            key = value = "";
+            return false;
+        }
+        key = line[..index].Trim();
+        value = line[(index + 1)..];
+        return true;
+    }
+
+    public override string ToString()
+    {
+        if (_lines.Count == 0) return "";
+        var text = string.Join(Environment.NewLine, _lines);
+        return text.EndsWith(Environment.NewLine, StringComparison.Ordinal) ? text : text + Environment.NewLine;
+    }
 }
 
 public sealed class PropertiesService(
@@ -60,6 +99,102 @@ public sealed class PropertiesService(
     private const int MaxWorldNameLength = 128;
     private const int MaxWorldNameUtf8Bytes = 255;
     private const int MaxJvmArgumentsLength = 2_048;
+
+    public async Task<ServerPropertiesDto> ReadPropertiesAsync(Guid id, CancellationToken cancellationToken)
+    {
+        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+        _ = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw PanelProblems.NotFound("Server");
+        var file = Path.Combine(paths.Instance(id), "server.properties");
+        var bytes = File.Exists(file) ? await File.ReadAllBytesAsync(file, cancellationToken) : [];
+        var text = DecodeUtf8(bytes);
+        return PropertiesDto(text, Revision(bytes));
+    }
+
+    public async Task<ServerPropertiesDto> SavePropertiesAsync(Guid id, SaveServerPropertiesRequest request, CancellationToken cancellationToken)
+    {
+        if (request is null || string.IsNullOrWhiteSpace(request.Revision) || request.Values is null)
+            throw PanelProblems.Validation("A properties revision and values are required.");
+        using var serverLock = await keyedLock.AcquireAsync(id, cancellationToken);
+        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+        var server = await db.Servers.SingleOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw PanelProblems.NotFound("Server");
+        EnsureStableState(server, processStatus.IsRunning(id));
+
+        var file = Path.Combine(paths.Instance(id), "server.properties");
+        var fileExists = File.Exists(file);
+        var originalBytes = fileExists ? await File.ReadAllBytesAsync(file, cancellationToken) : [];
+        if (!CryptographicOperations.FixedTimeEquals(
+                Encoding.ASCII.GetBytes(Revision(originalBytes)),
+                Encoding.ASCII.GetBytes(request.Revision.ToLowerInvariant())))
+            throw new PanelException(409, "CONFIGURATION_CHANGED", "server.properties changed after it was loaded. Reload the page and try again.");
+        var originalText = DecodeUtf8(originalBytes);
+        var document = fileExists ? PropertiesDocument.Parse(originalText) : PropertiesDocument.Empty();
+        var existing = document.Entries().ToDictionary(entry => entry.Key, entry => entry.Key, StringComparer.OrdinalIgnoreCase);
+        if (request.Values.Keys.Distinct(StringComparer.OrdinalIgnoreCase).Count() != request.Values.Count)
+            throw PanelProblems.Validation("Property keys cannot be repeated with different casing.");
+        foreach (var (key, value) in request.Values)
+        {
+            if (!existing.TryGetValue(key, out var canonicalKey)) throw PanelProblems.Validation($"Property '{key}' does not exist in server.properties.");
+            document.Set(canonicalKey, value ?? throw PanelProblems.Validation($"Property '{key}' cannot be null."));
+        }
+
+        var portValue = request.Values.FirstOrDefault(entry => entry.Key.Equals("server-port", StringComparison.OrdinalIgnoreCase));
+        var portChanged = false;
+        if (portValue.Key is not null)
+        {
+            var portText = portValue.Value;
+            if (!int.TryParse(portText, out var port) || port is < 1024 or > 65535)
+                throw PanelProblems.Validation("Server port must be between 1024 and 65535.");
+            if (await db.Servers.AnyAsync(x => x.Id != id && x.Port == port, cancellationToken))
+                throw PanelProblems.Conflict("PORT_IN_USE", "The selected port is already assigned.");
+            portChanged = server.Port != port;
+            server.Port = port;
+        }
+
+        var updatedText = document.ToString();
+        var changed = !fileExists || !string.Equals(originalText, updatedText, StringComparison.Ordinal);
+        server.RestartRequired |= server.State == ServerState.Running && (changed || portChanged);
+        server.UpdatedAt = DateTimeOffset.UtcNow;
+        if (changed) await SaveWithAtomicPropertiesAsync(db, file, updatedText, fileExists, cancellationToken);
+        else await db.SaveChangesAsync(cancellationToken);
+        var updatedBytes = new UTF8Encoding(false).GetBytes(updatedText);
+        return PropertiesDto(updatedText, Revision(updatedBytes));
+    }
+
+    public async Task<RuntimeConfigurationDto> ReadRuntimeAsync(Guid id, CancellationToken cancellationToken)
+    {
+        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+        var server = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw PanelProblems.NotFound("Server");
+        return RuntimeDto(server);
+    }
+
+    public async Task<RuntimeConfigurationDto> SaveRuntimeAsync(Guid id, RuntimeConfigurationDto dto, CancellationToken cancellationToken)
+    {
+        ValidateRuntime(dto);
+        _ = JvmArgumentParser.Parse(dto.JvmArguments);
+        using var serverLock = await keyedLock.AcquireAsync(id, cancellationToken);
+        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+        var server = await db.Servers.SingleOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw PanelProblems.NotFound("Server");
+        EnsureStableState(server, processStatus.IsRunning(id));
+        if (!await db.JavaRuntimes.AnyAsync(x => x.Id == dto.JavaRuntimeId, cancellationToken))
+            throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
+        var totalMemory = HostMetricsService.ReadMemory().Total;
+        if ((long)dto.MaximumMemoryMb * 1024 * 1024 > totalMemory * options.Value.MemoryAllocationFraction)
+            throw new PanelException(400, "MEMORY_LIMIT_EXCEEDED", "The selected memory exceeds the host allocation limit.");
+
+        var restartChanged = server.InitialMemoryMb != dto.InitialMemoryMb || server.MemoryMb != dto.MaximumMemoryMb ||
+            server.JavaRuntimeId != dto.JavaRuntimeId || server.JvmArguments != dto.JvmArguments || server.UseAikarFlags != dto.UseAikarFlags;
+        server.InitialMemoryMb = dto.InitialMemoryMb;
+        server.MemoryMb = dto.MaximumMemoryMb;
+        server.JavaRuntimeId = dto.JavaRuntimeId;
+        server.JvmArguments = dto.JvmArguments;
+        server.UseAikarFlags = dto.UseAikarFlags;
+        server.StartOnBoot = dto.StartOnBoot;
+        server.CrashRecovery = dto.CrashRecovery;
+        server.RestartRequired |= server.State == ServerState.Running && restartChanged;
+        server.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+        return RuntimeDto(server);
+    }
 
     public async Task<ServerConfigurationDto> ReadAsync(Guid id, CancellationToken cancellationToken)
     {
@@ -114,8 +249,9 @@ public sealed class PropertiesService(
         document.Set("level-name", dto.WorldName); document.Set("server-port", dto.Port.ToString());
         var updatedText = document.ToString();
         var changedProperties = !fileExists || !string.Equals(originalText, updatedText, StringComparison.Ordinal);
-        var changedRuntime = server.MemoryMb != dto.MemoryMb || server.JavaRuntimeId != dto.JavaRuntimeId || server.JvmArguments != dto.JvmArguments || server.Port != dto.Port;
-        server.Port = dto.Port; server.MemoryMb = dto.MemoryMb; server.JavaRuntimeId = dto.JavaRuntimeId;
+        var nextInitialMemory = Math.Min(server.InitialMemoryMb, dto.MemoryMb);
+        var changedRuntime = server.MemoryMb != dto.MemoryMb || server.InitialMemoryMb != nextInitialMemory || server.JavaRuntimeId != dto.JavaRuntimeId || server.JvmArguments != dto.JvmArguments || server.Port != dto.Port;
+        server.Port = dto.Port; server.MemoryMb = dto.MemoryMb; server.InitialMemoryMb = nextInitialMemory; server.JavaRuntimeId = dto.JavaRuntimeId;
         server.JvmArguments = dto.JvmArguments; server.StartOnBoot = dto.StartOnBoot; server.CrashRecovery = dto.CrashRecovery;
         server.RestartRequired |= server.State == ServerState.Running && (changedProperties || changedRuntime);
         server.UpdatedAt = DateTimeOffset.UtcNow;
@@ -170,6 +306,62 @@ public sealed class PropertiesService(
     private static int Integer(PropertiesDocument d, string key, int fallback) => int.TryParse(d.Get(key), out var value) ? value : fallback;
     private static bool Boolean(PropertiesDocument d, string key, bool fallback) => bool.TryParse(d.Get(key), out var value) ? value : fallback;
     private static string Lower(bool value) => value ? "true" : "false";
+
+    private static string DecodeUtf8(byte[] bytes)
+    {
+        try { return new UTF8Encoding(false, true).GetString(bytes); }
+        catch (DecoderFallbackException) { throw PanelProblems.Validation("server.properties is not valid UTF-8 text."); }
+    }
+
+    private static string Revision(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+    private static ServerPropertiesDto PropertiesDto(string text, string revision)
+    {
+        var document = PropertiesDocument.Parse(text);
+        var entries = document.Entries().Select(entry => new ServerPropertyDto(
+            entry.Key,
+            entry.Value,
+            entry.Value is "true" or "false" ? "boolean" : "text",
+            IsSensitive(entry.Key))).ToList();
+        return new ServerPropertiesDto(revision, entries);
+    }
+
+    private static bool IsSensitive(string key) =>
+        key.Contains("password", StringComparison.OrdinalIgnoreCase) ||
+        key.Contains("secret", StringComparison.OrdinalIgnoreCase) ||
+        key.Contains("token", StringComparison.OrdinalIgnoreCase);
+
+    private static RuntimeConfigurationDto RuntimeDto(ServerEntity server) => new(
+        server.InitialMemoryMb,
+        server.MemoryMb,
+        server.JavaRuntimeId,
+        server.JvmArguments,
+        server.UseAikarFlags,
+        server.StartOnBoot,
+        server.CrashRecovery);
+
+    private static void EnsureStableState(ServerEntity server, bool processRunning)
+    {
+        var consistent = server.State switch
+        {
+            ServerState.Running => processRunning,
+            ServerState.Stopped or ServerState.Crashed => !processRunning,
+            _ => false
+        };
+        if (!consistent) throw PanelProblems.Conflict("SERVER_BUSY", "The server configuration cannot be changed in its current state.");
+    }
+
+    private static void ValidateRuntime(RuntimeConfigurationDto dto)
+    {
+        if (dto is null || string.IsNullOrWhiteSpace(dto.JavaRuntimeId) || dto.JvmArguments is null)
+            throw PanelProblems.Validation("Required runtime settings cannot be null.");
+        if (dto.JvmArguments.Length > MaxJvmArgumentsLength)
+            throw PanelProblems.Validation($"JVM arguments may contain at most {MaxJvmArgumentsLength} characters.");
+        if (dto.InitialMemoryMb < PanelOptions.MinimumServerMemoryMb || dto.MaximumMemoryMb < PanelOptions.MinimumServerMemoryMb ||
+            dto.InitialMemoryMb > dto.MaximumMemoryMb || dto.InitialMemoryMb % PanelOptions.ServerMemoryStepMb != 0 ||
+            dto.MaximumMemoryMb % PanelOptions.ServerMemoryStepMb != 0)
+            throw PanelProblems.Validation("Initial and maximum memory must use 512 MiB steps, and initial memory cannot exceed maximum memory.");
+    }
 
     private static void Validate(ServerConfigurationDto dto)
     {

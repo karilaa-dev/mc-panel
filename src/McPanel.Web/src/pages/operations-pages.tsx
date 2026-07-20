@@ -44,6 +44,7 @@ import type {
   FileEntryDto,
   HostStatusDto,
   JobDto,
+  PlayerDto,
   ServerSummaryDto,
 } from "@/lib/contracts"
 import {
@@ -100,6 +101,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Spinner } from "@/components/ui/spinner"
 import { Switch } from "@/components/ui/switch"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Table,
   TableBody,
@@ -543,46 +545,70 @@ export function PlayersPage() {
   const queryClient = useQueryClient()
   const server = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
   const players = useQuery({ queryKey: ["players", serverId], queryFn: () => api.players(serverId), refetchInterval: 5_000 })
-  const canManage = server.data?.state === "Running"
-  const manageHint = server.isLoading ? "Player actions are unavailable while the server state loads." : canManage ? undefined : "Start the server before managing players."
+  const canManage = server.data?.state === "Running" || server.data?.state === "Stopped" || server.data?.state === "Crashed"
+  const running = server.data?.state === "Running"
+  const manageHint = server.isLoading ? "Player actions are unavailable while the server state loads." : canManage ? undefined : `Player lists cannot be changed while the server is ${server.data?.state.toLowerCase() ?? "unavailable"}.`
   const action = useMutation({
     mutationFn: ({ name, action }: { name: string; action: Parameters<typeof api.playerAction>[2] }) => api.playerAction(serverId, name, action),
-    onSuccess: () => { toast.success("Player updated"); void queryClient.invalidateQueries({ queryKey: ["players", serverId] }) },
+    onSuccess: (updated) => {
+      queryClient.setQueryData<PlayerDto[]>(["players", serverId], (current = []) => {
+        const index = current.findIndex((player) =>
+          (updated.uuid && player.uuid === updated.uuid) || player.name.toLowerCase() === updated.name.toLowerCase(),
+        )
+        if (index < 0) return [...current, updated].sort((left, right) => left.name.localeCompare(right.name))
+        return current.map((player, playerIndex) => playerIndex === index ? updated : player)
+      })
+      toast.success("Player updated")
+    },
     onError: (error) => toast.error(error.message),
   })
+  const mutate = (name: string, nextAction: Parameters<typeof api.playerAction>[2]) => action.mutate({ name, action: nextAction })
+  const data = players.data ?? []
 
   return (
-    <Page title="Players" description="Observed players, whitelist, operator, and ban controls.">
-      <Card>
-        <CardHeader><CardTitle>Known players</CardTitle><CardDescription>Actions are sent through Minecraft’s own console and require a running server.</CardDescription></CardHeader>
-        <CardContent>
-          {players.isLoading ? <Skeleton className="h-72" /> : players.data?.length ? (
-            <Table>
-              <TableHeader><TableRow><TableHead>Player</TableHead><TableHead>Status</TableHead><TableHead>Access</TableHead><TableHead><span className="sr-only">Actions</span></TableHead></TableRow></TableHeader>
-              <TableBody>{players.data.map((player) => (
-                <TableRow key={player.name}>
-                  <TableCell><div className="flex flex-col gap-1"><span className="font-medium">{player.name}</span>{player.uuid && <span className="font-mono text-xs text-muted-foreground">{player.uuid}</span>}</div></TableCell>
-                  <TableCell><Badge variant={player.online ? "success" : "secondary"}>{player.online ? "Online" : "Offline"}</Badge></TableCell>
-                  <TableCell><div className="flex flex-wrap gap-1">{player.operator && <Badge>Operator</Badge>}{player.whitelisted && <Badge variant="outline">Whitelisted</Badge>}{player.banned && <Badge variant="destructive">Banned</Badge>}</div></TableCell>
-                  <TableCell className="text-right">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger render={<Button variant="outline" size="sm" disabled={!canManage} title={manageHint} />}><MoreHorizontalIcon data-icon="inline-start" />Manage</DropdownMenuTrigger>
-                      <DropdownMenuContent align="end"><DropdownMenuGroup>
-                        <DropdownMenuItem onClick={() => action.mutate({ name: player.name, action: player.whitelisted ? "unwhitelist" : "whitelist" })}>{player.whitelisted ? <UserMinusIcon /> : <UserRoundCheckIcon />}{player.whitelisted ? "Remove from whitelist" : "Whitelist"}</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => action.mutate({ name: player.name, action: player.operator ? "deop" : "op" })}><ShieldCheckIcon />{player.operator ? "Remove operator" : "Make operator"}</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => action.mutate({ name: player.name, action: player.banned ? "pardon" : "ban" })}>{player.banned ? <UserRoundCheckIcon /> : <BanIcon />}{player.banned ? "Pardon" : "Ban"}</DropdownMenuItem>
-                        {player.online && <DropdownMenuItem onClick={() => action.mutate({ name: player.name, action: "kick" })}><UserRoundXIcon />Kick</DropdownMenuItem>}
-                      </DropdownMenuGroup></DropdownMenuContent>
-                    </DropdownMenu>
-                  </TableCell>
-                </TableRow>
-              ))}</TableBody>
-            </Table>
-          ) : <Empty><EmptyHeader><EmptyMedia variant="icon"><UserRoundXIcon /></EmptyMedia><EmptyTitle>No known players</EmptyTitle><EmptyDescription>Players appear after joining this server at least once.</EmptyDescription></EmptyHeader></Empty>}
-        </CardContent>
-      </Card>
+    <Page title="Players" description="Observed players and Minecraft’s authoritative whitelist, operator, and ban lists.">
+      <Tabs defaultValue="players">
+        <TabsList className="w-full justify-start overflow-x-auto"><TabsTrigger value="players">Players</TabsTrigger><TabsTrigger value="whitelist">Whitelist</TabsTrigger><TabsTrigger value="operators">Operators</TabsTrigger><TabsTrigger value="banned">Banned</TabsTrigger></TabsList>
+        <TabsContent value="players"><Card><CardHeader><CardTitle>Known players</CardTitle><CardDescription>List actions work while the server is running, stopped, or crashed. Kick requires a running server.</CardDescription></CardHeader><CardContent>
+          {players.isLoading ? <Skeleton className="h-72" /> : data.length ? <Table><TableHeader><TableRow><TableHead>Player</TableHead><TableHead>Status</TableHead><TableHead>Access</TableHead><TableHead><span className="sr-only">Actions</span></TableHead></TableRow></TableHeader><TableBody>{data.map((player) => <TableRow key={player.uuid ?? player.name}>
+            <TableCell><div className="flex flex-col gap-1"><span className="font-medium">{player.name}</span>{player.uuid && <span className="font-mono text-xs text-muted-foreground">{player.uuid}</span>}</div></TableCell>
+            <TableCell><Badge variant={player.online ? "success" : "secondary"}>{player.online ? "Online" : "Offline"}</Badge></TableCell>
+            <TableCell><div className="flex flex-wrap gap-1">{player.operator && <Badge>Operator</Badge>}{player.whitelisted && <Badge variant="outline">Whitelisted</Badge>}{player.banned && <Badge variant="destructive">Banned</Badge>}</div></TableCell>
+            <TableCell className="text-right"><DropdownMenu><DropdownMenuTrigger render={<Button variant="outline" size="sm" disabled={!canManage || action.isPending} title={manageHint} />}><MoreHorizontalIcon data-icon="inline-start" />Manage</DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuGroup>
+              <DropdownMenuItem onClick={() => mutate(player.name, player.whitelisted ? "unwhitelist" : "whitelist")}>{player.whitelisted ? <UserMinusIcon /> : <UserRoundCheckIcon />}{player.whitelisted ? "Remove from whitelist" : "Whitelist"}</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => mutate(player.name, player.operator ? "deop" : "op")}><ShieldCheckIcon />{player.operator ? "Remove operator" : "Make operator"}</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => mutate(player.name, player.banned ? "pardon" : "ban")}>{player.banned ? <UserRoundCheckIcon /> : <BanIcon />}{player.banned ? "Pardon" : "Ban"}</DropdownMenuItem>
+              {player.online && <DropdownMenuItem disabled={!running} onClick={() => mutate(player.name, "kick")}><UserRoundXIcon />Kick</DropdownMenuItem>}
+            </DropdownMenuGroup></DropdownMenuContent></DropdownMenu></TableCell>
+          </TableRow>)}</TableBody></Table> : <PlayerEmpty title="No known players" description="Players appear after joining or being added to a server list." />}
+        </CardContent></Card></TabsContent>
+        <TabsContent value="whitelist"><PlayerListTab title="Whitelist" description="Players allowed to join when whitelist enforcement is enabled." players={data.filter((player) => player.whitelisted)} addLabel="Add to whitelist" removeLabel="Remove" addAction="whitelist" removeAction="unwhitelist" canManage={canManage} pending={action.isPending} hint={manageHint} onAction={mutate} /></TabsContent>
+        <TabsContent value="operators"><PlayerListTab title="Operators" description="Operators added here receive permission level 4 by default." players={data.filter((player) => player.operator)} addLabel="Add operator" removeLabel="Deop" addAction="op" removeAction="deop" canManage={canManage} pending={action.isPending} hint={manageHint} onAction={mutate} /></TabsContent>
+        <TabsContent value="banned"><PlayerListTab title="Banned players" description="Player bans have no expiry and use Minecraft’s default operator-ban reason." players={data.filter((player) => player.banned)} addLabel="Ban player" removeLabel="Pardon" addAction="ban" removeAction="pardon" canManage={canManage} pending={action.isPending} hint={manageHint} onAction={mutate} /></TabsContent>
+      </Tabs>
     </Page>
   )
+}
+
+type PlayerListAction = Parameters<typeof api.playerAction>[2]
+
+function PlayerListTab({ title, description, players, addLabel, removeLabel, addAction, removeAction, canManage, pending, hint, onAction }: { title: string; description: string; players: PlayerDto[]; addLabel: string; removeLabel: string; addAction: PlayerListAction; removeAction: PlayerListAction; canManage: boolean; pending: boolean; hint?: string; onAction: (name: string, action: PlayerListAction) => void }) {
+  const [nickname, setNickname] = useState("")
+  const valid = /^[A-Za-z0-9_]{1,16}$/.test(nickname)
+  const submit = (event: FormEvent) => {
+    event.preventDefault()
+    if (!valid || !canManage || pending) return
+    onAction(nickname, addAction)
+    setNickname("")
+  }
+  return <Card><CardHeader><CardTitle>{title}</CardTitle><CardDescription>{description}</CardDescription></CardHeader><CardContent className="flex flex-col gap-6">
+    <form onSubmit={submit}><FieldGroup><Field><FieldLabel htmlFor={`nickname-${addAction}`}>Player nickname</FieldLabel><div className="flex flex-col gap-2 sm:flex-row"><Input id={`nickname-${addAction}`} value={nickname} onChange={(event) => setNickname(event.target.value)} minLength={1} maxLength={16} pattern="[A-Za-z0-9_]+" placeholder="Minecraft nickname" autoComplete="off" disabled={!canManage || pending} title={hint} /><Button type="submit" disabled={!canManage || pending || !valid} title={hint}>{pending && <Spinner data-icon="inline-start" />}{addLabel}</Button></div></Field></FieldGroup></form>
+    {players.length ? <Table><TableHeader><TableRow><TableHead>Player</TableHead><TableHead>UUID</TableHead><TableHead><span className="sr-only">Actions</span></TableHead></TableRow></TableHeader><TableBody>{players.map((player) => <TableRow key={player.uuid ?? player.name}><TableCell className="font-medium">{player.name}</TableCell><TableCell className="font-mono text-xs text-muted-foreground">{player.uuid ?? "Unknown"}</TableCell><TableCell className="text-right"><Button variant="outline" size="sm" disabled={!canManage || pending} title={hint} onClick={() => onAction(player.name, removeAction)}>{removeLabel}</Button></TableCell></TableRow>)}</TableBody></Table> : <PlayerEmpty title={`No ${title.toLowerCase()}`} description="Add a player by nickname to get started." />}
+  </CardContent></Card>
+}
+
+function PlayerEmpty({ title, description }: { title: string; description: string }) {
+  return <Empty><EmptyHeader><EmptyMedia variant="icon"><UserRoundXIcon /></EmptyMedia><EmptyTitle>{title}</EmptyTitle><EmptyDescription>{description}</EmptyDescription></EmptyHeader></Empty>
 }
 
 export function BackupsPage() {

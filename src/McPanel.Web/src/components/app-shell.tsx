@@ -1,15 +1,16 @@
-import { useEffect, useMemo } from "react"
-import { Link, Outlet, useLocation, useNavigate } from "react-router-dom"
+import { useEffect } from "react"
+import { Link, Outlet, useLocation } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
-  ArchiveIcon, BlocksIcon, BoxIcon, ChevronUpIcon, CircleGaugeIcon, PlusIcon,
-  Clock3Icon, CommandIcon, CpuIcon, FileIcon, LogOutIcon, MonitorCogIcon, MoonIcon,
+  ArchiveIcon, BlocksIcon, BoxIcon, ChevronDownIcon, ChevronUpIcon, CircleGaugeIcon, PlusIcon,
+  Clock3Icon, CommandIcon, FileIcon, GaugeIcon, LogOutIcon, MonitorCogIcon, MoonIcon,
   PanelsTopLeftIcon, Settings2Icon, SunIcon, TerminalSquareIcon, UsersIcon,
 } from "lucide-react"
 import { api } from "@/lib/api"
 import { useTheme } from "@/components/theme-provider"
 import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
@@ -17,9 +18,6 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import {
-  Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue,
-} from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent,
@@ -29,14 +27,12 @@ import {
 } from "@/components/ui/sidebar"
 import { toast } from "sonner"
 
-const mainItems = [
-  { label: "Dashboard", path: "/", icon: PanelsTopLeftIcon },
-  { label: "Create server", path: "/create", icon: PlusIcon },
-]
+const dashboardItem = { label: "Dashboard", path: "/", icon: PanelsTopLeftIcon }
 const serverItems = [
   { label: "Overview", path: "", icon: CircleGaugeIcon },
   { label: "Console", path: "/console", icon: TerminalSquareIcon },
-  { label: "Settings", path: "/settings", icon: Settings2Icon },
+  { label: "Server properties", path: "/properties", icon: Settings2Icon },
+  { label: "Runtime", path: "/runtime", icon: GaugeIcon },
   { label: "Files", path: "/files", icon: FileIcon },
   { label: "Players", path: "/players", icon: UsersIcon },
   { label: "Backups", path: "/backups", icon: ArchiveIcon },
@@ -79,7 +75,6 @@ export function MobileSidebarCloser() {
 export function AppShell() {
   const location = useLocation()
   const serverId = location.pathname.match(/^\/servers\/([^/]+)/)?.[1]
-  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { theme, setTheme } = useTheme()
   const { data: servers = [] } = useQuery({ queryKey: ["servers"], queryFn: api.servers, refetchInterval: 5_000 })
@@ -93,12 +88,11 @@ export function AppShell() {
     onError: (error) => toast.error(error.message),
   })
   const currentServer = servers.find((server) => server.id === serverId)
-  const serverOptions = useMemo(() => servers.map((server) => ({ value: server.id, label: server.name })), [servers])
   const serverSection = serverItems.find((item) =>
     location.pathname === `/servers/${serverId}${item.path}`,
   )
   const pageName = serverSection?.label
-    ?? [...mainItems, ...systemItems].find((item) => item.path === location.pathname)?.label
+    ?? [dashboardItem, { label: "Create server", path: "/create", icon: PlusIcon }, ...systemItems].find((item) => item.path === location.pathname)?.label
     ?? "MC Panel"
 
   async function logout() {
@@ -124,28 +118,10 @@ export function AppShell() {
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>
-          {servers.length > 0 && (
-            <Select
-              items={serverOptions}
-              value={serverId ?? null}
-              onValueChange={(value) => value && navigate(`/servers/${value}`)}
-            >
-              <SelectTrigger className="w-full group-data-[collapsible=icon]:hidden" aria-label="Active server">
-                <CpuIcon />
-                <SelectValue placeholder="Select a server" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  {serverOptions.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          )}
         </SidebarHeader>
         <SidebarContent>
           <SidebarGroup>
-            <SidebarGroupLabel>Main</SidebarGroupLabel>
-            <SidebarGroupContent><SidebarMenu>{mainItems.map((item) => <NavigationItem key={item.path} {...item} />)}</SidebarMenu></SidebarGroupContent>
+            <SidebarGroupContent><SidebarMenu><NavigationItem {...dashboardItem} /></SidebarMenu></SidebarGroupContent>
           </SidebarGroup>
           {serverId && (
             <SidebarGroup>
@@ -155,7 +131,23 @@ export function AppShell() {
               </SidebarGroupContent>
             </SidebarGroup>
           )}
-          <SidebarGroup>
+          <Collapsible defaultOpen className="group/collapsible">
+            <SidebarGroup>
+              <SidebarGroupLabel render={<CollapsibleTrigger className="cursor-pointer" />}>
+                <span>Servers</span>
+                <ChevronDownIcon className="ml-auto transition-transform group-data-[panel-open]/collapsible:rotate-180" />
+              </SidebarGroupLabel>
+              <CollapsibleContent>
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    {servers.map((server) => <NavigationItem key={server.id} label={server.name} icon={BoxIcon} path={`/servers/${server.id}`} />)}
+                    <NavigationItem label="Create server" icon={PlusIcon} path="/create" />
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </CollapsibleContent>
+            </SidebarGroup>
+          </Collapsible>
+          <SidebarGroup className="mt-auto">
             <SidebarGroupLabel>System</SidebarGroupLabel>
             <SidebarGroupContent><SidebarMenu>{systemItems.map((item) => <NavigationItem key={item.path} {...item} />)}</SidebarMenu></SidebarGroupContent>
           </SidebarGroup>

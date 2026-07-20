@@ -41,7 +41,7 @@ public sealed partial class ServerInstallerService(
             Id = Guid.NewGuid(), Name = request.Name.Trim(), Kind = request.Kind, Version = request.Version,
             DistributionBuild = request.Build, FabricLoaderVersion = request.LoaderVersion,
             FabricInstallerVersion = request.InstallerVersion, JavaRuntimeId = runtime.Id,
-            MemoryMb = request.MemoryMb, Port = request.Port, StartOnBoot = request.StartOnBoot,
+            MemoryMb = request.MemoryMb, InitialMemoryMb = request.MemoryMb, Port = request.Port, StartOnBoot = request.StartOnBoot,
             State = ServerState.Installing, EulaAcceptedAt = DateTimeOffset.UtcNow
         };
         db.Servers.Add(entity);

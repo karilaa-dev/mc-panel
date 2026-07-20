@@ -30,8 +30,10 @@ public sealed class ServerEntity
     public ServerState State { get; set; } = ServerState.Installing;
     public int Port { get; set; } = 25565;
     public int MemoryMb { get; set; } = 4096;
+    public int InitialMemoryMb { get; set; } = 4096;
     [MaxLength(64)] public required string JavaRuntimeId { get; set; }
     [MaxLength(2048)] public string JvmArguments { get; set; } = "";
+    public bool UseAikarFlags { get; set; }
     public bool StartOnBoot { get; set; }
     public bool CrashRecovery { get; set; } = true;
     public DateTimeOffset EulaAcceptedAt { get; set; }

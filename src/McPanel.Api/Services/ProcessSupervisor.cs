@@ -33,6 +33,29 @@ public sealed class ProcessSupervisor(
     IHostApplicationLifetime lifetime,
     ILogger<ProcessSupervisor> logger) : BackgroundService, IServerProcessStatus
 {
+    public static IReadOnlyList<string> AikarFlags { get; } = new[]
+    {
+        "-XX:+UseG1GC",
+        "-XX:+ParallelRefProcEnabled",
+        "-XX:MaxGCPauseMillis=200",
+        "-XX:+UnlockExperimentalVMOptions",
+        "-XX:+DisableExplicitGC",
+        "-XX:+AlwaysPreTouch",
+        "-XX:G1NewSizePercent=30",
+        "-XX:G1MaxNewSizePercent=40",
+        "-XX:G1HeapRegionSize=8M",
+        "-XX:G1ReservePercent=20",
+        "-XX:G1HeapWastePercent=5",
+        "-XX:G1MixedGCCountTarget=4",
+        "-XX:InitiatingHeapOccupancyPercent=15",
+        "-XX:G1MixedGCLiveThresholdPercent=90",
+        "-XX:G1RSetUpdatingPauseTimePercent=5",
+        "-XX:SurvivorRatio=32",
+        "-XX:+PerfDisableSharedMem",
+        "-XX:MaxTenuringThreshold=1",
+        "-Dusing.aikars.flags=https://mcflags.emc.gs",
+        "-Daikars.new.flags=true"
+    };
     private readonly ConcurrentDictionary<Guid, ManagedProcess> _processes = new();
     private readonly SemaphoreSlim _memoryAdmission = new(1, 1);
 
@@ -354,8 +377,10 @@ public sealed class ProcessSupervisor(
             FileName = javaPath, WorkingDirectory = Path.GetDirectoryName(jar)!, UseShellExecute = false,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true
         };
-        start.ArgumentList.Add($"-Xms{Math.Min(1024, server.MemoryMb)}M");
+        start.ArgumentList.Add($"-Xms{server.InitialMemoryMb}M");
         start.ArgumentList.Add($"-Xmx{server.MemoryMb}M");
+        if (server.UseAikarFlags)
+            foreach (var argument in AikarFlags) start.ArgumentList.Add(argument);
         foreach (var argument in JvmArgumentParser.Parse(server.JvmArguments)) start.ArgumentList.Add(argument);
         start.ArgumentList.Add("-jar"); start.ArgumentList.Add(server.ExecutableJar); start.ArgumentList.Add("nogui");
         start.Environment.Remove("JAVA_TOOL_OPTIONS"); start.Environment.Remove("_JAVA_OPTIONS"); start.Environment.Remove("JDK_JAVA_OPTIONS");
