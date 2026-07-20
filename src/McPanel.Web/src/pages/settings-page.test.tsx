@@ -68,14 +68,18 @@ describe("ServerPropertiesPage", () => {
     mockedApi.saveProperties.mockResolvedValue({ ...properties, revision: "revision-2" })
   })
 
-  it("renders every key with formatted and raw labels, masks secrets, searches, and saves the revision", async () => {
+  it("prioritizes common settings in tabs, masks secrets, searches across tabs, and saves the revision", async () => {
     const user = userEvent.setup()
     renderPage("properties")
 
     expect(await screen.findByText("Server port")).toBeVisible()
     expect(screen.getByText("server-port")).toBeVisible()
-    expect(screen.getByText("Plugin unknown")).toBeVisible()
     expect(screen.getByRole("switch", { name: "White list" })).not.toBeChecked()
+    expect(screen.queryByText("Plugin unknown")).not.toBeInTheDocument()
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["General", "World & gameplay", "Players", "Network", "Advanced"])
+
+    await user.click(screen.getByRole("tab", { name: "Advanced" }))
+    expect(screen.getByText("Plugin unknown")).toBeVisible()
     expect(screen.getByLabelText("Rcon password")).toHaveAttribute("type", "password")
     await user.click(screen.getByRole("button", { name: "Reveal Rcon password" }))
     expect(screen.getByLabelText("Rcon password")).toHaveAttribute("type", "text")

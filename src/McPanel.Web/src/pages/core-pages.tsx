@@ -226,6 +226,28 @@ function humanizePropertyKey(key: string) {
 }
 
 const propertySections = ["General", "World", "Gameplay", "Players & permissions", "Network & status", "Security", "Resource packs", "Remote administration", "Performance", "Other"] as const
+const commonPropertyKeys = new Set([
+  "motd", "server-port", "max-players", "gamemode", "difficulty", "hardcore", "pvp",
+  "white-list", "enforce-whitelist", "online-mode", "level-name", "level-seed", "level-type",
+  "generate-structures", "view-distance", "simulation-distance", "spawn-protection", "allow-flight",
+  "enable-command-block", "force-gamemode",
+])
+const propertyTabs = [
+  { value: "general", label: "General", title: "Common settings", description: "Frequently changed identity, gameplay, world, access, and distance settings." },
+  { value: "world", label: "World & gameplay", title: "World and gameplay", description: "World generation, spawning, and less frequently changed gameplay rules." },
+  { value: "players", label: "Players", title: "Players and permissions", description: "Permission levels, idle behavior, and operator broadcasts." },
+  { value: "network", label: "Network", title: "Network and security", description: "Status responses, connection controls, compression, filtering, and profile security." },
+  { value: "advanced", label: "Advanced", title: "Advanced settings", description: "Resource packs, remote administration, performance tuning, and uncatalogued entries." },
+] as const
+type PropertyTab = typeof propertyTabs[number]["value"]
+
+function propertyTabFor(entry: Pick<ServerPropertyDto, "key" | "section">): PropertyTab {
+  if (commonPropertyKeys.has(entry.key)) return "general"
+  if (entry.section === "World" || entry.section === "Gameplay") return "world"
+  if (entry.section === "Players & permissions") return "players"
+  if (entry.section === "Network & status" || entry.section === "Security") return "network"
+  return "advanced"
+}
 
 function supportedRange(ranges: Array<{ from: string; to?: string | null }>) {
   return ranges.map((range) => range.to ? `${range.from}–${range.to}` : `${range.from} and later`).join(", ")
@@ -242,6 +264,7 @@ export function ServerPropertiesPage() {
 function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: string; serverState: ServerState; initial: ServerPropertiesDto }) {
   const queryClient = useQueryClient()
   const [search, setSearch] = useState("")
+  const [activeTab, setActiveTab] = useState<PropertyTab>("general")
   const [entries, setEntries] = useState<ServerPropertyDto[]>(() => initial.entries)
   const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries(initial.entries.map((entry) => [entry.key, entry.value])))
   const [revealed, setRevealed] = useState<Set<string>>(() => new Set())
@@ -251,7 +274,7 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
   const canSave = serverState === "Stopped" || serverState === "Running" || serverState === "Crashed"
   const normalizedSearch = search.trim().toLowerCase()
   const filtered = entries.filter((entry) => `${entry.key} ${humanizePropertyKey(entry.key)} ${entry.section}`.toLowerCase().includes(normalizedSearch))
-  const groupedEntries = propertySections.map((section) => ({ section, entries: filtered.filter((entry) => entry.section === section) })).filter((group) => group.entries.length)
+  const tabGroups = propertyTabs.map((tab) => ({ ...tab, entries: filtered.filter((entry) => propertyTabFor(entry) === tab.value) }))
   const availableGroups = propertySections.map((section) => ({ section, definitions: initial.available.filter((definition) => definition.section === section && !(definition.key in values)) })).filter((group) => group.definitions.length)
   const save = useMutation({
     mutationFn: () => api.saveProperties(serverId, { revision: initial.revision, values, acknowledgedIncompatibleKeys: [...acknowledged] }),
@@ -276,6 +299,7 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
     const entry: ServerPropertyDto = { ...definition, value: definition.suggestedValue, catalogued: true }
     setEntries((current) => [...current, entry])
     setValues((current) => ({ ...current, [definition.key]: definition.suggestedValue }))
+    setActiveTab(propertyTabFor(entry))
     if (acknowledge) setAcknowledged((current) => new Set(current).add(definition.key))
     setPendingIncompatible(undefined)
     setAddOpen(false)
@@ -283,6 +307,13 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
   const chooseProperty = (definition: ServerPropertyDefinitionDto) => {
     if (definition.compatibility === "Supported") addProperty(definition)
     else { setAddOpen(false); setPendingIncompatible(definition) }
+  }
+  const changeSearch = (value: string) => {
+    setSearch(value)
+    const normalized = value.trim().toLowerCase()
+    if (!normalized) return
+    const firstMatch = entries.find((entry) => `${entry.key} ${humanizePropertyKey(entry.key)} ${entry.section}`.toLowerCase().includes(normalized))
+    if (firstMatch) setActiveTab(propertyTabFor(firstMatch))
   }
   const propertyField = (entry: ServerPropertyDto) => {
     const id = `property-${entry.key}`
@@ -306,12 +337,15 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
   return <Page title="Server properties" description={`Minecraft ${initial.minecraftVersion} properties, grouped by purpose while preserving file order.`} actions={<><Button variant="outline" disabled={!canSave || !availableGroups.length} onClick={() => setAddOpen(true)}><PlusIcon data-icon="inline-start" />Add property</Button><Button disabled={save.isPending || !canSave} title={canSave ? undefined : `Properties cannot be saved while the server is ${serverState.toLowerCase()}.`} onClick={() => save.mutate()}>{save.isPending && <Spinner data-icon="inline-start" />}Save changes</Button></>}>
     <InputGroup className="max-w-md">
       <InputGroupAddon><SearchIcon /><span className="sr-only">Search</span></InputGroupAddon>
-      <InputGroupInput aria-label="Search server properties" placeholder="Search properties" value={search} onChange={(event) => setSearch(event.target.value)} />
+      <InputGroupInput aria-label="Search server properties" placeholder="Search properties" value={search} onChange={(event) => changeSearch(event.target.value)} />
     </InputGroup>
-    {groupedEntries.length ? groupedEntries.map((group) => <Card key={group.section}>
-      <CardHeader><CardTitle>{group.section}</CardTitle><CardDescription>{group.entries.length} {group.entries.length === 1 ? "property" : "properties"}</CardDescription></CardHeader>
-      <CardContent><FieldGroup>{group.entries.map(propertyField)}</FieldGroup></CardContent>
-    </Card>) : <Empty><EmptyHeader><EmptyTitle>No matching properties</EmptyTitle><EmptyDescription>Try a different key, label, or section.</EmptyDescription></EmptyHeader></Empty>}
+    <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as PropertyTab)}>
+      <TabsList className="w-full justify-start overflow-x-auto">{propertyTabs.map((tab) => <TabsTrigger key={tab.value} value={tab.value}>{tab.label}</TabsTrigger>)}</TabsList>
+      {tabGroups.map((tab) => <TabsContent key={tab.value} value={tab.value}><Card>
+        <CardHeader><CardTitle>{tab.title}</CardTitle><CardDescription>{tab.description}</CardDescription></CardHeader>
+        <CardContent>{tab.entries.length ? <FieldGroup>{tab.entries.map(propertyField)}</FieldGroup> : <Empty><EmptyHeader><EmptyTitle>{normalizedSearch ? "No matching properties in this tab" : "No properties in this tab"}</EmptyTitle><EmptyDescription>{normalizedSearch ? "Try another tab or a different search." : "Properties appear here when they are present in server.properties."}</EmptyDescription></EmptyHeader></Empty>}</CardContent>
+      </Card></TabsContent>)}
+    </Tabs>
     <CommandDialog open={addOpen} onOpenChange={setAddOpen} title="Add server property" description={`Search properties that are not currently present in server.properties for Minecraft ${initial.minecraftVersion}.`} showCloseButton>
       <Command><CommandInput placeholder="Search available properties" />
         <CommandList>

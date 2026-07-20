@@ -107,9 +107,9 @@ export function ServerIconEditor({ server, disabled = false }: { server: ServerS
       <input ref={inputRef} id={inputId} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Choose server icon" onChange={(event) => void chooseFile(event.target.files?.[0])} />
     </div>
     <Dialog open={Boolean(imageUrl)} onOpenChange={(open) => { if (!open) closeCrop() }}>
-      <DialogContent className="sm:max-w-lg data-open:animate-none data-closed:animate-none">
-        <DialogHeader><DialogTitle>Crop server icon</DialogTitle><DialogDescription>Drag the image to choose a square area, then adjust the zoom. The result will be saved as a 64×64 PNG.</DialogDescription></DialogHeader>
-        <div className="relative aspect-square w-full overflow-hidden rounded-lg bg-muted" role="application" tabIndex={0} aria-label="Server icon crop area. Use arrow keys to move the image." onKeyDown={(event) => {
+      <DialogContent className="max-h-[calc(100dvh-1rem)] overflow-y-auto overscroll-contain sm:max-w-lg data-open:animate-none data-closed:animate-none">
+        <DialogHeader className="pr-8"><DialogTitle>Crop server icon</DialogTitle><DialogDescription>Drag the image to choose a square area, then adjust the zoom. The result will be saved as a 64×64 PNG.</DialogDescription></DialogHeader>
+        <div className="relative mx-auto aspect-square shrink-0 overflow-hidden rounded-lg bg-muted" style={{ width: "min(100%, max(12rem, calc(100dvh - 20rem)))" }} role="application" tabIndex={0} aria-label="Server icon crop area. Use arrow keys to move the image." onKeyDown={(event) => {
           const movement = event.shiftKey ? 10 : 2
           if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return
           event.preventDefault()
