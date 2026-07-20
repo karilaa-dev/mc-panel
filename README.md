@@ -21,8 +21,8 @@ administration, or a dense operator interface.
   start-on-boot behavior.
 - Persistent live console with reconnect cursors, search, command history, and
   separate stdout/stderr display.
-- A simple RAM slider (512 MiB minimum and 512 MiB steps), curated
-  `server.properties`, player actions, and a confined file manager.
+- Synchronized Xms/Xmx controls, version-aware sectioned `server.properties`,
+  cropped server icons, player actions, and a confined file manager.
 - Per-server backups and time-based automations.
 - One local administrator protected by cookie authentication, global session
   revocation, and antiforgery tokens.

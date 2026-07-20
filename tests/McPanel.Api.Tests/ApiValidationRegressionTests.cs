@@ -373,6 +373,122 @@ done
     }
 
     [Fact]
+    public async Task Properties_add_catalogued_keys_and_require_version_acknowledgement()
+    {
+        var file = Path.Combine(_paths!.Instance(_serverId), "server.properties");
+        await File.WriteAllTextAsync(file, "# keep\nunknown-option=keep\nserver-port=32123\n");
+        using var loaded = await _client!.GetAsync($"/api/v1/servers/{_serverId}/properties");
+        using var loadedJson = JsonDocument.Parse(await loaded.Content.ReadAsStringAsync());
+        var revision = loadedJson.RootElement.GetProperty("revision").GetString()!;
+        Assert.Equal("1.20.4", loadedJson.RootElement.GetProperty("minecraftVersion").GetString());
+        Assert.Contains(loadedJson.RootElement.GetProperty("available").EnumerateArray(),
+            item => item.GetProperty("key").GetString() == "simulation-distance" && item.GetProperty("compatibility").GetString() == "Supported");
+
+        var compatible = JsonSerializer.Serialize(new
+        {
+            revision,
+            values = new Dictionary<string, string> { ["simulation-distance"] = "10" }
+        });
+        using var added = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/properties", compatible);
+        Assert.Equal(HttpStatusCode.OK, added.StatusCode);
+        Assert.EndsWith($"simulation-distance=10{Environment.NewLine}", await File.ReadAllTextAsync(file));
+        using var addedJson = JsonDocument.Parse(await added.Content.ReadAsStringAsync());
+        var nextRevision = addedJson.RootElement.GetProperty("revision").GetString()!;
+
+        var incompatible = JsonSerializer.Serialize(new
+        {
+            revision = nextRevision,
+            values = new Dictionary<string, string> { ["accepts-transfers"] = "false" }
+        });
+        using (var rejected = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/properties", incompatible))
+            await AssertProblemAsync(rejected, HttpStatusCode.BadRequest, "PROPERTY_VERSION_ACKNOWLEDGEMENT_REQUIRED");
+
+        var acknowledged = JsonSerializer.Serialize(new
+        {
+            revision = nextRevision,
+            values = new Dictionary<string, string> { ["accepts-transfers"] = "false" },
+            acknowledgedIncompatibleKeys = new[] { "accepts-transfers" }
+        });
+        using var accepted = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/properties", acknowledged);
+        Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+        var text = await File.ReadAllTextAsync(file);
+        Assert.Contains("# keep", text);
+        Assert.Contains("unknown-option=keep", text);
+        Assert.EndsWith($"accepts-transfers=false{Environment.NewLine}", text);
+
+        using var acceptedJson = JsonDocument.Parse(await accepted.Content.ReadAsStringAsync());
+        var arbitrary = JsonSerializer.Serialize(new
+        {
+            revision = acceptedJson.RootElement.GetProperty("revision").GetString(),
+            values = new Dictionary<string, string> { ["arbitrary-plugin-key"] = "value" }
+        });
+        using var arbitraryResponse = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/properties", arbitrary);
+        await AssertProblemAsync(arbitraryResponse, HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+    }
+
+    [Fact]
+    public async Task Colored_player_events_reconcile_uuid_and_remove_legacy_ansi_leak()
+    {
+        await using (var scope = _factory!.Services.CreateAsyncScope())
+        {
+            var stateFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+            await using var db = await stateFactory.CreateDbContextAsync();
+            db.Players.AddRange(
+                new PlayerEntity { ServerId = _serverId, Name = "11mKaRiLaA", Online = true },
+                new PlayerEntity { ServerId = _serverId, Name = "KaRiLaA", Uuid = "b67e9dfc-d4d7-4f31-b30b-e1ab374cb0ee" });
+            await db.SaveChangesAsync();
+        }
+        using (var listed = await _client!.GetAsync($"/api/v1/servers/{_serverId}/players"))
+        {
+            Assert.Equal(HttpStatusCode.OK, listed.StatusCode);
+            using var listedJson = JsonDocument.Parse(await listed.Content.ReadAsStringAsync());
+            Assert.Equal("KaRiLaA", Assert.Single(listedJson.RootElement.EnumerateArray()).GetProperty("name").GetString());
+        }
+        var console = _factory!.Services.GetRequiredService<ConsoleService>();
+        await Task.WhenAll(
+            console.AppendAsync(_serverId, "stdout", "UUID of player KaRiLaA is b67e9dfc-d4d7-4f31-b30b-e1ab374cb0ee"),
+            console.AppendAsync(_serverId, "stdout", "[Server thread/INFO]: \u001b[38;5;11mKaRiLaA\u001b[0m joined the game"));
+
+        await using var verifyScope = _factory.Services.CreateAsyncScope();
+        var verifyFactory = verifyScope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+        await using var verify = await verifyFactory.CreateDbContextAsync();
+        var player = Assert.Single(await verify.Players.Where(x => x.ServerId == _serverId).ToListAsync());
+        Assert.Equal("KaRiLaA", player.Name);
+        Assert.Equal("b67e9dfc-d4d7-4f31-b30b-e1ab374cb0ee", player.Uuid);
+        Assert.True(player.Online);
+    }
+
+    [Fact]
+    public async Task Server_icon_upload_get_replace_and_remove_updates_revision()
+    {
+        var first = IconPng(1);
+        using var uploaded = await UploadIconAsync(first);
+        Assert.Equal(HttpStatusCode.OK, uploaded.StatusCode);
+        using var uploadedJson = JsonDocument.Parse(await uploaded.Content.ReadAsStringAsync());
+        var firstRevision = uploadedJson.RootElement.GetProperty("revision").GetString();
+        Assert.Equal(firstRevision, (await ReadServerAsync()).IconRevision);
+        Assert.Equal(first, await File.ReadAllBytesAsync(Path.Combine(_paths!.Instance(_serverId), "server-icon.png")));
+        using (var downloaded = await _client!.GetAsync($"/api/v1/servers/{_serverId}/icon"))
+        {
+            Assert.Equal(HttpStatusCode.OK, downloaded.StatusCode);
+            Assert.Equal("image/png", downloaded.Content.Headers.ContentType?.MediaType);
+        }
+
+        using var replaced = await UploadIconAsync(IconPng(2));
+        Assert.Equal(HttpStatusCode.OK, replaced.StatusCode);
+        using var replacedJson = JsonDocument.Parse(await replaced.Content.ReadAsStringAsync());
+        Assert.NotEqual(firstRevision, replacedJson.RootElement.GetProperty("revision").GetString());
+
+        using (var invalid = await UploadIconAsync(new byte[64]))
+            await AssertProblemAsync(invalid, HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+
+        using var removed = await SendJsonAsync(HttpMethod.Delete, $"/api/v1/servers/{_serverId}/icon", "{}");
+        Assert.Equal(HttpStatusCode.NoContent, removed.StatusCode);
+        Assert.Null((await ReadServerAsync()).IconRevision);
+        Assert.False(File.Exists(Path.Combine(_paths.Instance(_serverId), "server-icon.png")));
+    }
+
+    [Fact]
     public async Task Runtime_persists_independent_heap_and_aikar_and_rejects_invalid_heap_order()
     {
         var runtime = JsonSerializer.Serialize(new
@@ -1141,6 +1257,18 @@ END;
         return await _client!.SendAsync(request);
     }
 
+    private async Task<HttpResponseMessage> UploadIconAsync(byte[] content)
+    {
+        var csrf = await GetAntiforgeryAsync();
+        using var multipart = new MultipartFormDataContent();
+        var file = new ByteArrayContent(content);
+        file.Headers.ContentType = new("image/png");
+        multipart.Add(file, "file", "server-icon.png");
+        using var request = new HttpRequestMessage(HttpMethod.Put, $"/api/v1/servers/{_serverId}/icon") { Content = multipart };
+        request.Headers.Add("X-XSRF-TOKEN", csrf);
+        return await _client!.SendAsync(request);
+    }
+
     private async Task<HttpResponseMessage> SendJsonAsync(HttpMethod method, string path, string body)
     {
         var csrf = await GetAntiforgeryAsync();
@@ -1247,6 +1375,19 @@ END;
 
     private static void AssertNoPropertyWorkFiles(string directory) =>
         Assert.Empty(Directory.EnumerateFiles(directory, ".server.properties.*", SearchOption.TopDirectoryOnly));
+
+    private static byte[] IconPng(byte marker)
+    {
+        byte[] bytes =
+        [
+            137, 80, 78, 71, 13, 10, 26, 10,
+            0, 0, 0, 13, 73, 72, 68, 82,
+            0, 0, 0, 64, 0, 0, 0, 64,
+            8, 6, 0, 0, 0, 0, 0, 0, 0
+        ];
+        bytes[^1] = marker;
+        return bytes;
+    }
 
     private static string Schedule(
         string name,

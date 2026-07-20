@@ -4,7 +4,7 @@ import { SearchAddon } from "@xterm/addon-search"
 import { Terminal } from "@xterm/xterm"
 import "@xterm/xterm/css/xterm.css"
 import type { ConsoleEventDto } from "@/lib/contracts"
-import { sanitizeTerminalText } from "@/lib/terminal-sanitize"
+import { formatTerminalEvent } from "@/lib/terminal-format"
 
 export interface TerminalHandle {
   write: (event: ConsoleEventDto) => void
@@ -47,12 +47,7 @@ export function TerminalView({ onReady }: { onReady: (handle: TerminalHandle) =>
     observer.observe(container.current)
     onReady({
       write: (event) => {
-        const timestamp = new Date(event.timestamp).toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        })
-        const line = `[${timestamp}] ${sanitizeTerminalText(event.text)}`
+        const line = formatTerminalEvent(event)
         terminal.writeln(event.stream === "stderr" ? `\x1b[31m${line}\x1b[0m` : line)
       },
       clear: () => terminal.clear(),

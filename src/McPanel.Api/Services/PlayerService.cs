@@ -34,11 +34,20 @@ public sealed partial class PlayerService(
         var banned = await ReadListAsync(root, "banned-players.json", cancellationToken);
         var players = new List<PlayerView>();
 
-        foreach (var player in observed)
+        var canonicalProfiles = whitelist.Profiles.Concat(operators.Profiles).Concat(banned.Profiles)
+            .Concat(observed.Where(player => ValidUuidOrNull(player.Uuid) is not null)
+                .Select(player => new Profile(player.Name, ValidUuidOrNull(player.Uuid))))
+            .ToList();
+        foreach (var player in observed.Where(player => player.Uuid is not null))
             GetOrAdd(players, new Profile(player.Name, ValidUuidOrNull(player.Uuid))).Online = player.Online;
         foreach (var profile in whitelist.Profiles) GetOrAdd(players, profile).Whitelisted = true;
         foreach (var profile in operators.Profiles) GetOrAdd(players, profile).Operator = true;
         foreach (var profile in banned.Profiles) GetOrAdd(players, profile).Banned = true;
+        foreach (var player in observed.Where(player => player.Uuid is null))
+        {
+            if (canonicalProfiles.Any(profile => MinecraftLogText.IsLegacyAnsiLeakOf(player.Name, profile.Name))) continue;
+            GetOrAdd(players, new Profile(player.Name, null)).Online = player.Online;
+        }
 
         return players.OrderBy(player => player.Name, StringComparer.OrdinalIgnoreCase)
             .Select(player => player.ToDto()).ToList();

@@ -20,14 +20,17 @@ vi.mock("@/lib/api", () => ({
 }))
 
 const mockedApi = vi.mocked(api)
+const known = { catalogued: true, compatibility: "Supported" as const, supportedRanges: [{ from: "1.2.5" }] }
 const properties: ServerPropertiesDto = {
   revision: "revision-1",
+  minecraftVersion: "1.21.8",
   entries: [
-    { key: "server-port", value: "25565", type: "text", sensitive: false },
-    { key: "white-list", value: "false", type: "boolean", sensitive: false },
-    { key: "rcon.password", value: "swordfish", type: "text", sensitive: true },
-    { key: "plugin_unknown", value: "kept", type: "text", sensitive: false },
+    { key: "server-port", value: "25565", type: "integer", sensitive: false, section: "Network & status", ...known },
+    { key: "white-list", value: "false", type: "boolean", sensitive: false, section: "Players & permissions", ...known },
+    { key: "rcon.password", value: "swordfish", type: "text", sensitive: true, section: "Remote administration", ...known },
+    { key: "plugin_unknown", value: "kept", type: "text", sensitive: false, section: "Other", catalogued: false, compatibility: "UnknownVersion", supportedRanges: [] },
   ],
+  available: [],
 }
 const runtime: RuntimeConfigurationDto = {
   initialMemoryMb: 2048,
@@ -89,7 +92,35 @@ describe("ServerPropertiesPage", () => {
         "rcon.password": "swordfish",
         plugin_unknown: "kept",
       },
+      acknowledgedIncompatibleKeys: [],
     }))
+  })
+
+  it("adds compatible properties and acknowledges out-of-range properties", async () => {
+    const available = [
+      { key: "simulation-distance", suggestedValue: "10", type: "integer" as const, sensitive: false, section: "Performance" as const, compatibility: "Supported" as const, supportedRanges: [{ from: "1.18" }] },
+      { key: "accepts-transfers", suggestedValue: "false", type: "boolean" as const, sensitive: false, section: "Network & status" as const, compatibility: "IntroducedLater" as const, supportedRanges: [{ from: "1.20.5" }] },
+    ]
+    mockedApi.properties.mockResolvedValue({ ...properties, minecraftVersion: "1.20.4", available })
+    mockedApi.saveProperties.mockImplementation(async () => ({ ...properties, revision: "revision-2", minecraftVersion: "1.20.4", available, entries: properties.entries }))
+    const user = userEvent.setup()
+    renderPage("properties")
+
+    await user.click(await screen.findByRole("button", { name: "Add property" }))
+    await user.click(screen.getByText("Simulation distance"))
+    expect(screen.getByLabelText("Simulation distance")).toHaveValue("10")
+
+    await user.click(screen.getByRole("button", { name: "Add property" }))
+    await user.click(screen.getByText("Accepts transfers"))
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent("1.20.5 and later")
+    await user.click(screen.getByRole("button", { name: "Add anyway" }))
+    expect(screen.getByRole("switch", { name: "Accepts transfers" })).not.toBeChecked()
+    await user.click(screen.getByRole("button", { name: "Save changes" }))
+
+    await waitFor(() => expect(mockedApi.saveProperties).toHaveBeenCalledWith("server-1", expect.objectContaining({
+      acknowledgedIncompatibleKeys: ["accepts-transfers"],
+      values: expect.objectContaining({ "simulation-distance": "10", "accepts-transfers": "false" }),
+    })))
   })
 })
 
@@ -135,7 +166,7 @@ describe("RuntimeSettingsPage", () => {
     await waitFor(() => expect(aikar).toBeChecked())
   })
 
-  it("clamps Xms when Xmx is lowered and leaves it unchanged when Xmx is raised", async () => {
+  it("synchronizes Xms whenever Xmx moves in either direction", async () => {
     mockedApi.runtime.mockResolvedValue({ ...runtime, initialMemoryMb: 4096, maximumMemoryMb: 4096 })
     const user = userEvent.setup()
     renderPage("runtime")
@@ -148,6 +179,6 @@ describe("RuntimeSettingsPage", () => {
     await waitFor(() => expect(xms).toHaveValue(3584))
 
     fireEvent.change(slider, { target: { value: "4096" } })
-    await waitFor(() => expect(xms).toHaveValue(3584))
+    await waitFor(() => expect(xms).toHaveValue(4096))
   })
 })

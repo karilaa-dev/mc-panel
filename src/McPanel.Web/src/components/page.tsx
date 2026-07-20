@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 
-export function Page({ title, description, actions, children }: { title: string; description?: string; actions?: ReactNode; children: ReactNode }) {
+export function Page({ title, description, actions, children }: { title: ReactNode; description?: string; actions?: ReactNode; children: ReactNode }) {
   return (
     <div className="mx-auto flex w-full max-w-[96rem] flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">

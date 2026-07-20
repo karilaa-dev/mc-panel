@@ -11,6 +11,16 @@ public sealed class PlayerServiceTests
 {
     private const string PlayerUuid = "069a79f4-44e9-4726-a5be-fca90e38aaf5";
 
+    [Fact]
+    public void Minecraft_log_sanitizer_removes_paper_color_sequences_before_player_parsing()
+    {
+        var raw = "[Server thread/INFO]: \u001b[38;5;11mKaRiLaA\u001b[0m joined the game";
+
+        Assert.Equal("[Server thread/INFO]: KaRiLaA joined the game", MinecraftLogText.SanitizeForParsing(raw));
+        Assert.True(MinecraftLogText.IsLegacyAnsiLeakOf("11mKaRiLaA", "KaRiLaA"));
+        Assert.False(MinecraftLogText.IsLegacyAnsiLeakOf("OtherKaRiLaA", "KaRiLaA"));
+    }
+
     [Theory]
     [InlineData("whitelist")]
     [InlineData("op")]

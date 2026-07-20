@@ -128,6 +128,7 @@ public sealed class ServerQueryService(
         }
         catch { }
         return new(server.Id, server.Name, server.Kind, server.Version, server.State, server.Port, server.MemoryMb,
-            playerCount, maxPlayers, runtime.CpuPercent, runtime.MemoryUsedMb, runtime.UptimeSeconds, server.RestartRequired, server.StartOnBoot);
+            playerCount, maxPlayers, runtime.CpuPercent, runtime.MemoryUsedMb, runtime.UptimeSeconds, server.RestartRequired, server.StartOnBoot,
+            server.IconRevision);
     }
 }

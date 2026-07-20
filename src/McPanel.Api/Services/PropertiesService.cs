@@ -103,11 +103,11 @@ public sealed class PropertiesService(
     public async Task<ServerPropertiesDto> ReadPropertiesAsync(Guid id, CancellationToken cancellationToken)
     {
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
-        _ = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw PanelProblems.NotFound("Server");
+        var server = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw PanelProblems.NotFound("Server");
         var file = Path.Combine(paths.Instance(id), "server.properties");
         var bytes = File.Exists(file) ? await File.ReadAllBytesAsync(file, cancellationToken) : [];
         var text = DecodeUtf8(bytes);
-        return PropertiesDto(text, Revision(bytes));
+        return PropertiesDto(text, Revision(bytes), server.Version);
     }
 
     public async Task<ServerPropertiesDto> SavePropertiesAsync(Guid id, SaveServerPropertiesRequest request, CancellationToken cancellationToken)
@@ -129,11 +129,22 @@ public sealed class PropertiesService(
         var originalText = DecodeUtf8(originalBytes);
         var document = fileExists ? PropertiesDocument.Parse(originalText) : PropertiesDocument.Empty();
         var existing = document.Entries().ToDictionary(entry => entry.Key, entry => entry.Key, StringComparer.OrdinalIgnoreCase);
+        var acknowledged = new HashSet<string>(request.AcknowledgedIncompatibleKeys ?? [], StringComparer.OrdinalIgnoreCase);
         if (request.Values.Keys.Distinct(StringComparer.OrdinalIgnoreCase).Count() != request.Values.Count)
             throw PanelProblems.Validation("Property keys cannot be repeated with different casing.");
         foreach (var (key, value) in request.Values)
         {
-            if (!existing.TryGetValue(key, out var canonicalKey)) throw PanelProblems.Validation($"Property '{key}' does not exist in server.properties.");
+            if (string.IsNullOrWhiteSpace(key)) throw PanelProblems.Validation("Property keys cannot be empty.");
+            if (!existing.TryGetValue(key, out var canonicalKey))
+            {
+                var definition = ServerPropertyCatalog.Find(key) ??
+                    throw PanelProblems.Validation($"Property '{key}' is not in the server property catalog.");
+                var metadata = ServerPropertyCatalog.Describe(definition, server.Version);
+                if (metadata.Compatibility != PropertyCompatibility.Supported && !acknowledged.Contains(definition.Key))
+                    throw new PanelException(400, "PROPERTY_VERSION_ACKNOWLEDGEMENT_REQUIRED",
+                        $"Property '{definition.Key}' is not verified for Minecraft {server.Version}. Acknowledge its supported version range before adding it.");
+                canonicalKey = definition.Key;
+            }
             document.Set(canonicalKey, value ?? throw PanelProblems.Validation($"Property '{key}' cannot be null."));
         }
 
@@ -157,7 +168,7 @@ public sealed class PropertiesService(
         if (changed) await SaveWithAtomicPropertiesAsync(db, file, updatedText, fileExists, cancellationToken);
         else await db.SaveChangesAsync(cancellationToken);
         var updatedBytes = new UTF8Encoding(false).GetBytes(updatedText);
-        return PropertiesDto(updatedText, Revision(updatedBytes));
+        return PropertiesDto(updatedText, Revision(updatedBytes), server.Version);
     }
 
     public async Task<RuntimeConfigurationDto> ReadRuntimeAsync(Guid id, CancellationToken cancellationToken)
@@ -315,15 +326,31 @@ public sealed class PropertiesService(
 
     private static string Revision(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
-    private static ServerPropertiesDto PropertiesDto(string text, string revision)
+    private static ServerPropertiesDto PropertiesDto(string text, string revision, string minecraftVersion)
     {
         var document = PropertiesDocument.Parse(text);
-        var entries = document.Entries().Select(entry => new ServerPropertyDto(
-            entry.Key,
-            entry.Value,
-            entry.Value is "true" or "false" ? "boolean" : "text",
-            IsSensitive(entry.Key))).ToList();
-        return new ServerPropertiesDto(revision, entries);
+        var documentEntries = document.Entries();
+        var present = new HashSet<string>(documentEntries.Select(entry => entry.Key), StringComparer.OrdinalIgnoreCase);
+        var entries = documentEntries.Select(entry =>
+        {
+            var definition = ServerPropertyCatalog.Find(entry.Key);
+            if (definition is null)
+                return new ServerPropertyDto(entry.Key, entry.Value,
+                    entry.Value is "true" or "false" ? "boolean" : "text",
+                    IsSensitive(entry.Key), "Other", false, PropertyCompatibility.UnknownVersion, []);
+            var metadata = ServerPropertyCatalog.Describe(definition, minecraftVersion);
+            return new ServerPropertyDto(entry.Key, entry.Value, definition.Type, definition.Sensitive,
+                definition.Section, true, metadata.Compatibility, definition.SupportedRanges);
+        }).ToList();
+        var available = ServerPropertyCatalog.Definitions
+            .Where(definition => !present.Contains(definition.Key))
+            .Select(definition =>
+            {
+                var metadata = ServerPropertyCatalog.Describe(definition, minecraftVersion);
+                return new ServerPropertyDefinitionDto(definition.Key, metadata.SuggestedValue, definition.Type,
+                    definition.Sensitive, definition.Section, metadata.Compatibility, definition.SupportedRanges);
+            }).ToList();
+        return new ServerPropertiesDto(revision, minecraftVersion, entries, available);
     }
 
     private static bool IsSensitive(string key) =>

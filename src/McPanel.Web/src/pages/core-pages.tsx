@@ -19,8 +19,9 @@ import {
   MEMORY_STEP_MB,
   memoryLimitMb,
 } from "@/lib/memory-allocation"
-import type { RuntimeConfigurationDto, ServerConfigurationDto, ServerKind, ServerPropertiesDto, ServerState } from "@/lib/contracts"
+import type { RuntimeConfigurationDto, ServerConfigurationDto, ServerKind, ServerPropertiesDto, ServerPropertyDefinitionDto, ServerPropertyDto, ServerState } from "@/lib/contracts"
 import { Page } from "@/components/page"
+import { ServerAvatar, ServerIconEditor } from "@/components/server-icon"
 import { StatusBadge } from "@/components/status-badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
@@ -28,10 +29,12 @@ import {
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
@@ -72,7 +75,7 @@ export function DashboardPage() {
   const serversSection = <section aria-labelledby="servers-heading" className="flex flex-col gap-4">
     <h2 id="servers-heading" className="text-lg font-semibold">Servers</h2>
     {serversLoading ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-48" />)}</div> : servers?.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{servers.map((server) => <Card key={server.id}>
-      <CardHeader><CardTitle>{server.name}</CardTitle><CardDescription>{server.kind} · Minecraft {server.version}</CardDescription><CardAction><StatusBadge state={server.state} /></CardAction></CardHeader>
+      <CardHeader><div className="flex items-center gap-3"><ServerAvatar server={server} className="size-10" /><div className="min-w-0"><CardTitle className="truncate">{server.name}</CardTitle><CardDescription>{server.kind} · Minecraft {server.version}</CardDescription></div></div><CardAction><StatusBadge state={server.state} /></CardAction></CardHeader>
       <CardContent className="grid grid-cols-2 gap-4"><div><p className="text-xs text-muted-foreground">Players</p><p className="font-medium">{server.playerCount} / {server.maxPlayers}</p></div><div><p className="text-xs text-muted-foreground">Memory</p><p className="font-medium">{server.memoryUsedMb.toFixed(0)} / {server.memoryMb} MiB</p></div><div><p className="text-xs text-muted-foreground">Address</p><p className="font-medium">:{server.port}</p></div><div><p className="text-xs text-muted-foreground">Uptime</p><p className="font-medium">{duration(server.uptimeSeconds)}</p></div></CardContent>
       <CardFooter><Button variant="ghost" render={<Link to={`/servers/${server.id}`} />}>Manage<ArrowRightIcon data-icon="inline-end" /></Button></CardFooter>
     </Card>)}</div> : <Empty className="border"><EmptyHeader><EmptyMedia variant="icon"><ServerIcon /></EmptyMedia><EmptyTitle>No servers yet</EmptyTitle><EmptyDescription>Create Vanilla, Paper, or Fabric without leaving the panel.</EmptyDescription></EmptyHeader><EmptyContent><Button render={<Link to="/create" />}><PlusIcon />Create your first server</Button></EmptyContent></Empty>}
@@ -208,8 +211,9 @@ export function ServerOverviewPage() {
   const canDelete = server.state === "Stopped" || server.state === "Error" || server.state === "Crashed"
   const lifecycleAction = running ? "stop" : canStart ? "start" : undefined
   const lifecycleBusy = server.state === "Installing" || server.state === "Starting" || server.state === "Stopping" || server.state === "BackingUp" || server.state === "Updating"
-  return <Page title={server.name} description={`${server.kind} · Minecraft ${server.version}`} actions={<><Button variant="ghost" disabled={lifecycle.isPending || !stopped} title={stopped ? undefined : "Updates require a stopped server."} onClick={() => lifecycle.mutate("update")}>Update</Button><Button variant="outline" disabled={lifecycle.isPending || !running} title={running ? undefined : "Restart is available while the server is running."} onClick={() => lifecycle.mutate("restart")}><RotateCwIcon data-icon="inline-start" />Restart</Button><Button aria-label={lifecycleStateLabels[server.state]} variant={running ? "outline" : "default"} disabled={lifecycle.isPending || !lifecycleAction} title={lifecycleAction ? undefined : `No lifecycle action is available while the server is ${server.state.toLowerCase()}.`} onClick={() => lifecycleAction && lifecycle.mutate(lifecycleAction)}>{lifecycle.isPending || lifecycleBusy ? <Spinner data-icon="inline-start" /> : running ? <SquareIcon data-icon="inline-start" /> : canStart ? <CheckIcon data-icon="inline-start" /> : null}{lifecycleStateLabels[server.state]}</Button></>}>
+  return <Page title={<span className="flex items-center gap-3"><ServerAvatar server={server} className="size-10" /><span>{server.name}</span></span>} description={`${server.kind} · Minecraft ${server.version}`} actions={<><Button variant="ghost" disabled={lifecycle.isPending || !stopped} title={stopped ? undefined : "Updates require a stopped server."} onClick={() => lifecycle.mutate("update")}>Update</Button><Button variant="outline" disabled={lifecycle.isPending || !running} title={running ? undefined : "Restart is available while the server is running."} onClick={() => lifecycle.mutate("restart")}><RotateCwIcon data-icon="inline-start" />Restart</Button><Button aria-label={lifecycleStateLabels[server.state]} variant={running ? "outline" : "default"} disabled={lifecycle.isPending || !lifecycleAction} title={lifecycleAction ? undefined : `No lifecycle action is available while the server is ${server.state.toLowerCase()}.`} onClick={() => lifecycleAction && lifecycle.mutate(lifecycleAction)}>{lifecycle.isPending || lifecycleBusy ? <Spinner data-icon="inline-start" /> : running ? <SquareIcon data-icon="inline-start" /> : canStart ? <CheckIcon data-icon="inline-start" /> : null}{lifecycleStateLabels[server.state]}</Button></>}>
     {server.restartRequired && <Alert><AlertTriangleIcon /><AlertTitle>Restart required</AlertTitle><AlertDescription>Saved settings will take effect after the next graceful restart.</AlertDescription></Alert>}
+    <Card><CardHeader><CardTitle>Server icon</CardTitle><CardDescription>Shown throughout the panel and advertised to Minecraft clients.</CardDescription></CardHeader><CardContent><ServerIconEditor server={server} disabled={!(["Running", "Stopped", "Crashed"] as ServerState[]).includes(server.state)} /></CardContent></Card>
     <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><MetricCard label="State" value={server.state} icon={CircleGaugeIcon} /><MetricCard label="Players" value={`${server.playerCount} / ${server.maxPlayers}`} icon={UsersIcon} /><MetricCard label="CPU" value={`${server.cpuPercent.toFixed(0)}%`} icon={CpuIcon} progress={server.cpuPercent} /><MetricCard label="Memory" value={`${server.memoryUsedMb.toFixed(0)} / ${server.memoryMb} MiB`} icon={MemoryStickIcon} progress={server.memoryUsedMb / server.memoryMb * 100} /></section>
     <Card><CardHeader><CardTitle>Connection and runtime</CardTitle><CardAction><StatusBadge state={server.state} /></CardAction></CardHeader><CardContent className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4"><div><p className="text-xs text-muted-foreground">Connection</p><p className="font-medium">Host address:{server.port}</p></div><div><p className="text-xs text-muted-foreground">Uptime</p><p className="font-medium">{duration(server.uptimeSeconds)}</p></div><div><p className="text-xs text-muted-foreground">Server build</p><p className="font-medium">{server.kind} {server.version}</p></div><div><p className="text-xs text-muted-foreground">Maximum RAM</p><p className="font-medium">{(server.memoryMb / 1024).toFixed(1)} GiB</p></div></CardContent></Card>
     {(canKill || canDelete) && <Card><CardHeader><CardTitle>Danger zone</CardTitle><CardDescription>Force-kill is only for an unresponsive process. Deletion permanently removes the managed server files and backups.</CardDescription></CardHeader><CardContent className="flex flex-wrap gap-2">{canKill && <AlertDialog><AlertDialogTrigger render={<Button variant="destructive" />}>Force-kill process</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Force-kill {server.name}?</AlertDialogTitle><AlertDialogDescription>This skips Minecraft’s graceful save and shutdown path. Unsaved world data may be lost or corrupted.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => kill.mutate()}>Force-kill</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}{canDelete && <AlertDialog><AlertDialogTrigger render={<Button variant="destructive" />}><Trash2Icon data-icon="inline-start" />Delete server</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete {server.name}?</AlertDialogTitle><AlertDialogDescription>The server must not be running. Its panel-managed server files and backups will both be permanently removed.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => remove.mutate()}>Delete server</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}</CardContent></Card>}
@@ -219,6 +223,12 @@ export function ServerOverviewPage() {
 function humanizePropertyKey(key: string) {
   const text = key.replace(/[-_.]+/g, " ").trim().toLowerCase()
   return text ? text[0].toUpperCase() + text.slice(1) : key
+}
+
+const propertySections = ["General", "World", "Gameplay", "Players & permissions", "Network & status", "Security", "Resource packs", "Remote administration", "Performance", "Other"] as const
+
+function supportedRange(ranges: Array<{ from: string; to?: string | null }>) {
+  return ranges.map((range) => range.to ? `${range.from}–${range.to}` : `${range.from} and later`).join(", ")
 }
 
 export function ServerPropertiesPage() {
@@ -232,12 +242,19 @@ export function ServerPropertiesPage() {
 function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: string; serverState: ServerState; initial: ServerPropertiesDto }) {
   const queryClient = useQueryClient()
   const [search, setSearch] = useState("")
+  const [entries, setEntries] = useState<ServerPropertyDto[]>(() => initial.entries)
   const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries(initial.entries.map((entry) => [entry.key, entry.value])))
   const [revealed, setRevealed] = useState<Set<string>>(() => new Set())
+  const [addOpen, setAddOpen] = useState(false)
+  const [pendingIncompatible, setPendingIncompatible] = useState<ServerPropertyDefinitionDto>()
+  const [acknowledged, setAcknowledged] = useState<Set<string>>(() => new Set())
   const canSave = serverState === "Stopped" || serverState === "Running" || serverState === "Crashed"
-  const filtered = initial.entries.filter((entry) => `${entry.key} ${humanizePropertyKey(entry.key)}`.toLowerCase().includes(search.trim().toLowerCase()))
+  const normalizedSearch = search.trim().toLowerCase()
+  const filtered = entries.filter((entry) => `${entry.key} ${humanizePropertyKey(entry.key)} ${entry.section}`.toLowerCase().includes(normalizedSearch))
+  const groupedEntries = propertySections.map((section) => ({ section, entries: filtered.filter((entry) => entry.section === section) })).filter((group) => group.entries.length)
+  const availableGroups = propertySections.map((section) => ({ section, definitions: initial.available.filter((definition) => definition.section === section && !(definition.key in values)) })).filter((group) => group.definitions.length)
   const save = useMutation({
-    mutationFn: () => api.saveProperties(serverId, { revision: initial.revision, values }),
+    mutationFn: () => api.saveProperties(serverId, { revision: initial.revision, values, acknowledgedIncompatibleKeys: [...acknowledged] }),
     onSuccess: (saved) => {
       queryClient.setQueryData(["properties", serverId], saved)
       void queryClient.invalidateQueries({ queryKey: ["server", serverId] })
@@ -255,24 +272,61 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
     else next.add(key)
     return next
   })
-  return <Page title="Server properties" description="Every effective option currently present in server.properties, in file order." actions={<Button disabled={save.isPending || !canSave} title={canSave ? undefined : `Properties cannot be saved while the server is ${serverState.toLowerCase()}.`} onClick={() => save.mutate()}>{save.isPending && <Spinner data-icon="inline-start" />}Save changes</Button>}>
+  const addProperty = (definition: ServerPropertyDefinitionDto, acknowledge = false) => {
+    const entry: ServerPropertyDto = { ...definition, value: definition.suggestedValue, catalogued: true }
+    setEntries((current) => [...current, entry])
+    setValues((current) => ({ ...current, [definition.key]: definition.suggestedValue }))
+    if (acknowledge) setAcknowledged((current) => new Set(current).add(definition.key))
+    setPendingIncompatible(undefined)
+    setAddOpen(false)
+  }
+  const chooseProperty = (definition: ServerPropertyDefinitionDto) => {
+    if (definition.compatibility === "Supported") addProperty(definition)
+    else { setAddOpen(false); setPendingIncompatible(definition) }
+  }
+  const propertyField = (entry: ServerPropertyDto) => {
+    const id = `property-${entry.key}`
+    const isRevealed = revealed.has(entry.key)
+    return <Field key={entry.key} orientation={entry.type === "boolean" ? "horizontal" : "responsive"}>
+      <FieldContent>
+        <FieldLabel htmlFor={id}>{humanizePropertyKey(entry.key)}</FieldLabel>
+        <FieldDescription className="flex flex-wrap items-center gap-2">
+          <code>{entry.key}</code>
+          {entry.compatibility !== "Supported" && entry.catalogued && <Badge variant="outline">Supported {supportedRange(entry.supportedRanges)}</Badge>}
+          {!entry.catalogued && <Badge variant="outline">Uncatalogued</Badge>}
+        </FieldDescription>
+      </FieldContent>
+      {entry.type === "boolean"
+        ? <Switch id={id} checked={values[entry.key] === "true"} onCheckedChange={(checked) => update(entry.key, String(checked))} />
+        : entry.sensitive
+          ? <InputGroup className="md:max-w-lg"><InputGroupInput id={id} type={isRevealed ? "text" : "password"} value={values[entry.key] ?? ""} onChange={(event) => update(entry.key, event.target.value)} /><InputGroupAddon align="inline-end"><InputGroupButton size="icon-xs" aria-label={`${isRevealed ? "Hide" : "Reveal"} ${humanizePropertyKey(entry.key)}`} onClick={() => toggleReveal(entry.key)}>{isRevealed ? <EyeOffIcon /> : <EyeIcon />}</InputGroupButton></InputGroupAddon></InputGroup>
+          : <Input id={id} inputMode={entry.type === "integer" ? "numeric" : undefined} className="md:max-w-lg" value={values[entry.key] ?? ""} onChange={(event) => update(entry.key, event.target.value)} />}
+    </Field>
+  }
+  return <Page title="Server properties" description={`Minecraft ${initial.minecraftVersion} properties, grouped by purpose while preserving file order.`} actions={<><Button variant="outline" disabled={!canSave || !availableGroups.length} onClick={() => setAddOpen(true)}><PlusIcon data-icon="inline-start" />Add property</Button><Button disabled={save.isPending || !canSave} title={canSave ? undefined : `Properties cannot be saved while the server is ${serverState.toLowerCase()}.`} onClick={() => save.mutate()}>{save.isPending && <Spinner data-icon="inline-start" />}Save changes</Button></>}>
     <InputGroup className="max-w-md">
       <InputGroupAddon><SearchIcon /><span className="sr-only">Search</span></InputGroupAddon>
       <InputGroupInput aria-label="Search server properties" placeholder="Search properties" value={search} onChange={(event) => setSearch(event.target.value)} />
     </InputGroup>
-    <Card>
-      <CardHeader><CardTitle>server.properties</CardTitle><CardDescription>Labels are formatted for readability. The exact Minecraft key appears underneath each label.</CardDescription></CardHeader>
-      <CardContent>
-        {filtered.length ? <FieldGroup>{filtered.map((entry) => {
-          const id = `property-${entry.key}`
-          const isRevealed = revealed.has(entry.key)
-          return <Field key={entry.key} orientation={entry.type === "boolean" ? "horizontal" : "responsive"}>
-            <FieldContent><FieldLabel htmlFor={id}>{humanizePropertyKey(entry.key)}</FieldLabel><FieldDescription><code>{entry.key}</code></FieldDescription></FieldContent>
-            {entry.type === "boolean" ? <Switch id={id} checked={values[entry.key] === "true"} onCheckedChange={(checked) => update(entry.key, String(checked))} /> : entry.sensitive ? <InputGroup className="md:max-w-lg"><InputGroupInput id={id} type={isRevealed ? "text" : "password"} value={values[entry.key] ?? ""} onChange={(event) => update(entry.key, event.target.value)} /><InputGroupAddon align="inline-end"><InputGroupButton size="icon-xs" aria-label={`${isRevealed ? "Hide" : "Reveal"} ${humanizePropertyKey(entry.key)}`} onClick={() => toggleReveal(entry.key)}>{isRevealed ? <EyeOffIcon /> : <EyeIcon />}</InputGroupButton></InputGroupAddon></InputGroup> : <Input id={id} className="md:max-w-lg" value={values[entry.key] ?? ""} onChange={(event) => update(entry.key, event.target.value)} />}
-          </Field>
-        })}</FieldGroup> : <Empty><EmptyHeader><EmptyTitle>No matching properties</EmptyTitle><EmptyDescription>Try a different key or label.</EmptyDescription></EmptyHeader></Empty>}
-      </CardContent>
-    </Card>
+    {groupedEntries.length ? groupedEntries.map((group) => <Card key={group.section}>
+      <CardHeader><CardTitle>{group.section}</CardTitle><CardDescription>{group.entries.length} {group.entries.length === 1 ? "property" : "properties"}</CardDescription></CardHeader>
+      <CardContent><FieldGroup>{group.entries.map(propertyField)}</FieldGroup></CardContent>
+    </Card>) : <Empty><EmptyHeader><EmptyTitle>No matching properties</EmptyTitle><EmptyDescription>Try a different key, label, or section.</EmptyDescription></EmptyHeader></Empty>}
+    <CommandDialog open={addOpen} onOpenChange={setAddOpen} title="Add server property" description={`Search properties that are not currently present in server.properties for Minecraft ${initial.minecraftVersion}.`} showCloseButton>
+      <Command><CommandInput placeholder="Search available properties" />
+        <CommandList>
+          <CommandEmpty>No available property found.</CommandEmpty>
+          {availableGroups.map((group) => <CommandGroup key={group.section} heading={group.section}>
+            {group.definitions.map((definition) => <CommandItem key={definition.key} value={`${definition.key} ${humanizePropertyKey(definition.key)} ${group.section}`} onSelect={() => chooseProperty(definition)}>
+              <div className="flex min-w-0 flex-1 flex-col"><span>{humanizePropertyKey(definition.key)}</span><span className="truncate text-xs text-muted-foreground">{definition.key}{definition.compatibility === "Supported" ? ` · default ${definition.suggestedValue || "empty"}` : ` · supported ${supportedRange(definition.supportedRanges)}`}</span></div>
+            </CommandItem>)}
+          </CommandGroup>)}
+        </CommandList>
+      </Command>
+    </CommandDialog>
+    <AlertDialog open={Boolean(pendingIncompatible)} onOpenChange={(open) => { if (!open) setPendingIncompatible(undefined) }}>
+      <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Add a property outside its supported range?</AlertDialogTitle><AlertDialogDescription><code>{pendingIncompatible?.key}</code> is catalogued for Minecraft {pendingIncompatible ? supportedRange(pendingIncompatible.supportedRanges) : ""}, while this server uses {initial.minecraftVersion}. Minecraft may ignore it or fail to start.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => pendingIncompatible && addProperty(pendingIncompatible, true)}>Add anyway</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+    </AlertDialog>
   </Page>
 }
 
@@ -305,7 +359,7 @@ function RuntimeSettingsEditor({ serverId, serverState, serverKind, initial, jav
   const update = <K extends keyof RuntimeConfigurationDto>(key: K, value: RuntimeConfigurationDto[K]) => setForm((current) => ({ ...current, [key]: value }))
   const changeMaximum = (value: number | readonly number[]) => {
     const next = clampMemoryMb(Array.isArray(value) ? value[0] : value, memoryLimitMb)
-    setForm((current) => ({ ...current, maximumMemoryMb: next, initialMemoryMb: Math.min(current.initialMemoryMb, next) }))
+    setForm((current) => ({ ...current, maximumMemoryMb: next, initialMemoryMb: next }))
   }
   const changeAikar = (checked: boolean) => {
     if (checked && serverKind !== "Paper") setConfirmAikar(true)
@@ -314,12 +368,12 @@ function RuntimeSettingsEditor({ serverId, serverState, serverKind, initial, jav
   return <Page title="Runtime" description="Java, heap sizing, startup behavior, and JVM arguments that do not change server.properties." actions={<Button disabled={save.isPending || !canSave || !memoryValid} title={canSave ? undefined : `Runtime settings cannot be saved while the server is ${serverState.toLowerCase()}.`} onClick={() => save.mutate()}>{save.isPending && <Spinner data-icon="inline-start" />}Save changes</Button>}>
     <Card><CardHeader><CardTitle>Java and memory</CardTitle><CardDescription>The panel emits managed Xms and Xmx flags before the optional preset and your custom arguments.</CardDescription></CardHeader><CardContent><FieldGroup>
       <Field><FieldLabel>Java runtime</FieldLabel><Select items={java.map((runtime) => ({ value: runtime.id, label: `Java ${runtime.major} · ${runtime.vendor}` }))} value={form.javaRuntimeId} onValueChange={(value) => value && update("javaRuntimeId", value)}><SelectTrigger className="w-full" aria-label="Java runtime"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{java.map((runtime) => <SelectItem key={runtime.id} value={runtime.id}>Java {runtime.major} · {runtime.vendor}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>
-      <Field><FieldLabel>Maximum RAM: {(form.maximumMemoryMb / 1024).toFixed(1)} GiB</FieldLabel>{memoryLimitMb > MEMORY_MIN_MB ? <Slider aria-label="Maximum RAM" min={MEMORY_MIN_MB} max={memoryLimitMb} step={MEMORY_STEP_MB} value={[form.maximumMemoryMb]} onValueChange={changeMaximum} /> : <Input aria-label="Maximum RAM" value={`${(form.maximumMemoryMb / 1024).toFixed(1)} GiB`} disabled readOnly />}<FieldDescription>Raising Xmx leaves Xms unchanged. Lowering Xmx below Xms clamps Xms to match.</FieldDescription></Field>
+      <Field><FieldLabel>Maximum RAM: {(form.maximumMemoryMb / 1024).toFixed(1)} GiB</FieldLabel>{memoryLimitMb > MEMORY_MIN_MB ? <Slider aria-label="Maximum RAM" min={MEMORY_MIN_MB} max={memoryLimitMb} step={MEMORY_STEP_MB} value={[form.maximumMemoryMb]} onValueChange={changeMaximum} /> : <Input aria-label="Maximum RAM" value={`${(form.maximumMemoryMb / 1024).toFixed(1)} GiB`} disabled readOnly />}<FieldDescription>Moving the slider sets both maximum RAM (Xmx) and minimum RAM (Xms) to the selected value.</FieldDescription></Field>
+      <Collapsible className="group/advanced"><CollapsibleTrigger render={<Button variant="ghost" className="w-full justify-between" />}>Advanced<ChevronDownIcon className="transition-transform group-data-[panel-open]/advanced:rotate-180" /></CollapsibleTrigger><CollapsibleContent className="pt-4"><Field data-invalid={!memoryValid}><FieldLabel htmlFor="initial-memory">Minimum RAM (Xms)</FieldLabel><Input id="initial-memory" type="number" min={MEMORY_MIN_MB} max={form.maximumMemoryMb} step={MEMORY_STEP_MB} value={form.initialMemoryMb} onChange={(event) => update("initialMemoryMb", Number(event.target.value))} aria-invalid={!memoryValid} /><FieldDescription>The slider synchronizes this value; you can override it here afterward in 512 MiB increments up to Xmx.</FieldDescription>{!memoryValid && <FieldError>Enter a valid Xms value.</FieldError>}</Field></CollapsibleContent></Collapsible>
       <Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="aikar-flags">Use Aikar flags</FieldLabel><FieldDescription>Adds PaperMC’s canonical non-memory JVM preset before your custom arguments.</FieldDescription></FieldContent><Switch id="aikar-flags" checked={form.useAikarFlags} onCheckedChange={changeAikar} /></Field>
       <Field><FieldLabel htmlFor="jvm-args">Additional JVM arguments</FieldLabel><Textarea id="jvm-args" maxLength={2048} value={form.jvmArguments} onChange={(event) => update("jvmArguments", event.target.value)} /><FieldDescription>Custom arguments follow the Aikar preset. -jar, Xms/Xmx, and control characters are rejected.</FieldDescription></Field>
       <Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="start-boot">Start on panel boot</FieldLabel><FieldDescription>Servers start sequentially after MC Panel is ready.</FieldDescription></FieldContent><Switch id="start-boot" checked={form.startOnBoot} onCheckedChange={(checked) => update("startOnBoot", checked)} /></Field>
       <Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="crash-recovery">Crash recovery</FieldLabel><FieldDescription>Retry unexpected exits up to three times.</FieldDescription></FieldContent><Switch id="crash-recovery" checked={form.crashRecovery} onCheckedChange={(checked) => update("crashRecovery", checked)} /></Field>
-      <Collapsible className="group/advanced"><CollapsibleTrigger render={<Button variant="ghost" className="w-full justify-between" />}>Advanced<ChevronDownIcon className="transition-transform group-data-[panel-open]/advanced:rotate-180" /></CollapsibleTrigger><CollapsibleContent className="pt-4"><Field data-invalid={!memoryValid}><FieldLabel htmlFor="initial-memory">Minimum RAM (Xms)</FieldLabel><Input id="initial-memory" type="number" min={MEMORY_MIN_MB} max={form.maximumMemoryMb} step={MEMORY_STEP_MB} value={form.initialMemoryMb} onChange={(event) => update("initialMemoryMb", Number(event.target.value))} aria-invalid={!memoryValid} /><FieldDescription>At least 512 MiB, in 512 MiB increments, and no greater than maximum RAM.</FieldDescription>{!memoryValid && <FieldError>Enter a valid Xms value.</FieldError>}</Field></CollapsibleContent></Collapsible>
     </FieldGroup></CardContent></Card>
     <AlertDialog open={confirmAikar} onOpenChange={setConfirmAikar}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Enable Aikar flags for {serverKind}?</AlertDialogTitle><AlertDialogDescription>The preset is designed for Paper. It can be used with {serverKind}, but performance and compatibility should be tested before relying on it.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => { update("useAikarFlags", true); setConfirmAikar(false) }}>Enable flags</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </Page>

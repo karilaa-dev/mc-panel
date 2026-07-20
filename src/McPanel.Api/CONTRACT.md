@@ -34,8 +34,9 @@ them `SessionRevoked`; the bundled client immediately returns to authentication.
 | POST | `/servers/{id}/actions/{start|stop|restart|update}` | `202 Job` |
 | POST | `/servers/{id}/actions/kill` | `{confirm:true}` -> `202 Job` emergency process-tree kill |
 | POST | `/servers/{id}/{start|stop|restart|update}` | compatibility alias for bundled client |
-| GET/PUT | `/servers/{id}/properties` | ordered effective `server.properties` entries with SHA-256 revision / `{revision,values}` |
+| GET/PUT | `/servers/{id}/properties` | versioned, sectioned effective entries and available catalog definitions / `{revision,values,acknowledgedIncompatibleKeys?}` |
 | GET/PUT | `/servers/{id}/runtime` | `{initialMemoryMb,maximumMemoryMb,javaRuntimeId,jvmArguments,useAikarFlags,startOnBoot,crashRecovery}` |
+| GET/PUT/DELETE | `/servers/{id}/icon` | 64×64 PNG / multipart `file` -> `{revision}` / `204` |
 | GET/PUT | `/servers/{id}/configuration` | deprecated curated compatibility adapter |
 | GET | `/servers/{id}/console?after=&limit=` | ordered console events |
 | POST | `/servers/{id}/console` | `{command}` -> `204` |
@@ -70,10 +71,13 @@ Legacy entries below the minimum must be raised in Runtime before they can
 start. Only new, verified upstream installs are accepted; arbitrary source
 directories and URLs are never adopted.
 
-The properties API only updates keys already present in `server.properties` and
-requires the revision returned by GET. It preserves comments, blank lines,
-ordering, unknown keys, and effective last-duplicate behavior. A changed file
-is rejected with `CONFIGURATION_CHANGED`. The deprecated configuration adapter
+The properties API updates existing entries and can append missing keys from the
+checked-in historical catalog. It requires the revision returned by GET and an
+explicit acknowledgement before adding a property outside the server version's
+supported ranges. Arbitrary new keys are rejected, while uncatalogued keys that
+already exist remain editable. Comments, blank lines, ordering, unknown keys,
+and effective last-duplicate behavior are preserved. A changed file is rejected
+with `CONFIGURATION_CHANGED`. The deprecated configuration adapter
 continues to enforce its curated limits of 512 characters for the MOTD, 128 characters
 and 255 UTF-8 bytes for the world directory name, and 2,048 characters for
 additional JVM arguments. Schedule names are limited to 96 characters. Control
@@ -84,6 +88,12 @@ maximumMemoryMb`. JVM launch order is managed Xms, managed Xmx, the optional
 non-memory Aikar preset, custom JVM arguments, then managed `-jar` and `nogui`
 arguments. Custom arguments cannot contain Xms, Xmx, or other managed launch
 arguments.
+
+Server summaries include nullable `iconRevision`; clients use it for presence
+detection and cache-busted icon URLs. Icon uploads are PNG multipart payloads
+whose signature and 64×64 IHDR are validated, with a 256 KiB cap. Replacement
+and deletion use atomic file activation with database rollback. Changes made to
+a running server set `restartRequired`.
 
 `whitelist.json`, `ops.json`, and `banned-players.json` are authoritative for
 player membership. Running servers are changed through console commands;
@@ -123,6 +133,7 @@ console command. Overlapping and missed executions are not replayed.
 `JAVA_VERSION_INCOMPATIBLE`, `PORT_IN_USE`, `MEMORY_LIMIT_EXCEEDED`,
 `MEMORY_LIMIT_TOO_LOW`,
 `INSTALL_DOWNLOAD_REJECTED`, `INSTALL_CHECKSUM_FAILED`, `UPSTREAM_UNAVAILABLE`,
-`CONFIGURATION_CHANGED`, `PLAYER_NOT_FOUND`, `PLAYER_LIST_INVALID`,
+`CONFIGURATION_CHANGED`, `PROPERTY_VERSION_ACKNOWLEDGEMENT_REQUIRED`,
+`PLAYER_NOT_FOUND`, `PLAYER_LIST_INVALID`, `ICON_TOO_LARGE`,
 `PATH_OUTSIDE_SERVER`, `FILE_TOO_LARGE`, `ZIP_LIMIT_EXCEEDED`, and
 `OPERATION_FAILED`.

@@ -35,6 +35,11 @@ public static partial class ApiEndpoints
         api.MapPut("/servers/{id:guid}/properties", (Guid id, SaveServerPropertiesRequest request, PropertiesService service, CancellationToken token) => service.SavePropertiesAsync(id, request, token));
         api.MapGet("/servers/{id:guid}/runtime", (Guid id, PropertiesService service, CancellationToken token) => service.ReadRuntimeAsync(id, token));
         api.MapPut("/servers/{id:guid}/runtime", (Guid id, RuntimeConfigurationDto request, PropertiesService service, CancellationToken token) => service.SaveRuntimeAsync(id, request, token));
+        api.MapGet("/servers/{id:guid}/icon", async (Guid id, ServerIconService icons, CancellationToken token) =>
+            Results.File(await icons.GetPathAsync(id, token), "image/png"));
+        api.MapPut("/servers/{id:guid}/icon", UploadIconAsync);
+        api.MapDelete("/servers/{id:guid}/icon", async (Guid id, ServerIconService icons, CancellationToken token) =>
+        { await icons.DeleteAsync(id, token); return Results.NoContent(); });
 
         api.MapGet("/servers/{id:guid}/console", async (Guid id, long? after, int? limit, IDbContextFactory<StateDbContext> factory, ConsoleService service, CancellationToken token) =>
         {
@@ -153,6 +158,20 @@ public static partial class ApiEndpoints
         }
         var file = form.Files.GetFile("file") ?? throw PanelProblems.Validation("Multipart field 'file' is required.");
         await files.UploadAsync(id, path ?? "", file, token); return Results.NoContent();
+    }
+
+    private static async Task<IResult> UploadIconAsync(Guid id, HttpRequest request, ServerIconService icons, CancellationToken token)
+    {
+        if (!request.HasFormContentType) throw PanelProblems.Validation("Icon upload must use multipart/form-data.");
+        IFormCollection form;
+        try { form = await request.ReadFormAsync(token); }
+        catch (InvalidDataException exception) when (exception.Message.Contains("length limit", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new PanelException(413, "ICON_TOO_LARGE", "The final server icon cannot exceed 256 KiB.");
+        }
+        catch (InvalidDataException) { throw PanelProblems.Validation("The multipart form data is invalid."); }
+        var file = form.Files.GetFile("file") ?? throw PanelProblems.Validation("Multipart field 'file' is required.");
+        return Results.Ok(await icons.SaveAsync(id, file, token));
     }
 
     private static async Task EnsureServerAsync(IDbContextFactory<StateDbContext> factory, Guid id, CancellationToken token)

@@ -136,7 +136,7 @@ export const api = {
     }),
   properties: (id: string) =>
     request<ServerPropertiesDto>(`${serverPath(id)}/properties`),
-  saveProperties: (id: string, body: { revision: string; values: Record<string, string> }) =>
+  saveProperties: (id: string, body: { revision: string; values: Record<string, string>; acknowledgedIncompatibleKeys?: string[] }) =>
     request<ServerPropertiesDto>(`${serverPath(id)}/properties`, {
       method: "PUT",
       body: JSON.stringify(body),
@@ -148,6 +148,14 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+  serverIconUrl: (id: string, revision: string) =>
+    `${API_BASE}${serverPath(id)}/icon?v=${encodeURIComponent(revision)}`,
+  uploadServerIcon: (id: string, file: File) => {
+    const body = new FormData()
+    body.set("file", file)
+    return request<{ revision: string }>(`${serverPath(id)}/icon`, { method: "PUT", body })
+  },
+  deleteServerIcon: (id: string) => request<void>(`${serverPath(id)}/icon`, { method: "DELETE" }),
 
   host: () => request<HostStatusDto>("/system/status"),
   systemInfo: () => request<SystemInfoDto>("/system/info"),

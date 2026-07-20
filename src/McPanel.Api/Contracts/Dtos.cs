@@ -16,7 +16,7 @@ public sealed record AddJavaRequest(string Path);
 public sealed record ServerSummaryDto(
     Guid Id, string Name, ServerKind Kind, string Version, ServerState State, int Port, int MemoryMb,
     int PlayerCount, int MaxPlayers, double CpuPercent, double MemoryUsedMb, long UptimeSeconds,
-    bool RestartRequired, bool StartOnBoot);
+    bool RestartRequired, bool StartOnBoot, string? IconRevision);
 
 public sealed record CreateServerRequest(
     [property: Required, StringLength(48, MinimumLength = 2)] string Name,
@@ -38,12 +38,24 @@ public sealed record ServerConfigurationDto(
     int SimulationDistance, string WorldName, int Port, int MemoryMb, string JavaRuntimeId,
     string JvmArguments, bool StartOnBoot, bool CrashRecovery);
 
-public sealed record ServerPropertyDto(string Key, string Value, string Type, bool Sensitive);
-public sealed record ServerPropertiesDto(string Revision, IReadOnlyList<ServerPropertyDto> Entries);
-public sealed record SaveServerPropertiesRequest(string Revision, IReadOnlyDictionary<string, string> Values);
+public enum PropertyCompatibility { Supported, IntroducedLater, RemovedBefore, UnknownVersion }
+public sealed record PropertyVersionRangeDto(string From, string? To);
+public sealed record ServerPropertyDto(
+    string Key, string Value, string Type, bool Sensitive, string Section, bool Catalogued,
+    PropertyCompatibility Compatibility, IReadOnlyList<PropertyVersionRangeDto> SupportedRanges);
+public sealed record ServerPropertyDefinitionDto(
+    string Key, string SuggestedValue, string Type, bool Sensitive, string Section,
+    PropertyCompatibility Compatibility, IReadOnlyList<PropertyVersionRangeDto> SupportedRanges);
+public sealed record ServerPropertiesDto(
+    string Revision, string MinecraftVersion, IReadOnlyList<ServerPropertyDto> Entries,
+    IReadOnlyList<ServerPropertyDefinitionDto> Available);
+public sealed record SaveServerPropertiesRequest(
+    string Revision, IReadOnlyDictionary<string, string> Values,
+    IReadOnlyCollection<string>? AcknowledgedIncompatibleKeys = null);
 public sealed record RuntimeConfigurationDto(
     int InitialMemoryMb, int MaximumMemoryMb, string JavaRuntimeId, string JvmArguments,
     bool UseAikarFlags, bool StartOnBoot, bool CrashRecovery);
+public sealed record ServerIconDto(string Revision);
 
 public sealed record FileEntryDto(string Name, string Path, bool IsDirectory, long Size, DateTimeOffset ModifiedAt);
 public sealed record FileContentDto(string Content);

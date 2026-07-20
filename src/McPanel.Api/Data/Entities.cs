@@ -36,6 +36,7 @@ public sealed class ServerEntity
     public bool UseAikarFlags { get; set; }
     public bool StartOnBoot { get; set; }
     public bool CrashRecovery { get; set; } = true;
+    [MaxLength(64)] public string? IconRevision { get; set; }
     public DateTimeOffset EulaAcceptedAt { get; set; }
     public bool RestartRequired { get; set; }
     public int CrashAttempts { get; set; }

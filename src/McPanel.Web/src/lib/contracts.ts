@@ -46,6 +46,7 @@ export interface ServerSummaryDto {
   uptimeSeconds: number
   restartRequired: boolean
   startOnBoot: boolean
+  iconRevision?: string | null
 }
 
 export interface HostStatusDto {
@@ -90,13 +91,33 @@ export interface ServerConfigurationDto {
 export interface ServerPropertyDto {
   key: string
   value: string
-  type: "boolean" | "text"
+  type: "boolean" | "integer" | "text"
   sensitive: boolean
+  section: PropertySection
+  catalogued: boolean
+  compatibility: PropertyCompatibility
+  supportedRanges: PropertyVersionRangeDto[]
 }
 
+export type PropertyCompatibility = "Supported" | "IntroducedLater" | "RemovedBefore" | "UnknownVersion"
+export type PropertySection =
+  | "General" | "World" | "Gameplay" | "Players & permissions" | "Network & status"
+  | "Security" | "Resource packs" | "Remote administration" | "Performance" | "Other"
+export interface PropertyVersionRangeDto { from: string; to?: string | null }
+export interface ServerPropertyDefinitionDto {
+  key: string
+  suggestedValue: string
+  type: "boolean" | "integer" | "text"
+  sensitive: boolean
+  section: PropertySection
+  compatibility: PropertyCompatibility
+  supportedRanges: PropertyVersionRangeDto[]
+}
 export interface ServerPropertiesDto {
   revision: string
+  minecraftVersion: string
   entries: ServerPropertyDto[]
+  available: ServerPropertyDefinitionDto[]
 }
 
 export interface RuntimeConfigurationDto {

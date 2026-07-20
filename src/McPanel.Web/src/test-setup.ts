@@ -15,6 +15,11 @@ Object.defineProperty(globalThis, "ResizeObserver", {
   value: ResizeObserverStub,
 })
 
+Object.defineProperty(Element.prototype, "scrollIntoView", {
+  configurable: true,
+  value: () => undefined,
+})
+
 Object.defineProperty(window, "matchMedia", {
   configurable: true,
   value: (query: string) => ({

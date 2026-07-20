@@ -19,6 +19,7 @@ public sealed partial class ConsoleService(
     ILogger<ConsoleService> logger)
 {
     private readonly ConcurrentDictionary<Guid, List<WaitRegistration>> _waiters = new();
+    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _playerLocks = new();
     private long _appendCount;
 
     public async Task<ConsoleEventDto> AppendAsync(Guid serverId, string stream, string text, CancellationToken cancellationToken = default)
@@ -35,7 +36,7 @@ public sealed partial class ConsoleService(
         }
         var dto = new ConsoleEventDto(serverId, entity.Sequence, entity.Timestamp, entity.Stream, entity.Level, entity.Text);
         SignalWaiters(dto);
-        _ = TrackPlayerAsync(dto);
+        await TrackPlayerAsync(dto, cancellationToken);
         try { await audience.PublishAsync(group => hub.Clients.Group(group).SendAsync("ConsoleBatch", new[] { dto }, cancellationToken), cancellationToken); }
         catch (Exception exception) when (exception is not OperationCanceledException) { logger.LogDebug(exception, "Could not broadcast console line"); }
         if (Interlocked.Increment(ref _appendCount) % 250 == 0) _ = PruneAsync(serverId, CancellationToken.None);
@@ -100,30 +101,66 @@ public sealed partial class ConsoleService(
             if (waiter.Predicate(line)) waiter.Source.TrySetResult(true);
     }
 
-    private async Task TrackPlayerAsync(ConsoleEventDto line)
+    private async Task TrackPlayerAsync(ConsoleEventDto line, CancellationToken cancellationToken)
     {
+        var playerLock = _playerLocks.GetOrAdd(line.ServerId, static _ => new SemaphoreSlim(1, 1));
+        await playerLock.WaitAsync(cancellationToken);
         try
         {
-            var joined = JoinedRegex().Match(line.Text);
-            var left = LeftRegex().Match(line.Text);
-            var uuid = UuidRegex().Match(line.Text);
+            var text = MinecraftLogText.SanitizeForParsing(line.Text);
+            var joined = JoinedRegex().Match(text);
+            var left = LeftRegex().Match(text);
+            var uuid = UuidRegex().Match(text);
             if (!joined.Success && !left.Success && !uuid.Success) return;
             var name = (joined.Success ? joined : left.Success ? left : uuid).Groups["name"].Value;
             if (string.IsNullOrWhiteSpace(name)) return;
-            await using var db = await stateFactory.CreateDbContextAsync();
-            var player = await db.Players.SingleOrDefaultAsync(x => x.ServerId == line.ServerId && x.Name == name);
+            var parsedUuid = uuid.Success ? NormalizeUuid(uuid.Groups["uuid"].Value) : null;
+            await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+            var serverPlayers = await db.Players.Where(x => x.ServerId == line.ServerId).ToListAsync(cancellationToken);
+            var player = parsedUuid is null ? null : serverPlayers.FirstOrDefault(candidate =>
+                candidate.Uuid is not null && NormalizeUuid(candidate.Uuid) == parsedUuid);
+            player ??= serverPlayers.FirstOrDefault(candidate =>
+                candidate.Uuid is not null && candidate.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+            player ??= serverPlayers.FirstOrDefault(candidate => candidate.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
             if (player is null)
             {
                 player = new PlayerEntity { ServerId = line.ServerId, Name = name };
                 db.Players.Add(player);
+                serverPlayers.Add(player);
             }
-            if (joined.Success) player.Online = true;
-            if (left.Success) player.Online = false;
-            if (uuid.Success) player.Uuid = uuid.Groups["uuid"].Value;
+            bool? observedOnline = joined.Success ? true : left.Success ? false : null;
+            if (observedOnline.HasValue) player.Online = observedOnline.Value;
+            if (parsedUuid is not null) player.Uuid = parsedUuid;
+            player.Name = name;
             player.LastSeenAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync();
+            if (player.Uuid is not null)
+            {
+                foreach (var duplicate in serverPlayers.Where(candidate => candidate != player &&
+                    ((candidate.Uuid is not null && NormalizeUuid(candidate.Uuid) == NormalizeUuid(player.Uuid)) ||
+                     candidate.Name.Equals(player.Name, StringComparison.OrdinalIgnoreCase) ||
+                     (candidate.Uuid is null && MinecraftLogText.IsLegacyAnsiLeakOf(candidate.Name, player.Name)))).ToList())
+                {
+                    if (!observedOnline.HasValue) player.Online |= duplicate.Online;
+                    player.Whitelisted |= duplicate.Whitelisted;
+                    player.Operator |= duplicate.Operator;
+                    player.Banned |= duplicate.Banned;
+                    if (duplicate.LastSeenAt > player.LastSeenAt) player.LastSeenAt = duplicate.LastSeenAt;
+                    db.Players.Remove(duplicate);
+                }
+            }
+            await db.SaveChangesAsync(cancellationToken);
         }
-        catch (Exception exception) { logger.LogDebug(exception, "Could not update player state from console"); }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        { logger.LogDebug(exception, "Could not update player state from console"); }
+        finally { playerLock.Release(); }
+    }
+
+    private static string NormalizeUuid(string value)
+    {
+        var hex = value.Replace("-", "", StringComparison.Ordinal).ToLowerInvariant();
+        return hex.Length == 32
+            ? $"{hex[..8]}-{hex[8..12]}-{hex[12..16]}-{hex[16..20]}-{hex[20..]}"
+            : hex;
     }
 
     private static string DetectLevel(string line) =>
@@ -132,10 +169,10 @@ public sealed partial class ConsoleService(
 
     private sealed record WaitRegistration(Func<ConsoleEventDto, bool> Predicate, TaskCompletionSource<bool> Source);
 
-    [GeneratedRegex(@"(?<name>[A-Za-z0-9_]{1,16}) joined the game")]
+    [GeneratedRegex(@"(?<![A-Za-z0-9_])(?<name>[A-Za-z0-9_]{1,16})(?![A-Za-z0-9_]) joined the game")]
     private static partial Regex JoinedRegex();
-    [GeneratedRegex(@"(?<name>[A-Za-z0-9_]{1,16}) left the game")]
+    [GeneratedRegex(@"(?<![A-Za-z0-9_])(?<name>[A-Za-z0-9_]{1,16})(?![A-Za-z0-9_]) left the game")]
     private static partial Regex LeftRegex();
-    [GeneratedRegex(@"UUID of player (?<name>[A-Za-z0-9_]{1,16}) is (?<uuid>[0-9a-fA-F-]{32,36})")]
+    [GeneratedRegex(@"UUID of player (?<name>[A-Za-z0-9_]{1,16})(?![A-Za-z0-9_]) is (?<uuid>[0-9a-fA-F-]{32,36})")]
     private static partial Regex UuidRegex();
 }

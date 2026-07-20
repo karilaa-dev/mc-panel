@@ -57,6 +57,13 @@ public sealed class StateDbContext(DbContextOptions<StateDbContext> options) : D
                 await alter.ExecuteNonQueryAsync(cancellationToken);
             }
 
+            if (serverColumns.Count > 0 && !serverColumns.Contains(nameof(ServerEntity.IconRevision)))
+            {
+                await using var alter = connection.CreateCommand();
+                alter.CommandText = "ALTER TABLE \"Servers\" ADD COLUMN \"IconRevision\" TEXT NULL;";
+                await alter.ExecuteNonQueryAsync(cancellationToken);
+            }
+
             await using var initialize = connection.CreateCommand();
             initialize.CommandText = "UPDATE \"Admins\" SET \"SessionStamp\" = lower(hex(randomblob(16))) WHERE \"SessionStamp\" IS NULL OR length(trim(\"SessionStamp\")) = 0;";
             await initialize.ExecuteNonQueryAsync(cancellationToken);

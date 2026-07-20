@@ -9,6 +9,8 @@ import {
 import { api } from "@/lib/api"
 import { useTheme } from "@/components/theme-provider"
 import { StatusBadge } from "@/components/status-badge"
+import { ServerAvatar } from "@/components/server-icon"
+import type { ServerSummaryDto } from "@/lib/contracts"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
@@ -43,7 +45,7 @@ const systemItems = [
   { label: "Panel Settings", path: "/panel-settings", icon: MonitorCogIcon },
 ]
 
-function NavigationItem({ label, path, icon: Icon }: { label: string; path: string; icon: typeof BoxIcon }) {
+function NavigationItem({ label, path, icon: Icon, server }: { label: string; path: string; icon: typeof BoxIcon; server?: ServerSummaryDto }) {
   const location = useLocation()
   const { isMobile, setOpenMobile } = useSidebar()
   const active = path === "/" ? location.pathname === "/" : location.pathname === path
@@ -54,7 +56,7 @@ function NavigationItem({ label, path, icon: Icon }: { label: string; path: stri
         isActive={active}
         render={<Link to={path} onClick={() => isMobile && setOpenMobile(false)} />}
       >
-        <Icon />
+        {server ? <ServerAvatar server={server} className="size-5" /> : <Icon />}
         <span>{label}</span>
       </SidebarMenuButton>
     </SidebarMenuItem>
@@ -125,7 +127,7 @@ export function AppShell() {
           </SidebarGroup>
           {serverId && (
             <SidebarGroup>
-              <SidebarGroupLabel>{currentServer?.name ?? "Active server"}</SidebarGroupLabel>
+              <SidebarGroupLabel>{currentServer && <ServerAvatar server={currentServer} className="size-5" />}{currentServer?.name ?? "Active server"}</SidebarGroupLabel>
               <SidebarGroupContent>
                 <SidebarMenu>{serverItems.map((item) => <NavigationItem key={item.label} label={item.label} icon={item.icon} path={`/servers/${serverId}${item.path}`} />)}</SidebarMenu>
               </SidebarGroupContent>
@@ -140,7 +142,7 @@ export function AppShell() {
               <CollapsibleContent>
                 <SidebarGroupContent>
                   <SidebarMenu>
-                    {servers.map((server) => <NavigationItem key={server.id} label={server.name} icon={BoxIcon} path={`/servers/${server.id}`} />)}
+                    {servers.map((server) => <NavigationItem key={server.id} label={server.name} icon={BoxIcon} server={server} path={`/servers/${server.id}`} />)}
                     <NavigationItem label="Create server" icon={PlusIcon} path="/create" />
                   </SidebarMenu>
                 </SidebarGroupContent>
@@ -181,7 +183,7 @@ export function AppShell() {
           <Separator orientation="vertical" className="h-4" />
           <Breadcrumb className="min-w-0 flex-1">
             <BreadcrumbList>
-              {currentServer && <><BreadcrumbItem className="hidden sm:inline-flex">{currentServer.name}</BreadcrumbItem><BreadcrumbSeparator className="hidden sm:inline-flex" /></>}
+              {currentServer && <><BreadcrumbItem className="hidden items-center gap-2 sm:inline-flex"><ServerAvatar server={currentServer} className="size-5" />{currentServer.name}</BreadcrumbItem><BreadcrumbSeparator className="hidden sm:inline-flex" /></>}
               <BreadcrumbItem><BreadcrumbPage>{pageName}</BreadcrumbPage></BreadcrumbItem>
             </BreadcrumbList>
           </Breadcrumb>
