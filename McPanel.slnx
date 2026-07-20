@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/McPanel.Api/McPanel.Api.csproj" />
+  <Project Path="tests/McPanel.Api.Tests/McPanel.Api.Tests.csproj" />
+</Solution>

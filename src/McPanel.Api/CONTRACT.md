@@ -1,0 +1,109 @@
+# MC Panel HTTP and realtime contract
+
+The canonical API base is `/api/v1`. For the bundled web client, `/api/*` is a
+compatibility alias with the same behavior. JSON uses camel-case names. All
+authenticated mutating requests require the `X-XSRF-TOKEN` value returned by
+`GET /api/v1/auth/antiforgery`. Errors use `application/problem+json` and add a
+stable `code` property.
+
+Authentication uses one `mcpanel.auth` HTTP-only same-site cookie. Before the
+first admin exists, `POST /auth/setup` accepts the installer setup token,
+username, and password. The setup token can only be used once.
+
+Authentication cookies carry a persistent session stamp. Changing the password
+rotates that stamp and reissues the caller's cookie, invalidating every older
+copy. Logging out rotates the stamp and invalidates all current copies. A fresh
+cookie remains valid across normal panel restarts; a stale cookie cannot access
+HTTP routes or negotiate a new SignalR connection. A rotation also removes
+already-connected stale clients from the realtime broadcast audience and sends
+them `SessionRevoked`; the bundled client immediately returns to authentication.
+
+## Routes
+
+| Method | Route | Result / body |
+|---|---|---|
+| GET | `/auth/status` | `{setupRequired, authenticated, admin?}` |
+| GET | `/auth/antiforgery` | `{token}` and XSRF cookie |
+| POST | `/auth/setup` | `{token, username, password}` -> admin |
+| POST | `/auth/login` | `{username, password}` -> admin |
+| POST | `/auth/logout` | `204` |
+| PUT | `/auth/password` | `{currentPassword, newPassword}` -> `204` |
+| GET | `/servers` | `ServerSummary[]` |
+| POST | `/servers` | `CreateServerRequest` -> `202 Job` |
+| GET/DELETE | `/servers/{id}` | summary / `204`; delete requires no process and removes managed files plus backups |
+| POST | `/servers/{id}/actions/{start|stop|restart|update}` | `202 Job` |
+| POST | `/servers/{id}/actions/kill` | `{confirm:true}` -> `202 Job` emergency process-tree kill |
+| POST | `/servers/{id}/{start|stop|restart|update}` | compatibility alias for bundled client |
+| GET/PUT | `/servers/{id}/configuration` | curated settings object |
+| GET | `/servers/{id}/console?after=&limit=` | ordered console events |
+| POST | `/servers/{id}/console` | `{command}` -> `204` |
+| GET | `/servers/{id}/players` | observed player state |
+| POST | `/servers/{id}/players/{name}/{whitelist|unwhitelist|op|deop|ban|pardon|kick}` | `204` |
+| GET | `/servers/{id}/files?path=` | directory entries |
+| POST | `/servers/{id}/files` | `{path,directory}` -> `204` |
+| GET/PUT | `/servers/{id}/files/content?path=` | text content / `{content}` |
+| GET | `/servers/{id}/files/download?path=` | streamed file |
+| POST | `/servers/{id}/files/upload?path=` | multipart `file` -> `204` |
+| POST | `/servers/{id}/files/move` | `{source,destination}` -> `204` |
+| POST | `/servers/{id}/files/extract` | `{path,destination}` -> `204` |
+| DELETE | `/servers/{id}/files?path=` | `204` |
+| GET/POST | `/servers/{id}/backups` | backups / `202 Job` |
+| GET/DELETE | `/servers/{id}/backups/{backupId}` | download / `204` |
+| POST | `/servers/{id}/backups/{backupId}/restore` | `202 Job` (stopped only) |
+| GET/POST | `/servers/{id}/schedules` | schedules / schedule |
+| PUT/PATCH/DELETE | `/servers/{id}/schedules/{scheduleId}` | schedule / toggle / `204` |
+| GET | `/jobs/{id}` | durable operation status |
+| GET | `/java` | discovered Java runtimes |
+| POST | `/java/rescan` | refreshed runtimes |
+| POST | `/java/custom` | `{path}` -> validated runtime |
+| GET | `/catalog?experimental=false` | Vanilla/Paper/Fabric version arrays plus detailed choices |
+| GET | `/system/status` | host CPU, memory, disk, and recent samples |
+| GET | `/system/info` | panel paths/version/allocation ceiling |
+
+`POST /servers` accepts `name`, `kind` (`Vanilla`, `Paper`, `Fabric`),
+`version`, `javaRuntimeId`, `memoryMb`, `port`, `eulaAccepted`, optional
+`startOnBoot`, optional Paper `build`, optional Fabric `loaderVersion` and
+`installerVersion`. RAM has a 512 MiB minimum and uses 512 MiB increments.
+Legacy entries below the minimum must be raised in Settings before they can
+start. Only new, verified upstream installs are accepted; arbitrary source
+directories and URLs are never adopted.
+
+Curated configuration limits are 512 characters for the MOTD, 128 characters
+and 255 UTF-8 bytes for the world directory name, and 2,048 characters for
+additional JVM arguments. Schedule names are limited to 96 characters. Control
+characters that could inject extra properties or commands are rejected.
+
+Configuration and file mutations are serialized with lifecycle operations and
+are accepted only while database state and supervised-process state form a
+stable combination (`Stopped`, `Running`, or `Crashed`). Manual backup creation
+is accepted only for a live `Running` server or a process-free `Stopped` server;
+restore requires `Stopped`. Backup archives are committed only after the same
+entry-count and uncompressed-size limits used by restore have passed.
+
+The SignalR hub is `/hubs/panel`; authenticated clients receive
+`ConsoleBatch(ConsoleEvent[])`, `ServerStateChanged(ServerSummary)`,
+`MetricsUpdated({host,servers})`, and `JobUpdated(Job)`. Clients reconnect to
+the durable console with its numeric `sequence` cursor.
+
+A successful start job waits for Minecraft's normal `Done (` readiness output.
+For modded servers that replace that message, a still-running process is accepted
+after a 90-second fallback. Stop and emergency kill remain available during that
+readiness window.
+
+Schedules use a time-only trigger, not arbitrary shell commands. A schedule
+has `frequency` (`Once`, `Interval`, `Daily`, `Weekly`, or `Cron`), timezone,
+trigger fields (`runAt`, `intervalMinutes`, `timeOfDay`, `daysOfWeek`, or a
+restricted five-field cron string), and ordered `actions`. Each action is one
+of `Start`, `Stop`, `Restart`, `Backup`, `Update`, or `Command` with an optional
+console command. Overlapping and missed executions are not replayed.
+
+## Stable problem codes
+
+`AUTH_INVALID`, `SETUP_DISABLED`, `SETUP_TOKEN_INVALID`,
+`ANTIFORGERY_FAILED`, `VALIDATION_FAILED`, `NOT_FOUND`, `SERVER_BUSY`,
+`SERVER_NOT_STOPPED`, `SERVER_NOT_RUNNING`, `JAVA_RUNTIME_NOT_FOUND`,
+`JAVA_VERSION_INCOMPATIBLE`, `PORT_IN_USE`, `MEMORY_LIMIT_EXCEEDED`,
+`MEMORY_LIMIT_TOO_LOW`,
+`INSTALL_DOWNLOAD_REJECTED`, `INSTALL_CHECKSUM_FAILED`, `UPSTREAM_UNAVAILABLE`,
+`PATH_OUTSIDE_SERVER`, `FILE_TOO_LARGE`, `ZIP_LIMIT_EXCEEDED`, and
+`OPERATION_FAILED`.

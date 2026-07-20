@@ -1,0 +1,13 @@
+**/bin/
+**/obj/
+**/node_modules/
+**/dist/
+.idea/
+.vscode/
+*.user
+*.suo
+data/
+src/McPanel.Api/data/
+src/McPanel.Api/wwwroot/
+!src/McPanel.Api/wwwroot/.gitkeep
+.mcpanel-local/

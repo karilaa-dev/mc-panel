@@ -1,0 +1,61 @@
+namespace McPanel.Api.Configuration;
+
+public sealed class PanelOptions
+{
+    public const int MinimumServerMemoryMb = 512;
+    public const int ServerMemoryStepMb = 512;
+
+    public string DataDirectory { get; set; } = Environment.GetEnvironmentVariable("MCPANEL_DATA_DIR") ?? "/var/lib/mcpanel";
+    public string ConfigDirectory { get; set; } = Environment.GetEnvironmentVariable("MCPANEL_CONFIG_DIR") ?? "/etc/mcpanel";
+    public string? WebRoot { get; set; } = Environment.GetEnvironmentVariable("MCPANEL_WEB_ROOT");
+    public string? SetupToken { get; set; } = Environment.GetEnvironmentVariable("MCPANEL_SETUP_TOKEN");
+    public string? SetupTokenFile { get; set; } = Environment.GetEnvironmentVariable("MCPANEL_SETUP_TOKEN_FILE");
+    public int GracefulStopSeconds { get; set; } = 60;
+    public long MaxUploadBytes { get; set; } = 1L * 1024 * 1024 * 1024;
+    public long MaxTextFileBytes { get; set; } = 2L * 1024 * 1024;
+    public long MaxExtractedBytes { get; set; } = 2L * 1024 * 1024 * 1024;
+    public int MaxArchiveEntries { get; set; } = 20_000;
+    public int ConsoleLinesPerServer { get; set; } = 50_000;
+    public int ConsoleRetentionDays { get; set; } = 7;
+    public double MemoryAllocationFraction { get; set; } = 0.85;
+    public string PaperUserAgent { get; set; } = "mc-panel/1.0 (https://github.com/mc-panel/mc-panel)";
+}
+
+public sealed class PanelPaths
+{
+    public PanelPaths(PanelOptions options)
+    {
+        Data = Path.GetFullPath(options.DataDirectory);
+        Config = Path.GetFullPath(options.ConfigDirectory);
+        Instances = Path.Combine(Data, "instances");
+        Staging = Path.Combine(Data, "staging");
+        Backups = Path.Combine(Data, "backups");
+        Logs = Path.Combine(Data, "logs");
+        Keys = Path.Combine(Data, "keys");
+        StateDatabase = Path.Combine(Data, "state.db");
+        ConsoleDatabase = Path.Combine(Data, "console.db");
+        SetupTokenFile = options.SetupTokenFile is { Length: > 0 }
+            ? Path.GetFullPath(options.SetupTokenFile)
+            : Path.Combine(Config, "setup-token");
+    }
+
+    public string Data { get; }
+    public string Config { get; }
+    public string Instances { get; }
+    public string Staging { get; }
+    public string Backups { get; }
+    public string Logs { get; }
+    public string Keys { get; }
+    public string StateDatabase { get; }
+    public string ConsoleDatabase { get; }
+    public string SetupTokenFile { get; }
+
+    public void EnsureCreated()
+    {
+        foreach (var directory in new[] { Data, Config, Instances, Staging, Backups, Logs, Keys })
+            Directory.CreateDirectory(directory);
+    }
+
+    public string Instance(Guid id) => Path.Combine(Instances, id.ToString("N"));
+    public string ServerBackups(Guid id) => Path.Combine(Backups, id.ToString("N"));
+}
