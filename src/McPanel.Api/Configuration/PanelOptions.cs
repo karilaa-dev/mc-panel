@@ -32,6 +32,7 @@ public sealed class PanelPaths
         Backups = Path.Combine(Data, "backups");
         Logs = Path.Combine(Data, "logs");
         Keys = Path.Combine(Data, "keys");
+        Icons = Path.Combine(Data, "icons");
         StateDatabase = Path.Combine(Data, "state.db");
         ConsoleDatabase = Path.Combine(Data, "console.db");
         SetupTokenFile = options.SetupTokenFile is { Length: > 0 }
@@ -46,13 +47,14 @@ public sealed class PanelPaths
     public string Backups { get; }
     public string Logs { get; }
     public string Keys { get; }
+    public string Icons { get; }
     public string StateDatabase { get; }
     public string ConsoleDatabase { get; }
     public string SetupTokenFile { get; }
 
     public void EnsureCreated()
     {
-        foreach (var directory in new[] { Data, Config, Instances, Staging, Backups, Logs, Keys })
+        foreach (var directory in new[] { Data, Config, Instances, Staging, Backups, Logs, Keys, Icons })
             Directory.CreateDirectory(directory);
     }
 

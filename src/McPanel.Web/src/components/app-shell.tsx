@@ -3,7 +3,7 @@ import { Link, Outlet, useLocation } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   ArchiveIcon, BlocksIcon, BoxIcon, ChevronDownIcon, ChevronUpIcon, CircleGaugeIcon, PlusIcon,
-  Clock3Icon, CommandIcon, FileIcon, GaugeIcon, LogOutIcon, MonitorCogIcon, MoonIcon,
+  Clock3Icon, CommandIcon, FileIcon, GaugeIcon, ImageIcon, LogOutIcon, MonitorCogIcon, MoonIcon,
   PanelsTopLeftIcon, Settings2Icon, SunIcon, TerminalSquareIcon, UsersIcon,
 } from "lucide-react"
 import { api } from "@/lib/api"
@@ -34,6 +34,7 @@ const serverItems = [
   { label: "Overview", path: "", icon: CircleGaugeIcon },
   { label: "Console", path: "/console", icon: TerminalSquareIcon },
   { label: "Server properties", path: "/properties", icon: Settings2Icon },
+  { label: "Server icon", path: "/icon", icon: ImageIcon },
   { label: "Runtime", path: "/runtime", icon: GaugeIcon },
   { label: "Files", path: "/files", icon: FileIcon },
   { label: "Players", path: "/players", icon: UsersIcon },
@@ -56,7 +57,7 @@ function NavigationItem({ label, path, icon: Icon, server }: { label: string; pa
         isActive={active}
         render={<Link to={path} onClick={() => isMobile && setOpenMobile(false)} />}
       >
-        {server ? <ServerAvatar server={server} className="size-5" /> : <Icon />}
+        {server ? <ServerAvatar server={server} className="size-5" compact /> : <Icon />}
         <span>{label}</span>
       </SidebarMenuButton>
     </SidebarMenuItem>
@@ -127,7 +128,7 @@ export function AppShell() {
           </SidebarGroup>
           {serverId && (
             <SidebarGroup>
-              <SidebarGroupLabel>{currentServer && <ServerAvatar server={currentServer} className="size-5" />}{currentServer?.name ?? "Active server"}</SidebarGroupLabel>
+              <SidebarGroupLabel>{currentServer && <ServerAvatar server={currentServer} className="size-5" compact />}{currentServer?.name ?? "Active server"}</SidebarGroupLabel>
               <SidebarGroupContent>
                 <SidebarMenu>{serverItems.map((item) => <NavigationItem key={item.label} label={item.label} icon={item.icon} path={`/servers/${serverId}${item.path}`} />)}</SidebarMenu>
               </SidebarGroupContent>
