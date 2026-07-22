@@ -34,6 +34,7 @@ public sealed class ApiSmokeTests : IAsyncLifetime
         using var tokenJson = JsonDocument.Parse(await antiforgery.Content.ReadAsStringAsync());
         var csrf = tokenJson.RootElement.GetProperty("token").GetString()!;
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/v1/servers")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync($"/api/v1/servers/{Guid.NewGuid()}/mods")).StatusCode);
         using var setup = new HttpRequestMessage(HttpMethod.Post, "/api/v1/auth/setup")
         { Content = JsonContent.Create(new { token = "test-setup-token-which-is-long", username = "admin", password = "a-long-test-password" }) };
         setup.Headers.Add("X-XSRF-TOKEN", csrf);

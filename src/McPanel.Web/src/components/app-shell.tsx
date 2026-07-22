@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   ArchiveIcon, BlocksIcon, BoxIcon, ChevronDownIcon, ChevronUpIcon, CircleGaugeIcon, PlusIcon,
   Clock3Icon, CommandIcon, FileIcon, GaugeIcon, ImageIcon, LogOutIcon, MonitorCogIcon, MoonIcon,
-  PanelsTopLeftIcon, Settings2Icon, SunIcon, TerminalSquareIcon, UsersIcon,
+  PackageIcon, PanelsTopLeftIcon, Settings2Icon, SunIcon, TerminalSquareIcon, UsersIcon,
 } from "lucide-react"
 import { api } from "@/lib/api"
 import { useTheme } from "@/components/theme-provider"
@@ -36,6 +36,7 @@ const serverItems = [
   { label: "Server properties", path: "/properties", icon: Settings2Icon },
   { label: "Server icon", path: "/icon", icon: ImageIcon },
   { label: "Runtime", path: "/runtime", icon: GaugeIcon },
+  { label: "Mods", path: "/mods", icon: PackageIcon, moddedOnly: true },
   { label: "Files", path: "/files", icon: FileIcon },
   { label: "Players", path: "/players", icon: UsersIcon },
   { label: "Backups", path: "/backups", icon: ArchiveIcon },
@@ -91,6 +92,7 @@ export function AppShell() {
     onError: (error) => toast.error(error.message),
   })
   const currentServer = servers.find((server) => server.id === serverId)
+  const visibleServerItems = serverItems.filter((item) => !item.moddedOnly || currentServer && ["Fabric", "Forge", "NeoForge"].includes(currentServer.kind))
   const serverSection = serverItems.find((item) =>
     location.pathname === `/servers/${serverId}${item.path}`,
   )
@@ -130,7 +132,7 @@ export function AppShell() {
             <SidebarGroup>
               <SidebarGroupLabel>{currentServer && <ServerAvatar server={currentServer} className="size-5" compact />}{currentServer?.name ?? "Active server"}</SidebarGroupLabel>
               <SidebarGroupContent>
-                <SidebarMenu>{serverItems.map((item) => <NavigationItem key={item.label} label={item.label} icon={item.icon} path={`/servers/${serverId}${item.path}`} />)}</SidebarMenu>
+                <SidebarMenu>{visibleServerItems.map((item) => <NavigationItem key={item.label} label={item.label} icon={item.icon} path={`/servers/${serverId}${item.path}`} />)}</SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>
           )}

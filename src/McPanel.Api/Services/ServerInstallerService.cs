@@ -40,8 +40,8 @@ public sealed partial class ServerInstallerService(
         var entity = new ServerEntity
         {
             Id = Guid.NewGuid(), Name = request.Name.Trim(), Kind = request.Kind, Version = request.Version,
-            DistributionBuild = request.Build, FabricLoaderVersion = request.LoaderVersion,
-            FabricInstallerVersion = request.InstallerVersion, JavaRuntimeId = runtime.Id,
+            DistributionBuild = request.Build, LoaderVersion = request.LoaderVersion,
+            InstallerVersion = request.InstallerVersion, JavaRuntimeId = runtime.Id,
             MemoryLimitMb = totalLimitMb,
             MemoryMb = request.MemoryMb,
             InitialMemoryMb = request.MemoryMb,
@@ -87,24 +87,27 @@ public sealed partial class ServerInstallerService(
             var runtime = await db.JavaRuntimes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == server.JavaRuntimeId, cancellationToken)
                 ?? throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
             await operations.ProgressAsync(jobId, 10, "Resolving official distribution metadata", cancellationToken);
-            var plan = await catalog.ResolveAsync(server.Kind, server.Version, server.DistributionBuild, server.FabricLoaderVersion, server.FabricInstallerVersion, includeExperimental, cancellationToken);
+            var plan = await catalog.ResolveAsync(server.Kind, server.Version, server.DistributionBuild, server.LoaderVersion, server.InstallerVersion, includeExperimental, cancellationToken);
             if (runtime.Major < plan.RequiredJavaMajor)
                 throw new PanelException(400, "JAVA_VERSION_INCOMPATIBLE", $"Minecraft {server.Version} requires Java {plan.RequiredJavaMajor} or newer.");
+            if (server.Kind == ServerKind.Forge && plan.RequiredJavaMajor == 8 && runtime.Major != 8)
+                throw new PanelException(400, "JAVA_VERSION_INCOMPATIBLE", $"Legacy Forge for Minecraft {server.Version} requires Java 8.");
             await operations.ProgressAsync(jobId, 25, "Downloading and verifying server files", cancellationToken);
             var artifactPath = Path.Combine(stage, plan.Artifact.FileName);
             await downloads.DownloadAsync(plan.Artifact, artifactPath, cancellationToken);
-            if (server.Kind == ServerKind.Fabric)
+            if (IsModLoader(server.Kind))
             {
-                await operations.ProgressAsync(jobId, 55, "Running the verified Fabric installer", cancellationToken);
-                await RunFabricInstallerAsync(server, runtime.Path, plan, artifactPath, stage, cancellationToken);
-                server.ExecutableJar = "fabric-server-launch.jar";
-                server.FabricLoaderVersion = plan.LoaderVersion; server.FabricInstallerVersion = plan.InstallerVersion;
+                await operations.ProgressAsync(jobId, 55, $"Running the verified {server.Kind} installer", cancellationToken);
+                var launch = await RunLoaderInstallerAsync(server, runtime.Path, plan, artifactPath, stage, cancellationToken);
+                server.LaunchMode = launch.Mode; server.LaunchTarget = launch.Target;
+                server.LoaderVersion = plan.LoaderVersion; server.InstallerVersion = plan.InstallerVersion;
                 File.Delete(artifactPath);
+                Directory.CreateDirectory(Path.Combine(stage, "mods"));
             }
             else
             {
                 File.Move(artifactPath, Path.Combine(stage, "server.jar"));
-                server.ExecutableJar = "server.jar";
+                server.LaunchMode = LaunchMode.Jar; server.LaunchTarget = "server.jar";
                 server.DistributionBuild = plan.Build;
             }
             server.RequiredJavaMajor = plan.RequiredJavaMajor;
@@ -155,16 +158,18 @@ public sealed partial class ServerInstallerService(
             var plan = await catalog.ResolveAsync(server.Kind, server.Version, null, null, null, server.IsExperimental, cancellationToken);
             if (runtime.Major < plan.RequiredJavaMajor)
                 throw new PanelException(400, "JAVA_VERSION_INCOMPATIBLE", $"Minecraft {server.Version} requires Java {plan.RequiredJavaMajor} or newer.");
+            if (server.Kind == ServerKind.Forge && plan.RequiredJavaMajor == 8 && runtime.Major != 8)
+                throw new PanelException(400, "JAVA_VERSION_INCOMPATIBLE", $"Legacy Forge for Minecraft {server.Version} requires Java 8.");
             var artifact = Path.Combine(stage, plan.Artifact.FileName);
             await downloads.DownloadAsync(plan.Artifact, artifact, cancellationToken);
             await operations.ProgressAsync(jobId, 60, "Activating verified update", cancellationToken);
-            if (server.Kind == ServerKind.Fabric)
+            if (IsModLoader(server.Kind))
             {
-                await RunFabricInstallerAsync(server, runtime.Path, plan, artifact, stage, cancellationToken);
-                var launcher = Path.Combine(stage, "fabric-server-launch.jar");
-                File.Move(launcher, Path.Combine(paths.Instance(id), "fabric-server-launch.jar"), true);
-                CopyDirectory(Path.Combine(stage, "libraries"), Path.Combine(paths.Instance(id), "libraries"));
-                server.FabricLoaderVersion = plan.LoaderVersion; server.FabricInstallerVersion = plan.InstallerVersion;
+                var launch = await RunLoaderInstallerAsync(server, runtime.Path, plan, artifact, stage, cancellationToken);
+                File.Delete(artifact);
+                CopyDirectory(stage, paths.Instance(id));
+                server.LaunchMode = launch.Mode; server.LaunchTarget = launch.Target;
+                server.LoaderVersion = plan.LoaderVersion; server.InstallerVersion = plan.InstallerVersion;
             }
             else
             {
@@ -184,17 +189,26 @@ public sealed partial class ServerInstallerService(
         finally { if (Directory.Exists(stage)) Directory.Delete(stage, true); }
     }
 
-    private async Task RunFabricInstallerAsync(ServerEntity server, string javaPath, InstallPlan plan, string installerPath, string stage, CancellationToken cancellationToken)
+    private async Task<(LaunchMode Mode, string Target)> RunLoaderInstallerAsync(
+        ServerEntity server,
+        string javaPath,
+        InstallPlan plan,
+        string installerPath,
+        string stage,
+        CancellationToken cancellationToken)
     {
         var start = new ProcessStartInfo
         {
             FileName = javaPath, WorkingDirectory = stage, UseShellExecute = false,
             RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true
         };
-        foreach (var argument in new[] { "-jar", installerPath, "server", "-mcversion", server.Version, "-loader", plan.LoaderVersion!, "-downloadMinecraft" })
+        var arguments = server.Kind == ServerKind.Fabric
+            ? new[] { "-jar", installerPath, "server", "-mcversion", server.Version, "-loader", plan.LoaderVersion!, "-downloadMinecraft" }
+            : new[] { "-jar", installerPath, "--installServer" };
+        foreach (var argument in arguments)
             start.ArgumentList.Add(argument);
         ClearJavaInjection(start);
-        using var process = Process.Start(start) ?? throw new PanelException(500, "OPERATION_FAILED", "The Fabric installer could not start.");
+        using var process = Process.Start(start) ?? throw new PanelException(500, "OPERATION_FAILED", $"The {server.Kind} installer could not start.");
         var stdout = PumpAsync(process.StandardOutput, server.Id, "system", cancellationToken);
         var stderr = PumpAsync(process.StandardError, server.Id, "stderr", cancellationToken);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -205,11 +219,40 @@ public sealed partial class ServerInstallerService(
             try { process.Kill(true); } catch { }
             try { await Task.WhenAll(stdout, stderr); } catch { }
             if (cancellationToken.IsCancellationRequested) throw;
-            throw new PanelException(504, "OPERATION_FAILED", "The Fabric installer timed out.");
+            throw new PanelException(504, "OPERATION_FAILED", $"The {server.Kind} installer timed out.");
         }
         await Task.WhenAll(stdout, stderr);
-        if (process.ExitCode != 0 || !File.Exists(Path.Combine(stage, "fabric-server-launch.jar")))
-            throw new PanelException(502, "OPERATION_FAILED", "The Fabric installer did not produce a server launcher.");
+        if (process.ExitCode != 0)
+            throw new PanelException(502, "OPERATION_FAILED", $"The {server.Kind} installer failed.");
+        return FindLaunchTarget(server.Kind, server.Version, plan.LoaderVersion!, stage);
+    }
+
+    internal static (LaunchMode Mode, string Target) FindLaunchTarget(ServerKind kind, string minecraftVersion, string loaderVersion, string root)
+    {
+        if (kind == ServerKind.Fabric)
+        {
+            const string fabricTarget = "fabric-server-launch.jar";
+            if (File.Exists(Path.Combine(root, fabricTarget))) return (LaunchMode.Jar, fabricTarget);
+        }
+        else
+        {
+            var coordinate = kind == ServerKind.Forge ? $"{minecraftVersion}-{loaderVersion}" : loaderVersion;
+            var argumentTarget = kind == ServerKind.Forge
+                ? Path.Combine("libraries", "net", "minecraftforge", "forge", coordinate, "unix_args.txt")
+                : Path.Combine("libraries", "net", "neoforged", "neoforge", coordinate, "unix_args.txt");
+            if (File.Exists(Path.Combine(root, argumentTarget))) return (LaunchMode.ArgumentFile, argumentTarget);
+            if (kind == ServerKind.Forge)
+            {
+                foreach (var candidate in new[]
+                {
+                    $"forge-{coordinate}.jar",
+                    $"forge-{coordinate}-universal.jar",
+                    $"minecraftforge-universal-{coordinate}.jar"
+                })
+                    if (File.Exists(Path.Combine(root, candidate))) return (LaunchMode.Jar, candidate);
+            }
+        }
+        throw new PanelException(502, "OPERATION_FAILED", $"The {kind} installer did not produce a supported server launcher.");
     }
 
     private async Task PumpAsync(StreamReader reader, Guid id, string stream, CancellationToken cancellationToken)
@@ -218,7 +261,7 @@ public sealed partial class ServerInstallerService(
         {
             try { await console.AppendAsync(id, stream, line, cancellationToken); }
             catch (Exception exception) when (exception is not OperationCanceledException)
-            { logger.LogError(exception, "Fabric installer console persistence failed for {ServerId}; continuing to drain {Stream}", id, stream); }
+            { logger.LogError(exception, "Loader installer console persistence failed for {ServerId}; continuing to drain {Stream}", id, stream); }
         }
     }
 
@@ -236,6 +279,8 @@ public sealed partial class ServerInstallerService(
         foreach (var file in Directory.EnumerateFiles(source)) File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), true);
         foreach (var directory in Directory.EnumerateDirectories(source)) CopyDirectory(directory, Path.Combine(destination, Path.GetFileName(directory)));
     }
+
+    private static bool IsModLoader(ServerKind kind) => kind is ServerKind.Fabric or ServerKind.Forge or ServerKind.NeoForge;
 
     private static void Validate(CreateServerRequest request)
     {

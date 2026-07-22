@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Xml.Linq;
 using McPanel.Api.Configuration;
 using McPanel.Api.Contracts;
 using McPanel.Api.Data;
@@ -21,7 +22,8 @@ public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
     private static readonly HashSet<string> AllowedHosts = new(StringComparer.OrdinalIgnoreCase)
     {
         "piston-meta.mojang.com", "piston-data.mojang.com", "launcher.mojang.com",
-        "fill.papermc.io", "fill-data.papermc.io", "meta.fabricmc.net", "maven.fabricmc.net"
+        "fill.papermc.io", "fill-data.papermc.io", "meta.fabricmc.net", "maven.fabricmc.net",
+        "files.minecraftforge.net", "maven.minecraftforge.net", "maven.neoforged.net"
     };
 
     public async Task<JsonDocument> JsonAsync(Uri uri, CancellationToken cancellationToken)
@@ -158,7 +160,9 @@ public sealed class DistributionCatalogService(ValidatedDownloadClient http, ILo
             var fabricGamesTask = GetFabricVersionsAsync("game", cancellationToken);
             var loadersTask = GetFabricChoicesAsync("loader", cancellationToken);
             var installersTask = GetFabricChoicesAsync("installer", cancellationToken);
-            await Task.WhenAll(mojangTask, paperTask, fabricGamesTask, loadersTask, installersTask);
+            var forgeBuildsTask = GetForgeBuildsAsync(cancellationToken);
+            var neoForgeBuildsTask = GetNeoForgeBuildsAsync(cancellationToken);
+            await Task.WhenAll(mojangTask, paperTask, fabricGamesTask, loadersTask, installersTask, forgeBuildsTask, neoForgeBuildsTask);
             var mojang = await mojangTask;
             // Mojang's Piston metadata first exposes a dedicated server artifact at 1.2.5.
             // Later manifest entries (including snapshots) are artifact-bearing; older client-only
@@ -167,6 +171,10 @@ public sealed class DistributionCatalogService(ValidatedDownloadClient http, ILo
             var paper = await paperTask;
             var fabricSet = (await fabricGamesTask).Select(x => x.Version).ToHashSet(StringComparer.Ordinal);
             var fabric = artifactMojang.Where(x => fabricSet.Contains(x.Id)).Select(x => x.Id).ToList();
+            var forgeBuilds = await forgeBuildsTask;
+            var neoForgeBuilds = await neoForgeBuildsTask;
+            var forge = artifactMojang.Where(x => forgeBuilds.ContainsKey(x.Id)).Select(x => x.Id).ToList();
+            var neoForge = artifactMojang.Where(x => neoForgeBuilds.ContainsKey(x.Id)).Select(x => x.Id).ToList();
             var paperBuilds = new ConcurrentDictionary<string, IReadOnlyList<PaperBuildDto>>(StringComparer.Ordinal);
             await Parallel.ForEachAsync(paper, new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = cancellationToken }, async (version, token) =>
             {
@@ -174,8 +182,8 @@ public sealed class DistributionCatalogService(ValidatedDownloadClient http, ILo
                 catch (Exception exception) { logger.LogDebug(exception, "Paper builds unavailable for {Version}", version); }
             });
             var value = new CatalogDto(
-                artifactMojang.Select(x => x.Id).ToList(), paper, fabric,
-                paperBuilds, await loadersTask, await installersTask, DateTimeOffset.UtcNow);
+                artifactMojang.Select(x => x.Id).ToList(), paper, fabric, forge, neoForge,
+                paperBuilds, await loadersTask, await installersTask, forgeBuilds, neoForgeBuilds, DateTimeOffset.UtcNow);
             _cache = (value, DateTimeOffset.UtcNow.AddMinutes(15));
             var fabricGames = (await fabricGamesTask).ToDictionary(x => x.Version, x => x.Stable, StringComparer.Ordinal);
             var releaseVersions = artifactMojang.Where(x => x.Type == "release").Select(x => x.Id).ToHashSet(StringComparer.Ordinal);
@@ -183,7 +191,9 @@ public sealed class DistributionCatalogService(ValidatedDownloadClient http, ILo
             {
                 Vanilla = value.Vanilla.Where(releaseVersions.Contains).ToList(),
                 Paper = value.Paper.Where(version => paperBuilds.TryGetValue(version, out var builds) && builds.Any(build => !build.Experimental)).ToList(),
-                Fabric = value.Fabric.Where(version => releaseVersions.Contains(version) && fabricGames.GetValueOrDefault(version)).ToList()
+                Fabric = value.Fabric.Where(version => releaseVersions.Contains(version) && fabricGames.GetValueOrDefault(version)).ToList(),
+                Forge = value.Forge.Where(version => releaseVersions.Contains(version) && forgeBuilds.GetValueOrDefault(version)?.Any(build => !build.Experimental) == true).ToList(),
+                NeoForge = value.NeoForge.Where(version => releaseVersions.Contains(version) && neoForgeBuilds.GetValueOrDefault(version)?.Any(build => !build.Experimental) == true).ToList()
             };
             return experimental ? value : _stableCache!;
         }
@@ -200,6 +210,8 @@ public sealed class DistributionCatalogService(ValidatedDownloadClient http, ILo
             ServerKind.Vanilla => await ResolveVanillaAsync(version, includeExperimental, cancellationToken),
             ServerKind.Paper => await ResolvePaperAsync(version, build, includeExperimental, cancellationToken),
             ServerKind.Fabric => await ResolveFabricAsync(version, loader, installer, includeExperimental, cancellationToken),
+            ServerKind.Forge => await ResolveForgeAsync(version, loader, includeExperimental, cancellationToken),
+            ServerKind.NeoForge => await ResolveNeoForgeAsync(version, loader, includeExperimental, cancellationToken),
             _ => throw PanelProblems.Validation("Unsupported server distribution.")
         };
     }
@@ -268,6 +280,38 @@ public sealed class DistributionCatalogService(ValidatedDownloadClient http, ILo
             LoaderVersion: loader.Version, InstallerVersion: installer.Version, Experimental: !game.Stable || !loader.Stable || !installer.Stable);
     }
 
+    private async Task<InstallPlan> ResolveForgeAsync(string version, string? requestedLoader, bool includeExperimental, CancellationToken cancellationToken)
+    {
+        var builds = await GetForgeBuildsAsync(cancellationToken);
+        var build = SelectLoaderBuild(builds, version, requestedLoader, includeExperimental, "Forge");
+        var uri = ForgeInstallerUri(version, build.Version);
+        var sha1 = await ReadSha1Async(uri.ToString(), cancellationToken);
+        var mojang = await GetMojangVersionAsync(version, cancellationToken);
+        return new InstallPlan(ServerKind.Forge, version, mojang.RequiredJava,
+            new DownloadArtifact(uri, "sha1", sha1, null, Path.GetFileName(uri.LocalPath)),
+            LoaderVersion: build.Version, Experimental: build.Experimental);
+    }
+
+    private async Task<InstallPlan> ResolveNeoForgeAsync(string version, string? requestedLoader, bool includeExperimental, CancellationToken cancellationToken)
+    {
+        var builds = await GetNeoForgeBuildsAsync(cancellationToken);
+        var build = SelectLoaderBuild(builds, version, requestedLoader, includeExperimental, "NeoForge");
+        var uri = NeoForgeInstallerUri(build.Version);
+        var sha1 = await ReadSha1Async(uri.ToString(), cancellationToken);
+        var mojang = await GetMojangVersionAsync(version, cancellationToken);
+        return new InstallPlan(ServerKind.NeoForge, version, mojang.RequiredJava,
+            new DownloadArtifact(uri, "sha1", sha1, null, Path.GetFileName(uri.LocalPath)),
+            LoaderVersion: build.Version, Experimental: build.Experimental);
+    }
+
+    private async Task<string> ReadSha1Async(string url, CancellationToken cancellationToken)
+    {
+        var sha1 = (await http.StringAsync(Sha1Uri(new Uri(url)), cancellationToken)).Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
+        if (sha1.Length != 40 || !sha1.All(Uri.IsHexDigit))
+            throw new PanelException(502, "UPSTREAM_UNAVAILABLE", "Loader checksum metadata is invalid.");
+        return sha1;
+    }
+
     private async Task<List<MojangManifestItem>> GetMojangManifestAsync(CancellationToken cancellationToken)
     {
         using var document = await http.JsonAsync(new Uri("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"), cancellationToken);
@@ -318,6 +362,129 @@ public sealed class DistributionCatalogService(ValidatedDownloadClient http, ILo
     private async Task<List<FabricChoiceDto>> GetFabricVersionsAsync(string type, CancellationToken cancellationToken) =>
         await GetFabricChoicesAsync(type, cancellationToken);
 
+    private async Task<IReadOnlyDictionary<string, IReadOnlyList<LoaderBuildDto>>> GetForgeBuildsAsync(CancellationToken cancellationToken)
+    {
+        var metadataTask = http.StringAsync(new Uri("https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml"), cancellationToken);
+        var promotionsTask = http.JsonAsync(new Uri("https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"), cancellationToken);
+        await Task.WhenAll(metadataTask, promotionsTask);
+        XDocument metadata;
+        try { metadata = XDocument.Parse(await metadataTask); }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        { throw new PanelException(502, "UPSTREAM_UNAVAILABLE", "Forge returned invalid version metadata.", exception.Message); }
+
+        using var promotions = await promotionsTask;
+        return ParseForgeBuilds(metadata, promotions.RootElement);
+    }
+
+    internal static IReadOnlyDictionary<string, IReadOnlyList<LoaderBuildDto>> ParseForgeBuilds(string metadataXml, string promotionsJson)
+    {
+        var metadata = XDocument.Parse(metadataXml);
+        using var promotions = JsonDocument.Parse(promotionsJson);
+        return ParseForgeBuilds(metadata, promotions.RootElement);
+    }
+
+    private static IReadOnlyDictionary<string, IReadOnlyList<LoaderBuildDto>> ParseForgeBuilds(XDocument metadata, JsonElement promotionsRoot)
+    {
+        var promoted = promotionsRoot.GetProperty("promos");
+        var versions = metadata.Descendants("version").Select(x => x.Value.Trim()).Where(x => x.Length > 0).Reverse();
+        var grouped = new Dictionary<string, List<LoaderBuildDto>>(StringComparer.Ordinal);
+        foreach (var coordinate in versions)
+        {
+            var separator = coordinate.IndexOf('-');
+            if (separator <= 0 || separator == coordinate.Length - 1) continue;
+            var minecraft = coordinate[..separator];
+            if (!IsForgeInstallerVersion(minecraft)) continue;
+            var loader = coordinate[(separator + 1)..];
+            var recommended = promoted.TryGetProperty($"{minecraft}-recommended", out var recommendedElement) ? recommendedElement.GetString() : null;
+            var latest = promoted.TryGetProperty($"{minecraft}-latest", out var latestElement) ? latestElement.GetString() : null;
+            var isRecommended = loader == recommended;
+            var isLatest = loader == latest;
+            var experimental = !isRecommended && !(recommended is null && isLatest);
+            var channel = isRecommended ? "Recommended" : isLatest ? "Latest" : "Other";
+            if (!grouped.TryGetValue(minecraft, out var builds)) grouped[minecraft] = builds = [];
+            if (builds.All(x => x.Version != loader)) builds.Add(new LoaderBuildDto(loader, channel, experimental));
+        }
+        return grouped.ToDictionary(
+            x => x.Key,
+            x => (IReadOnlyList<LoaderBuildDto>)x.Value.OrderBy(y => y.Experimental).ThenBy(y => y.Channel == "Recommended" ? 0 : y.Channel == "Latest" ? 1 : 2).ToList(),
+            StringComparer.Ordinal);
+    }
+
+    private async Task<IReadOnlyDictionary<string, IReadOnlyList<LoaderBuildDto>>> GetNeoForgeBuildsAsync(CancellationToken cancellationToken)
+    {
+        var xml = await http.StringAsync(new Uri("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml"), cancellationToken);
+        XDocument metadata;
+        try { metadata = XDocument.Parse(xml); }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        { throw new PanelException(502, "UPSTREAM_UNAVAILABLE", "NeoForge returned invalid version metadata.", exception.Message); }
+        return ParseNeoForgeBuilds(metadata);
+    }
+
+    internal static IReadOnlyDictionary<string, IReadOnlyList<LoaderBuildDto>> ParseNeoForgeBuilds(string metadataXml) =>
+        ParseNeoForgeBuilds(XDocument.Parse(metadataXml));
+
+    private static IReadOnlyDictionary<string, IReadOnlyList<LoaderBuildDto>> ParseNeoForgeBuilds(XDocument metadata)
+    {
+        var grouped = new Dictionary<string, List<LoaderBuildDto>>(StringComparer.Ordinal);
+        foreach (var loader in metadata.Descendants("version").Select(x => x.Value.Trim()).Where(x => x.Length > 0).Reverse())
+        {
+            var minecraft = NeoForgeMinecraftVersion(loader);
+            if (minecraft is null) continue;
+            var experimental = loader.Contains('-', StringComparison.Ordinal);
+            var channel = !experimental ? "Stable" : loader.Contains("beta", StringComparison.OrdinalIgnoreCase) ? "Beta" : "Prerelease";
+            if (!grouped.TryGetValue(minecraft, out var builds)) grouped[minecraft] = builds = [];
+            if (builds.All(x => x.Version != loader)) builds.Add(new LoaderBuildDto(loader, channel, experimental));
+        }
+        return grouped.ToDictionary(x => x.Key, x => (IReadOnlyList<LoaderBuildDto>)x.Value.OrderBy(y => y.Experimental).ToList(), StringComparer.Ordinal);
+    }
+
+    internal static Uri ForgeInstallerUri(string minecraftVersion, string loaderVersion)
+    {
+        var coordinate = $"{minecraftVersion}-{loaderVersion}";
+        return new Uri($"https://maven.minecraftforge.net/net/minecraftforge/forge/{coordinate}/forge-{coordinate}-installer.jar");
+    }
+
+    internal static Uri NeoForgeInstallerUri(string loaderVersion) =>
+        new($"https://maven.neoforged.net/releases/net/neoforged/neoforge/{loaderVersion}/neoforge-{loaderVersion}-installer.jar");
+
+    internal static Uri Sha1Uri(Uri artifact) => new(artifact.ToString() + ".sha1");
+
+    private static LoaderBuildDto SelectLoaderBuild(
+        IReadOnlyDictionary<string, IReadOnlyList<LoaderBuildDto>> builds,
+        string minecraftVersion,
+        string? requested,
+        bool includeExperimental,
+        string loaderName)
+    {
+        if (!builds.TryGetValue(minecraftVersion, out var available))
+            throw PanelProblems.Validation($"{loaderName} does not publish an installer for the selected Minecraft version.");
+        var selected = requested is null
+            ? available.FirstOrDefault(x => !x.Experimental) ?? (includeExperimental ? available.FirstOrDefault() : null)
+            : available.FirstOrDefault(x => x.Version == requested);
+        if (selected is null || selected.Experimental && !includeExperimental)
+            throw PanelProblems.Validation($"The selected {loaderName} version does not exist or is experimental.");
+        return selected;
+    }
+
+    public static string? NeoForgeMinecraftVersion(string loaderVersion)
+    {
+        var numeric = loaderVersion.Split('-', 2)[0].Split('.');
+        if (numeric.Length < 3 || !int.TryParse(numeric[0], out var major) || !int.TryParse(numeric[1], out var minor)) return null;
+        if (major is 20 or 21) return minor == 0 ? $"1.{major}" : $"1.{major}.{minor}";
+        if (major < 26 || !int.TryParse(numeric[2], out var patch)) return null;
+        return patch == 0 ? $"{major}.{minor}" : $"{major}.{minor}.{patch}";
+    }
+
+    private static bool IsForgeInstallerVersion(string version)
+    {
+        var parts = version.Split('.');
+        if (parts.Length < 2 || !int.TryParse(parts[0], out var major) || !int.TryParse(parts[1], out var minor)) return false;
+        if (major >= 26) return true;
+        if (major != 1) return false;
+        var patch = parts.Length > 2 && int.TryParse(parts[2], out var parsed) ? parsed : 0;
+        return minor > 5 || minor == 5 && patch >= 2;
+    }
+
     private static FabricChoiceDto SelectChoice(IReadOnlyList<FabricChoiceDto> choices, string? requested, bool experimental, string label)
     {
         var selected = requested is null ? choices.FirstOrDefault(x => x.Stable) : choices.FirstOrDefault(x => x.Version == requested);
@@ -328,8 +495,13 @@ public sealed class DistributionCatalogService(ValidatedDownloadClient http, ILo
     private static CatalogDto FilterStable(CatalogDto value) => value with
     {
         PaperBuilds = value.PaperBuilds.ToDictionary(x => x.Key, x => (IReadOnlyList<PaperBuildDto>)x.Value.Where(y => !y.Experimental).ToList()),
-        FabricLoaders = value.FabricLoaders.Where(x => x.Stable).ToList(), FabricInstallers = value.FabricInstallers.Where(x => x.Stable).ToList()
+        FabricLoaders = value.FabricLoaders.Where(x => x.Stable).ToList(), FabricInstallers = value.FabricInstallers.Where(x => x.Stable).ToList(),
+        ForgeBuilds = FilterStableBuilds(value.ForgeBuilds), NeoForgeBuilds = FilterStableBuilds(value.NeoForgeBuilds)
     };
+
+    private static IReadOnlyDictionary<string, IReadOnlyList<LoaderBuildDto>> FilterStableBuilds(
+        IReadOnlyDictionary<string, IReadOnlyList<LoaderBuildDto>> builds) =>
+        builds.ToDictionary(x => x.Key, x => (IReadOnlyList<LoaderBuildDto>)x.Value.Where(y => !y.Experimental).ToList(), StringComparer.Ordinal);
 
     private static string ReadString(JsonElement element, string property)
     {

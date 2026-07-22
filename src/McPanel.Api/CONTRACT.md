@@ -45,6 +45,7 @@ them `SessionRevoked`; the bundled client immediately returns to authentication.
 | POST | `/servers/{id}/console` | `{command}` -> `204` |
 | GET | `/servers/{id}/players` | observed players merged with authoritative whitelist, operator, and ban JSON files |
 | POST | `/servers/{id}/players/{name}/{whitelist|unwhitelist|op|deop|ban|pardon|kick}` | resulting `PlayerDto` |
+| GET | `/servers/{id}/mods` | Fabric/Forge/NeoForge top-level JAR metadata as `ModFileDto[]` |
 | GET | `/servers/{id}/files?path=` | directory entries |
 | POST | `/servers/{id}/files` | `{path,directory}` -> `204` |
 | GET/PUT | `/servers/{id}/files/content?path=` | text content / `{content}` |
@@ -62,15 +63,15 @@ them `SessionRevoked`; the bundled client immediately returns to authentication.
 | GET | `/java` | discovered Java runtimes |
 | POST | `/java/rescan` | refreshed runtimes |
 | POST | `/java/custom` | `{path}` -> validated runtime |
-| GET | `/catalog?experimental=false` | Vanilla/Paper/Fabric version arrays plus detailed choices |
+| GET | `/catalog?experimental=false` | Vanilla/Paper/Fabric/Forge/NeoForge version arrays plus detailed build choices |
 | GET | `/system/status` | host CPU, memory, disk, and recent samples |
 | GET | `/system/info` | panel paths/version/allocation ceiling |
 | GET/PUT | `/system/settings` | `{keepServersRunningOnPanelStop}` |
 
-`POST /servers` accepts `name`, `kind` (`Vanilla`, `Paper`, `Fabric`),
+`POST /servers` accepts `name`, `kind` (`Vanilla`, `Paper`, `Fabric`, `Forge`, `NeoForge`),
 `version`, `javaRuntimeId`, `memoryMb`, `port`, `eulaAccepted`, optional
 `startOnBoot`, optional Paper `build`, optional Fabric `loaderVersion` and
-`installerVersion`. `memoryMb` is the user-selected JVM RAM value, has a 512 MiB
+`installerVersion`, or a Forge/NeoForge `loaderVersion`. `memoryMb` is the user-selected JVM RAM value, has a 512 MiB
 minimum, and uses 512 MiB increments. MC Panel applies it equally to Xms and
 Xmx, then derives a larger internal cgroup ceiling for native-memory headroom.
 Legacy entries below the minimum must be raised in Runtime before they can
@@ -96,11 +97,20 @@ selected heap, rounded to 512 MiB steps, with a 512 MiB minimum and 4 GiB
 maximum. Total workload memory is enforced with cgroup
 v2 `memory.max`, with `memory.high` used as an earlier reclaim threshold and swap
 disabled for the server cgroup. JVM launch order is managed Xms, managed Xmx, the optional
-non-memory Aikar preset, custom JVM arguments, then managed `-jar` and `nogui`
+non-memory Aikar preset, custom JVM arguments, then either managed `-jar` or
+argument-file launch input and `nogui`
 arguments. Custom arguments cannot contain Xms, Xmx, or other managed launch
 arguments. Server summaries report cgroup current, peak, and swap memory plus
 whether enforcement is active; non-production development runs fall back to
 the Java process working set.
+
+The mods inventory is live, read-only, and available only to Fabric, Forge, and
+NeoForge instances. It scans regular, non-symlinked `mods/*.jar` files without
+extracting them and recognizes `fabric.mod.json`, Forge `META-INF/mods.toml`,
+legacy `mcmod.info`, and NeoForge `META-INF/neoforge.mods.toml` with a
+transitional `mods.toml` fallback. A malformed or unknown JAR is represented by
+its own `Invalid`, `Partial`, or `Unrecognized` result rather than failing the
+inventory.
 
 Server summaries include nullable `iconRevision`; clients use it for presence
 detection and cache-busted icon URLs. Icon uploads are PNG multipart payloads

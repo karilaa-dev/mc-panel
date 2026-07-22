@@ -108,6 +108,18 @@ public sealed class ValidatedDownloadClientTests : IDisposable
         Assert.Equal("keep me", await File.ReadAllTextAsync(destination));
     }
 
+    [Theory]
+    [InlineData("https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml")]
+    [InlineData("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml")]
+    public void Official_loader_maven_hosts_are_allowed(string url) => ValidatedDownloadClient.Validate(new Uri(url));
+
+    [Theory]
+    [InlineData("http://maven.minecraftforge.net/file.jar")]
+    [InlineData("https://forge.example/file.jar")]
+    [InlineData("https://maven.neoforged.net:444/file.jar")]
+    public void Non_official_or_non_https_loader_urls_are_rejected(string url) =>
+        Assert.Throws<PanelException>(() => ValidatedDownloadClient.Validate(new Uri(url)));
+
     public void Dispose()
     {
         if (Directory.Exists(_root)) Directory.Delete(_root, true);

@@ -3,6 +3,7 @@ using System.ComponentModel.DataAnnotations;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.IO.Compression;
 using McPanel.Api.Configuration;
 using McPanel.Api.Contracts;
 using McPanel.Api.Data;
@@ -185,6 +186,45 @@ done
         var stateFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
         await using var db = await stateFactory.CreateDbContextAsync();
         Assert.Empty(await db.Jobs.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Mods_endpoint_rejects_unknown_and_non_modded_servers_and_returns_mixed_inventory()
+    {
+        using (var unknown = await _client!.GetAsync($"/api/v1/servers/{Guid.NewGuid()}/mods"))
+            await AssertProblemAsync(unknown, HttpStatusCode.NotFound, "NOT_FOUND");
+        using (var paper = await _client!.GetAsync($"/api/v1/servers/{_serverId}/mods"))
+            await AssertProblemAsync(paper, HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+
+        var fabricId = Guid.NewGuid();
+        await using (var scope = _factory!.Services.CreateAsyncScope())
+        {
+            var stateFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+            await using var db = await stateFactory.CreateDbContextAsync();
+            db.Servers.Add(new ServerEntity
+            {
+                Id = fabricId, Name = "Fabric inventory", Kind = ServerKind.Fabric, Version = "1.20.4",
+                State = ServerState.Stopped, Port = 32_124, MemoryMb = 512, InitialMemoryMb = 512,
+                JavaRuntimeId = JavaId, EulaAcceptedAt = DateTimeOffset.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+        var mods = Path.Combine(_paths!.Instance(fabricId), "mods");
+        Directory.CreateDirectory(mods);
+        using (var archive = ZipFile.Open(Path.Combine(mods, "valid.jar"), ZipArchiveMode.Create))
+        {
+            var entry = archive.CreateEntry("fabric.mod.json");
+            await using var writer = new StreamWriter(entry.Open());
+            await writer.WriteAsync("{\"id\":\"valid\",\"name\":\"Valid Mod\",\"version\":\"1.0\"}");
+        }
+        await File.WriteAllTextAsync(Path.Combine(mods, "broken.jar"), "not a jar");
+
+        using var response = await _client.GetAsync($"/api/v1/servers/{fabricId}/mods");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(2, json.RootElement.GetArrayLength());
+        Assert.Contains(json.RootElement.EnumerateArray(), x => x.GetProperty("status").GetString() == "Parsed");
+        Assert.Contains(json.RootElement.EnumerateArray(), x => x.GetProperty("status").GetString() == "Invalid");
     }
 
     [Fact]
