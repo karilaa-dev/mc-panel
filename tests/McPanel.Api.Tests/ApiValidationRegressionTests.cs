@@ -489,6 +489,21 @@ done
         var firstRevision = uploadedJson.RootElement.GetProperty("revision").GetString();
         Assert.Equal(firstRevision, (await ReadServerAsync()).IconRevision);
         Assert.Equal(first, await File.ReadAllBytesAsync(Path.Combine(_paths!.Instance(_serverId), "server-icon.png")));
+        using (var library = await _client!.GetAsync("/api/v1/icons"))
+        {
+            Assert.Equal(HttpStatusCode.OK, library.StatusCode);
+            using var libraryJson = JsonDocument.Parse(await library.Content.ReadAsStringAsync());
+            Assert.Contains(libraryJson.RootElement.EnumerateArray(), icon => icon.GetProperty("revision").GetString() == firstRevision);
+        }
+        using (var libraryIcon = await _client!.GetAsync($"/api/v1/icons/{firstRevision}"))
+        {
+            Assert.Equal(HttpStatusCode.OK, libraryIcon.StatusCode);
+            Assert.Equal(first, await libraryIcon.Content.ReadAsByteArrayAsync());
+        }
+        using var standaloneUpload = await UploadLibraryIconAsync(IconPng(3));
+        Assert.Equal(HttpStatusCode.OK, standaloneUpload.StatusCode);
+        using var standaloneJson = JsonDocument.Parse(await standaloneUpload.Content.ReadAsStringAsync());
+        var standaloneRevision = standaloneJson.RootElement.GetProperty("revision").GetString();
         using (var downloaded = await _client!.GetAsync($"/api/v1/servers/{_serverId}/icon"))
         {
             Assert.Equal(HttpStatusCode.OK, downloaded.StatusCode);
@@ -507,6 +522,16 @@ done
         Assert.Equal(HttpStatusCode.NoContent, removed.StatusCode);
         Assert.Null((await ReadServerAsync()).IconRevision);
         Assert.False(File.Exists(Path.Combine(_paths.Instance(_serverId), "server-icon.png")));
+
+        using (var selected = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/icon/library", JsonSerializer.Serialize(new { revision = firstRevision })))
+            Assert.Equal(HttpStatusCode.OK, selected.StatusCode);
+        Assert.Equal(firstRevision, (await ReadServerAsync()).IconRevision);
+        Assert.Equal(first, await File.ReadAllBytesAsync(Path.Combine(_paths.Instance(_serverId), "server-icon.png")));
+
+        using var deletedLibraryIcon = await SendJsonAsync(HttpMethod.Delete, $"/api/v1/icons/{standaloneRevision}", "{}");
+        Assert.Equal(HttpStatusCode.NoContent, deletedLibraryIcon.StatusCode);
+        using var missingLibraryIcon = await _client!.GetAsync($"/api/v1/icons/{standaloneRevision}");
+        Assert.Equal(HttpStatusCode.NotFound, missingLibraryIcon.StatusCode);
     }
 
     [Fact]
@@ -1292,6 +1317,18 @@ END;
         file.Headers.ContentType = new("image/png");
         multipart.Add(file, "file", "server-icon.png");
         using var request = new HttpRequestMessage(HttpMethod.Put, $"/api/v1/servers/{_serverId}/icon") { Content = multipart };
+        request.Headers.Add("X-XSRF-TOKEN", csrf);
+        return await _client!.SendAsync(request);
+    }
+
+    private async Task<HttpResponseMessage> UploadLibraryIconAsync(byte[] content)
+    {
+        var csrf = await GetAntiforgeryAsync();
+        using var multipart = new MultipartFormDataContent();
+        var file = new ByteArrayContent(content);
+        file.Headers.ContentType = new("image/png");
+        multipart.Add(file, "file", "panel-icon.png");
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/icons") { Content = multipart };
         request.Headers.Add("X-XSRF-TOKEN", csrf);
         return await _client!.SendAsync(request);
     }

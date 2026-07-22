@@ -38,8 +38,16 @@ public static partial class ApiEndpoints
         api.MapGet("/servers/{id:guid}/icon", async (Guid id, ServerIconService icons, CancellationToken token) =>
             Results.File(await icons.GetPathAsync(id, token), "image/png"));
         api.MapPut("/servers/{id:guid}/icon", UploadIconAsync);
+        api.MapPut("/servers/{id:guid}/icon/library", (Guid id, SelectServerIconRequest request, ServerIconService icons, CancellationToken token) =>
+            icons.SelectAsync(id, request.Revision, token));
         api.MapDelete("/servers/{id:guid}/icon", async (Guid id, ServerIconService icons, CancellationToken token) =>
         { await icons.DeleteAsync(id, token); return Results.NoContent(); });
+        api.MapGet("/icons", (ServerIconService icons, CancellationToken token) => icons.ListAsync(token));
+        api.MapPost("/icons", UploadLibraryIconAsync);
+        api.MapGet("/icons/{revision}", async (string revision, ServerIconService icons, CancellationToken token) =>
+            Results.File(await icons.GetLibraryPathAsync(revision, token), "image/png"));
+        api.MapDelete("/icons/{revision}", async (string revision, ServerIconService icons, CancellationToken token) =>
+        { await icons.DeleteLibraryAsync(revision, token); return Results.NoContent(); });
 
         api.MapGet("/servers/{id:guid}/console", async (Guid id, long? after, int? limit, IDbContextFactory<StateDbContext> factory, ConsoleService service, CancellationToken token) =>
         {
@@ -175,16 +183,23 @@ public static partial class ApiEndpoints
 
     private static async Task<IResult> UploadIconAsync(Guid id, HttpRequest request, ServerIconService icons, CancellationToken token)
     {
+        return Results.Ok(await icons.SaveAsync(id, await ReadIconUploadAsync(request, token), token));
+    }
+
+    private static async Task<IResult> UploadLibraryIconAsync(HttpRequest request, ServerIconService icons, CancellationToken token)
+    {
+        return Results.Ok(await icons.SaveLibraryAsync(await ReadIconUploadAsync(request, token), token));
+    }
+
+    private static async Task<IFormFile> ReadIconUploadAsync(HttpRequest request, CancellationToken token)
+    {
         if (!request.HasFormContentType) throw PanelProblems.Validation("Icon upload must use multipart/form-data.");
         IFormCollection form;
         try { form = await request.ReadFormAsync(token); }
         catch (InvalidDataException exception) when (exception.Message.Contains("length limit", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new PanelException(413, "ICON_TOO_LARGE", "The final server icon cannot exceed 256 KiB.");
-        }
+        { throw new PanelException(413, "ICON_TOO_LARGE", "The final server icon cannot exceed 256 KiB."); }
         catch (InvalidDataException) { throw PanelProblems.Validation("The multipart form data is invalid."); }
-        var file = form.Files.GetFile("file") ?? throw PanelProblems.Validation("Multipart field 'file' is required.");
-        return Results.Ok(await icons.SaveAsync(id, file, token));
+        return form.Files.GetFile("file") ?? throw PanelProblems.Validation("Multipart field 'file' is required.");
     }
 
     private static async Task EnsureServerAsync(IDbContextFactory<StateDbContext> factory, Guid id, CancellationToken token)

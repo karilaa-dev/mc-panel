@@ -57,6 +57,11 @@ export interface ServerSummaryDto {
   iconRevision?: string | null
 }
 
+export interface IconLibraryItemDto {
+  revision: string
+  createdAt: string
+}
+
 export interface HostStatusDto {
   cpuPercent: number
   memoryUsedBytes: number

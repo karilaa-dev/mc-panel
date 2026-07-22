@@ -31,22 +31,62 @@ public sealed class ServerIconService(
 
     public async Task<ServerIconDto> SaveAsync(Guid id, IFormFile upload, CancellationToken cancellationToken)
     {
-        if (upload is null || upload.Length <= 0) throw PanelProblems.Validation("A PNG server icon is required.");
-        if (upload.Length > MaximumIconBytes)
-            throw new PanelException(413, "ICON_TOO_LARGE", $"The final server icon cannot exceed {MaximumIconBytes / 1024} KiB.");
-
-        byte[] bytes;
-        await using (var input = upload.OpenReadStream())
-        await using (var output = new MemoryStream((int)upload.Length))
-        {
-            await input.CopyToAsync(output, cancellationToken);
-            if (output.Length > MaximumIconBytes)
-                throw new PanelException(413, "ICON_TOO_LARGE", $"The final server icon cannot exceed {MaximumIconBytes / 1024} KiB.");
-            bytes = output.ToArray();
-        }
-        ValidatePng(bytes);
+        var bytes = await ReadUploadAsync(upload, cancellationToken);
         var revision = Revision(bytes);
+        await StoreLibraryAsync(revision, bytes, cancellationToken);
+        return await ApplyAsync(id, revision, bytes, cancellationToken);
+    }
 
+    public async Task<ServerIconDto> SaveLibraryAsync(IFormFile upload, CancellationToken cancellationToken)
+    {
+        var bytes = await ReadUploadAsync(upload, cancellationToken);
+        var revision = Revision(bytes);
+        await StoreLibraryAsync(revision, bytes, cancellationToken);
+        return new(revision);
+    }
+
+    public Task<IReadOnlyList<IconLibraryItemDto>> ListAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        Directory.CreateDirectory(paths.Icons);
+        IReadOnlyList<IconLibraryItemDto> icons = Directory.EnumerateFiles(paths.Icons, "*.png", SearchOption.TopDirectoryOnly)
+            .Select(path => new { Path = path, Revision = Path.GetFileNameWithoutExtension(path) })
+            .Where(item => IsRevision(item.Revision))
+            .Select(item => new IconLibraryItemDto(item.Revision, File.GetLastWriteTimeUtc(item.Path)))
+            .OrderByDescending(item => item.CreatedAt)
+            .ToList();
+        return Task.FromResult(icons);
+    }
+
+    public async Task<string> GetLibraryPathAsync(string revision, CancellationToken cancellationToken)
+    {
+        var path = LibraryPath(revision);
+        if (!File.Exists(path)) throw PanelProblems.NotFound("Panel icon");
+        var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+        ValidatePng(bytes);
+        if (!Revision(bytes).Equals(revision, StringComparison.OrdinalIgnoreCase))
+            throw PanelProblems.NotFound("Panel icon");
+        return path;
+    }
+
+    public Task DeleteLibraryAsync(string revision, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var path = LibraryPath(revision);
+        if (!File.Exists(path)) throw PanelProblems.NotFound("Panel icon");
+        File.Delete(path);
+        return Task.CompletedTask;
+    }
+
+    public async Task<ServerIconDto> SelectAsync(Guid id, string revision, CancellationToken cancellationToken)
+    {
+        var path = await GetLibraryPathAsync(revision, cancellationToken);
+        var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+        return await ApplyAsync(id, revision.ToLowerInvariant(), bytes, cancellationToken);
+    }
+
+    private async Task<ServerIconDto> ApplyAsync(Guid id, string revision, byte[] bytes, CancellationToken cancellationToken)
+    {
         using var serverLock = await keyedLock.AcquireAsync(id, cancellationToken);
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var server = await db.Servers.SingleOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw PanelProblems.NotFound("Server");
@@ -121,7 +161,7 @@ public sealed class ServerIconService(
     public async Task BackfillAsync(CancellationToken cancellationToken)
     {
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
-        var servers = await db.Servers.Where(x => x.IconRevision == null).ToListAsync(cancellationToken);
+        var servers = await db.Servers.ToListAsync(cancellationToken);
         var changed = false;
         foreach (var server in servers)
         {
@@ -132,8 +172,13 @@ public sealed class ServerIconService(
             {
                 var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
                 ValidatePng(bytes);
-                server.IconRevision = Revision(bytes);
-                changed = true;
+                var revision = Revision(bytes);
+                await StoreLibraryAsync(revision, bytes, cancellationToken);
+                if (server.IconRevision != revision)
+                {
+                    server.IconRevision = revision;
+                    changed = true;
+                }
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or PanelException) { }
         }
@@ -149,6 +194,46 @@ public sealed class ServerIconService(
     }
 
     private string IconPath(Guid id) => Path.Combine(paths.Instance(id), "server-icon.png");
+    private string LibraryPath(string revision)
+    {
+        if (!IsRevision(revision)) throw PanelProblems.Validation("The selected panel icon is invalid.");
+        return Path.Combine(paths.Icons, $"{revision.ToLowerInvariant()}.png");
+    }
+
+    private async Task StoreLibraryAsync(string revision, byte[] bytes, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(paths.Icons);
+        var destination = LibraryPath(revision);
+        if (File.Exists(destination)) return;
+        var temporary = Path.Combine(paths.Icons, $".{revision}.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            await File.WriteAllBytesAsync(temporary, bytes, cancellationToken);
+            try { File.Move(temporary, destination); }
+            catch (IOException) when (File.Exists(destination)) { }
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+    }
+
+    private static async Task<byte[]> ReadUploadAsync(IFormFile upload, CancellationToken cancellationToken)
+    {
+        if (upload is null || upload.Length <= 0) throw PanelProblems.Validation("A PNG server icon is required.");
+        if (upload.Length > MaximumIconBytes)
+            throw new PanelException(413, "ICON_TOO_LARGE", $"The final server icon cannot exceed {MaximumIconBytes / 1024} KiB.");
+        await using var input = upload.OpenReadStream();
+        await using var output = new MemoryStream((int)upload.Length);
+        await input.CopyToAsync(output, cancellationToken);
+        if (output.Length > MaximumIconBytes)
+            throw new PanelException(413, "ICON_TOO_LARGE", $"The final server icon cannot exceed {MaximumIconBytes / 1024} KiB.");
+        var bytes = output.ToArray();
+        ValidatePng(bytes);
+        return bytes;
+    }
+
+    private static bool IsRevision(string? revision) => revision is { Length: 64 } && revision.All(Uri.IsHexDigit);
     private static string Revision(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
     private static void EnsureStableState(ServerEntity server, bool processRunning)

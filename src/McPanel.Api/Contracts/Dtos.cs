@@ -58,6 +58,8 @@ public sealed record RuntimeConfigurationDto(
     int InitialMemoryMb, int MaximumMemoryMb, int TotalMemoryMb, string JavaRuntimeId, string JvmArguments,
     bool UseAikarFlags, bool StartOnBoot, bool CrashRecovery);
 public sealed record ServerIconDto(string Revision);
+public sealed record IconLibraryItemDto(string Revision, DateTimeOffset CreatedAt);
+public sealed record SelectServerIconRequest(string Revision);
 
 public sealed record FileEntryDto(string Name, string Path, bool IsDirectory, long Size, DateTimeOffset ModifiedAt);
 public sealed record FileContentDto(string Content);

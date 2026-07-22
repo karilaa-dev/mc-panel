@@ -37,6 +37,9 @@ them `SessionRevoked`; the bundled client immediately returns to authentication.
 | GET/PUT | `/servers/{id}/properties` | versioned, sectioned effective entries and available catalog definitions / `{revision,values,acknowledgedIncompatibleKeys?}` |
 | GET/PUT | `/servers/{id}/runtime` | `{initialMemoryMb,maximumMemoryMb,totalMemoryMb,javaRuntimeId,jvmArguments,useAikarFlags,startOnBoot,crashRecovery}` |
 | GET/PUT/DELETE | `/servers/{id}/icon` | 64×64 PNG / multipart `file` -> `{revision}` / `204` |
+| PUT | `/servers/{id}/icon/library` | apply a reusable panel icon by `{revision}` |
+| GET/POST | `/icons` | reusable panel icon metadata / multipart `file` -> `{revision}` |
+| GET/DELETE | `/icons/{revision}` | reusable 64×64 PNG / remove the library copy |
 | GET/PUT | `/servers/{id}/configuration` | deprecated curated compatibility adapter |
 | GET | `/servers/{id}/console?after=&limit=` | ordered console events |
 | POST | `/servers/{id}/console` | `{command}` -> `204` |

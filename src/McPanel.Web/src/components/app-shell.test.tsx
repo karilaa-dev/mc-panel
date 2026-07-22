@@ -116,6 +116,7 @@ describe("AppShell", () => {
     expect(overview.compareDocumentPosition(serverLink) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(serverLink.compareDocumentPosition(java) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.getByRole("link", { name: "Server properties" })).toBeVisible()
+    expect(screen.getByRole("link", { name: "Server icon" })).toBeVisible()
     expect(screen.getByRole("link", { name: "Runtime" })).toBeVisible()
 
     await user.click(screen.getByRole("button", { name: "Servers" }))

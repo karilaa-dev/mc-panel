@@ -13,6 +13,7 @@ const DashboardPage = lazy(() => import("@/pages/core-pages").then((module) => (
 const CreateServerPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.CreateServerPage })))
 const ServerOverviewPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.ServerOverviewPage })))
 const ServerPropertiesPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.ServerPropertiesPage })))
+const ServerIconPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.ServerIconPage })))
 const RuntimeSettingsPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.RuntimeSettingsPage })))
 const ConsolePage = lazy(() => import("@/pages/operations-pages").then((module) => ({ default: module.ConsolePage })))
 const FilesPage = lazy(() => import("@/pages/operations-pages").then((module) => ({ default: module.FilesPage })))
@@ -77,6 +78,7 @@ function AppRoutes() {
         <Route path="servers/:serverId" element={<ServerOverviewPage />} />
         <Route path="servers/:serverId/console" element={<ConsolePage />} />
         <Route path="servers/:serverId/properties" element={<ServerPropertiesPage />} />
+        <Route path="servers/:serverId/icon" element={<ServerIconPage />} />
         <Route path="servers/:serverId/runtime" element={<RuntimeSettingsPage />} />
         <Route path="servers/:serverId/settings" element={<LegacySettingsRedirect />} />
         <Route path="servers/:serverId/files" element={<FilesPage />} />

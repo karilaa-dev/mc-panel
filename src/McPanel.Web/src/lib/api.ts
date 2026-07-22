@@ -7,6 +7,7 @@ import type {
   CreateServerRequest,
   FileEntryDto,
   HostStatusDto,
+  IconLibraryItemDto,
   JavaRuntimeDto,
   JobDto,
   PlayerDto,
@@ -156,6 +157,21 @@ export const api = {
     body.set("file", file)
     return request<{ revision: string }>(`${serverPath(id)}/icon`, { method: "PUT", body })
   },
+  iconLibrary: () => request<IconLibraryItemDto[]>("/icons"),
+  uploadPanelIcon: (file: File) => {
+    const body = new FormData()
+    body.set("file", file)
+    return request<{ revision: string }>("/icons", { method: "POST", body })
+  },
+  panelIconUrl: (revision: string) =>
+    `${API_BASE}/icons/${encodeURIComponent(revision)}?v=${encodeURIComponent(revision)}`,
+  deletePanelIcon: (revision: string) =>
+    request<void>(`/icons/${encodeURIComponent(revision)}`, { method: "DELETE" }),
+  selectServerIcon: (id: string, revision: string) =>
+    request<{ revision: string }>(`${serverPath(id)}/icon/library`, {
+      method: "PUT",
+      body: JSON.stringify({ revision }),
+    }),
   deleteServerIcon: (id: string) => request<void>(`${serverPath(id)}/icon`, { method: "DELETE" }),
 
   host: () => request<HostStatusDto>("/system/status"),
