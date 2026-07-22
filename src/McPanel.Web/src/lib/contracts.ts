@@ -39,10 +39,18 @@ export interface ServerSummaryDto {
   state: ServerState
   port: number
   memoryMb: number
+  maximumHeapMemoryMb?: number
   playerCount: number
   maxPlayers: number
   cpuPercent: number
   memoryUsedMb: number
+  memoryPeakMb?: number
+  swapUsedMb?: number
+  anonymousMemoryMb?: number
+  fileMemoryMb?: number
+  kernelMemoryMb?: number
+  socketMemoryMb?: number
+  memoryEnforced?: boolean
   uptimeSeconds: number
   restartRequired: boolean
   startOnBoot: boolean
@@ -64,6 +72,10 @@ export interface SystemInfoDto {
   dataDirectory: string
   instancesDirectory: string
   memoryAllocationLimitBytes: number
+}
+
+export interface PanelSettingsDto {
+  keepServersRunningOnPanelStop: boolean
 }
 
 export interface ServerConfigurationDto {
@@ -123,6 +135,7 @@ export interface ServerPropertiesDto {
 export interface RuntimeConfigurationDto {
   initialMemoryMb: number
   maximumMemoryMb: number
+  totalMemoryMb: number
   javaRuntimeId: string
   jvmArguments: string
   useAikarFlags: boolean

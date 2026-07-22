@@ -17,6 +17,7 @@ import type {
   ServerPropertiesDto,
   ServerSummaryDto,
   SystemInfoDto,
+  PanelSettingsDto,
 } from "@/lib/contracts"
 
 const API_BASE = "/api/v1"
@@ -159,6 +160,11 @@ export const api = {
 
   host: () => request<HostStatusDto>("/system/status"),
   systemInfo: () => request<SystemInfoDto>("/system/info"),
+  panelSettings: () => request<PanelSettingsDto>("/system/settings"),
+  savePanelSettings: (body: PanelSettingsDto) => request<PanelSettingsDto>("/system/settings", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  }),
   java: () => request<JavaRuntimeDto[]>("/java"),
   rescanJava: () => request<JavaRuntimeDto[]>("/java/rescan", { method: "POST" }),
   addJava: (path: string) => request<JavaRuntimeDto>("/java/custom", {

@@ -6,6 +6,28 @@ namespace McPanel.Api.Tests;
 
 public sealed class RuntimeValidationTests
 {
+    [Fact]
+    public async Task Runtime_protocol_uses_versioned_length_prefixed_frames()
+    {
+        await using var stream = new MemoryStream();
+        var request = new RuntimeWireRequest(RuntimeWire.Version, Guid.NewGuid(), "snapshot", RuntimeWire.Element<object?>(null));
+        await RuntimeWire.WriteAsync(stream, request, CancellationToken.None);
+        Assert.True(stream.Length > 4);
+        stream.Position = 0;
+        var restored = await RuntimeWire.ReadAsync<RuntimeWireRequest>(stream, CancellationToken.None);
+        Assert.Equal(request.Version, restored.Version);
+        Assert.Equal(request.RequestId, restored.RequestId);
+        Assert.Equal("snapshot", restored.Operation);
+    }
+
+    [Theory]
+    [InlineData(512, 1024)]
+    [InlineData(4096, 5120)]
+    [InlineData(6144, 7680)]
+    [InlineData(65536, 69632)]
+    public void Adds_capped_native_headroom_without_reducing_the_selected_heap(int heapMb, int expectedTotalMb) =>
+        Assert.Equal(expectedTotalMb, MemorySizing.TotalForExistingHeapMb(heapMb));
+
     [Theory]
     [InlineData("1.8.0_412", 8)]
     [InlineData("17.0.12", 17)]

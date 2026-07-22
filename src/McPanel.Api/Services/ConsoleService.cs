@@ -59,6 +59,30 @@ public sealed partial class ConsoleService(
         return await db.Lines.Where(x => x.ServerId == serverId).MaxAsync(x => (long?)x.Sequence, cancellationToken) ?? 0;
     }
 
+    public async Task<IReadOnlyList<ConsoleEventDto>> ReadGlobalAsync(long after, int limit, CancellationToken cancellationToken)
+    {
+        await using var db = await consoleFactory.CreateDbContextAsync(cancellationToken);
+        return await db.Lines.Where(x => x.Sequence > Math.Max(0, after)).OrderBy(x => x.Sequence).Take(Math.Clamp(limit, 1, 2_000))
+            .Select(x => new ConsoleEventDto(x.ServerId, x.Sequence, x.Timestamp, x.Stream, x.Level, x.Text)).ToListAsync(cancellationToken);
+    }
+
+    public async Task NormalizeRuntimeServerIdsAsync(long after, CancellationToken cancellationToken)
+    {
+        await using var db = await consoleFactory.CreateDbContextAsync(cancellationToken);
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE "Lines" SET "ServerId" = upper("ServerId")
+            WHERE "Sequence" > {Math.Max(0, after)} AND "ServerId" <> upper("ServerId");
+            """, cancellationToken);
+    }
+
+    public async Task PublishExistingAsync(IReadOnlyList<ConsoleEventDto> lines, CancellationToken cancellationToken)
+    {
+        if (lines.Count == 0) return;
+        foreach (var line in lines) { SignalWaiters(line); await TrackPlayerAsync(line, cancellationToken); }
+        try { await audience.PublishAsync(group => hub.Clients.Group(group).SendAsync("ConsoleBatch", lines, cancellationToken), cancellationToken); }
+        catch (Exception exception) when (exception is not OperationCanceledException) { logger.LogDebug(exception, "Could not broadcast imported console lines"); }
+    }
+
     public async Task<bool> WaitForAsync(Guid serverId, long after, Func<ConsoleEventDto, bool> predicate, TimeSpan timeout, CancellationToken cancellationToken)
     {
         var source = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);

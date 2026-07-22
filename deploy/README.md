@@ -1,16 +1,19 @@
 # Debian/Ubuntu operations
 
-These scripts install MC Panel as a conventional systemd service with direct
-Java child processes. They do not install Docker, Java, Node.js, npm, or a .NET
+These scripts install MC Panel as two conventional systemd services: the web
+panel and a persistent Java runtime companion. They do not install Docker, Java, Node.js, npm, or a .NET
 runtime on the target host, and the running service never invokes `sudo`.
 
 ## Host and Java prerequisites
 
 Supported deployment hosts are current Debian or Ubuntu systemd machines on
-`x86_64` (`linux-x64`) or `aarch64` (`linux-arm64`). Size memory and storage for
-the sum of configured JVM heaps, worlds, logs, staging downloads, and backups.
-Each managed server has a 512 MiB minimum heap setting, adjustable in 512 MiB
-steps; Java's total resident memory can exceed its configured heap.
+`x86_64` (`linux-x64`) or `aarch64` (`linux-arm64`). Size memory for the sum of
+configured JVM RAM plus MC Panel's hidden native-memory reserves, and size storage for worlds, logs, staging
+downloads, and backups.
+Each managed server has a 512 MiB minimum RAM setting, adjustable in 512 MiB
+steps. The selected value is applied equally to Xms and Xmx. Each server also
+receives a separate, larger cgroup v2 limit so native JVM memory and charged
+cache fit without exposing a second setting.
 
 Install suitable 64-bit Java runtimes using your normal host-management
 process. MC Panel only discovers and probes existing executables with
@@ -89,7 +92,7 @@ The installer creates:
 - root-owned binaries under `/opt/mcpanel`;
 - root-owned `/etc/mcpanel/mcpanel.env` and `setup-token`, both mode `0600`;
 - `mcpanel`-owned state below `/var/lib/mcpanel`;
-- a hardened, enabled `/etc/systemd/system/mcpanel.service`.
+- hardened, enabled `mcpanel.service` and `mcpanel-runtime.service` units.
 
 The setup token is printed once and remains available to root with:
 
@@ -107,11 +110,13 @@ Common operations:
 
 ```bash
 sudo systemctl status mcpanel
+sudo systemctl status mcpanel-runtime
 sudo systemctl restart mcpanel
 sudo systemctl stop mcpanel
 sudo systemctl start mcpanel
 sudo journalctl -u mcpanel --since today
 sudo journalctl -u mcpanel -f
+sudo journalctl -u mcpanel-runtime -f
 ```
 
 Edit `/etc/mcpanel/mcpanel.env` with `sudoedit`, retain root ownership and mode
@@ -132,11 +137,15 @@ rendering a matching unit, creating the paths with the documented ownership,
 and repeating those custom paths for future update/uninstall operations; using
 the installer's path options on a fresh installation is safer.
 
-The unit uses `ProtectSystem=strict`, an empty capability set,
+Both units use `ProtectSystem=strict`, an empty capability set,
 `NoNewPrivileges`, private temporary/devices views, restricted address families,
-and `KillMode=mixed`. Only the configured data tree is writable. On a normal
-stop, ASP.NET Core has up to 75 seconds to shut down supervised servers; systemd
-then kills any remaining processes in the unit cgroup.
+and `KillMode=mixed`. Only the configured data tree is writable. The runtime
+unit owns Java and delegates only the systemd memory controller so it can create
+an enforced sub-cgroup for each server. Stopping `mcpanel.service` preserves
+servers by default; the Panel settings switch can instead request graceful
+stops. Explicitly stopping `mcpanel-runtime.service`, uninstalling, or shutting
+down the host gracefully stops every server before systemd enforces its timeout.
+A production start is rejected if cgroup v2 memory delegation is unavailable.
 
 ## Backups and recovery
 
@@ -166,7 +175,10 @@ Build a fresh artifact in a new directory, then run:
 sudo ./deploy/update.sh ./artifacts/mcpanel-linux-x64-new
 ```
 
-The updater stages and validates the artifact before stopping the service. It
+The updater stages and validates the artifact before stopping only the panel service. The
+runtime and active Minecraft servers remain online, and the panel reconnects
+after the binary swap. When the runtime is idle it automatically reloads the
+updated executable. The updater
 does not modify `/etc/mcpanel` or `/var/lib/mcpanel`. The former binary tree is
 retained beside `/opt/mcpanel` with a dated `.rollback-...` suffix. If an active
 service cannot remain active for three consecutive checks, the old tree is

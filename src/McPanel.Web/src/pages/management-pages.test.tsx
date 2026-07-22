@@ -4,9 +4,10 @@ import userEvent from "@testing-library/user-event"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { api } from "@/lib/api"
+import { ThemeProvider } from "@/components/theme-provider"
 import type { ScheduleWriteDto } from "@/lib/contracts"
 import { withFrequencyDefaults } from "@/lib/schedule-defaults"
-import { SchedulesPage } from "@/pages/management-pages"
+import { PanelSettingsPage, SchedulesPage } from "@/pages/management-pages"
 
 vi.mock("@/lib/api", () => ({
   api: {
@@ -15,6 +16,10 @@ vi.mock("@/lib/api", () => ({
     updateSchedule: vi.fn(),
     toggleSchedule: vi.fn(),
     deleteSchedule: vi.fn(),
+    authStatus: vi.fn(),
+    systemInfo: vi.fn(),
+    panelSettings: vi.fn(),
+    savePanelSettings: vi.fn(),
   },
 }))
 
@@ -78,5 +83,22 @@ describe("schedule defaults", () => {
     expect(withFrequencyDefaults(base, "Daily").timeOfDay).toBe("04:00")
     expect(withFrequencyDefaults(base, "Weekly").timeOfDay).toBe("04:00")
     expect(withFrequencyDefaults(base, "Interval").intervalMinutes).toBe(60)
+  })
+})
+
+describe("panel shutdown settings", () => {
+  it("persists the server continuity switch", async () => {
+    mockedApi.authStatus.mockResolvedValue({ setupRequired: false, authenticated: true, admin: { username: "admin" } })
+    mockedApi.systemInfo.mockResolvedValue({ version: "1.0.0", dataDirectory: "/data", instancesDirectory: "/data/instances", memoryAllocationLimitBytes: 8 * 1024 ** 3 })
+    mockedApi.panelSettings.mockResolvedValue({ keepServersRunningOnPanelStop: true })
+    mockedApi.savePanelSettings.mockImplementation(async (value) => value)
+    const user = userEvent.setup()
+
+    render(<ThemeProvider><QueryClientProvider client={newClient()}><MemoryRouter><PanelSettingsPage /></MemoryRouter></QueryClientProvider></ThemeProvider>)
+
+    const continuity = await screen.findByRole("switch", { name: "Keep servers running when the panel stops" })
+    expect(continuity).toBeChecked()
+    await user.click(continuity)
+    await waitFor(() => expect(mockedApi.savePanelSettings.mock.calls[0]?.[0]).toEqual({ keepServersRunningOnPanelStop: false }))
   })
 })

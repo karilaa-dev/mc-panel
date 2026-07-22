@@ -7,6 +7,7 @@ namespace McPanel.Api.Tests;
 public sealed class DatabaseIntegrationTests : IDisposable
 {
     private readonly string _file = Path.Combine(Path.GetTempPath(), "mcpanel-state-" + Guid.NewGuid().ToString("N") + ".db");
+    private readonly string _consoleFile = Path.Combine(Path.GetTempPath(), "mcpanel-console-" + Guid.NewGuid().ToString("N") + ".db");
 
     [Fact]
     public async Task Sqlite_persists_enum_state_and_single_player_identity()
@@ -56,6 +57,8 @@ public sealed class DatabaseIntegrationTests : IDisposable
             Assert.Equal("legacy-admin", admin.Username);
             Assert.Equal("legacy-password-hash", admin.PasswordHash);
             Assert.Matches("^[0-9a-f]{32}$", admin.SessionStamp);
+            Assert.True(admin.KeepServersRunningOnPanelStop);
+            Assert.Equal(0, admin.LastConsoleSequence);
             stamp = admin.SessionStamp;
         }
         await using (var db = new StateDbContext(options))
@@ -99,12 +102,37 @@ public sealed class DatabaseIntegrationTests : IDisposable
         await using var verify = new SqliteConnection($"Data Source={_file}");
         await verify.OpenAsync();
         await using var select = verify.CreateCommand();
-        select.CommandText = "SELECT \"InitialMemoryMb\", \"UseAikarFlags\" FROM \"Servers\" LIMIT 1;";
+        select.CommandText = "SELECT \"InitialMemoryMb\", \"UseAikarFlags\", \"MemoryLimitMb\" FROM \"Servers\" LIMIT 1;";
         await using var reader = await select.ExecuteReaderAsync();
         Assert.True(await reader.ReadAsync());
         Assert.Equal(6144, reader.GetInt32(0));
         Assert.False(reader.GetBoolean(1));
+        Assert.Equal(7680, reader.GetInt32(2));
     }
 
-    public void Dispose() { SqliteConnection.ClearAllPools(); if (File.Exists(_file)) File.Delete(_file); }
+    [Fact]
+    public async Task Existing_lowercase_runtime_console_ids_are_made_queryable_by_ef()
+    {
+        var id = Guid.NewGuid();
+        var options = new DbContextOptionsBuilder<ConsoleDbContext>().UseSqlite($"Data Source={_consoleFile}").Options;
+        await using (var db = new ConsoleDbContext(options))
+        {
+            await db.Database.EnsureCreatedAsync();
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO "Lines" ("ServerId", "Timestamp", "Stream", "Level", "Text")
+                VALUES ({id.ToString()}, 0, 'stdout', 'info', 'persisted while panel was down');
+                """);
+            Assert.Empty(await db.Lines.Where(x => x.ServerId == id).ToListAsync());
+            await db.EnsureCompatibleSchemaAsync();
+        }
+        await using (var db = new ConsoleDbContext(options))
+            Assert.Single(await db.Lines.Where(x => x.ServerId == id).ToListAsync());
+    }
+
+    public void Dispose()
+    {
+        SqliteConnection.ClearAllPools();
+        if (File.Exists(_file)) File.Delete(_file);
+        if (File.Exists(_consoleFile)) File.Delete(_consoleFile);
+    }
 }

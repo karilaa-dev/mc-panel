@@ -35,7 +35,7 @@ them `SessionRevoked`; the bundled client immediately returns to authentication.
 | POST | `/servers/{id}/actions/kill` | `{confirm:true}` -> `202 Job` emergency process-tree kill |
 | POST | `/servers/{id}/{start|stop|restart|update}` | compatibility alias for bundled client |
 | GET/PUT | `/servers/{id}/properties` | versioned, sectioned effective entries and available catalog definitions / `{revision,values,acknowledgedIncompatibleKeys?}` |
-| GET/PUT | `/servers/{id}/runtime` | `{initialMemoryMb,maximumMemoryMb,javaRuntimeId,jvmArguments,useAikarFlags,startOnBoot,crashRecovery}` |
+| GET/PUT | `/servers/{id}/runtime` | `{initialMemoryMb,maximumMemoryMb,totalMemoryMb,javaRuntimeId,jvmArguments,useAikarFlags,startOnBoot,crashRecovery}` |
 | GET/PUT/DELETE | `/servers/{id}/icon` | 64×64 PNG / multipart `file` -> `{revision}` / `204` |
 | GET/PUT | `/servers/{id}/configuration` | deprecated curated compatibility adapter |
 | GET | `/servers/{id}/console?after=&limit=` | ordered console events |
@@ -62,11 +62,14 @@ them `SessionRevoked`; the bundled client immediately returns to authentication.
 | GET | `/catalog?experimental=false` | Vanilla/Paper/Fabric version arrays plus detailed choices |
 | GET | `/system/status` | host CPU, memory, disk, and recent samples |
 | GET | `/system/info` | panel paths/version/allocation ceiling |
+| GET/PUT | `/system/settings` | `{keepServersRunningOnPanelStop}` |
 
 `POST /servers` accepts `name`, `kind` (`Vanilla`, `Paper`, `Fabric`),
 `version`, `javaRuntimeId`, `memoryMb`, `port`, `eulaAccepted`, optional
 `startOnBoot`, optional Paper `build`, optional Fabric `loaderVersion` and
-`installerVersion`. RAM has a 512 MiB minimum and uses 512 MiB increments.
+`installerVersion`. `memoryMb` is the user-selected JVM RAM value, has a 512 MiB
+minimum, and uses 512 MiB increments. MC Panel applies it equally to Xms and
+Xmx, then derives a larger internal cgroup ceiling for native-memory headroom.
 Legacy entries below the minimum must be raised in Runtime before they can
 start. Only new, verified upstream installs are accepted; arbitrary source
 directories and URLs are never adopted.
@@ -83,11 +86,18 @@ and 255 UTF-8 bytes for the world directory name, and 2,048 characters for
 additional JVM arguments. Schedule names are limited to 96 characters. Control
 characters that could inject extra properties or commands are rejected.
 
-Runtime memory uses 512 MiB increments with `initialMemoryMb <=
-maximumMemoryMb`. JVM launch order is managed Xms, managed Xmx, the optional
+Runtime memory exposes one value through `maximumMemoryMb`; saving normalizes
+`initialMemoryMb` to the same value. `totalMemoryMb` remains in the compatibility
+DTO as the derived internal ceiling. Native-memory headroom is 25% of the
+selected heap, rounded to 512 MiB steps, with a 512 MiB minimum and 4 GiB
+maximum. Total workload memory is enforced with cgroup
+v2 `memory.max`, with `memory.high` used as an earlier reclaim threshold and swap
+disabled for the server cgroup. JVM launch order is managed Xms, managed Xmx, the optional
 non-memory Aikar preset, custom JVM arguments, then managed `-jar` and `nogui`
 arguments. Custom arguments cannot contain Xms, Xmx, or other managed launch
-arguments.
+arguments. Server summaries report cgroup current, peak, and swap memory plus
+whether enforcement is active; non-production development runs fall back to
+the Java process working set.
 
 Server summaries include nullable `iconRevision`; clients use it for presence
 detection and cache-busted icon URLs. Icon uploads are PNG multipart payloads

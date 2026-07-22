@@ -120,7 +120,7 @@ done
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || die "run this installer as root (for example, with sudo)"
 [[ -n "$artifact_dir" ]] || { usage >&2; die "a publish directory is required"; }
 
-for command_name in cp find getent grep groupadd install mktemp mv od realpath sed systemctl tr useradd; do
+for command_name in chmod chown cp find getent grep groupadd install mktemp mv od realpath sed systemctl tr useradd; do
   command -v "$command_name" >/dev/null 2>&1 || die "required command not found: $command_name"
 done
 
@@ -137,7 +137,7 @@ case "$(uname -m)" in
   *) die "only x86_64 and aarch64 hosts are supported" ;;
 esac
 
-[[ "$listen_address" =~ ^[A-Za-z0-9._:\[\]-]+$ ]] || die "invalid listen address"
+[[ "$listen_address" =~ ^[][A-Za-z0-9._:-]+$ ]] || die "invalid listen address"
 [[ "$port" =~ ^[0-9]+$ ]] || die "port must be an integer"
 ((port >= 1 && port <= 65535)) || die "port must be between 1 and 65535"
 [[ "$service_name" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "invalid service name"
@@ -163,6 +163,8 @@ artifact_dir="$(realpath -e -- "$artifact_dir")"
 [[ ! -e "$install_dir" ]] || die "$install_dir already exists; use deploy/update.sh for an existing installation"
 [[ ! -e "/etc/systemd/system/$service_name.service" ]] || \
   die "/etc/systemd/system/$service_name.service already exists"
+[[ ! -e "/etc/systemd/system/$service_name-runtime.service" ]] || \
+  die "/etc/systemd/system/$service_name-runtime.service already exists"
 
 for managed_dir in "$config_dir" "$data_dir"; do
   [[ ! -L "$managed_dir" ]] || die "managed directory must not be a symbolic link: $managed_dir"
@@ -171,6 +173,8 @@ done
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 service_template="$script_dir/mcpanel.service.in"
 [[ -f "$service_template" && ! -L "$service_template" ]] || die "service template is missing: $service_template"
+runtime_service_template="$script_dir/mcpanel-runtime.service.in"
+[[ -f "$runtime_service_template" && ! -L "$runtime_service_template" ]] || die "runtime service template is missing: $runtime_service_template"
 
 install_parent="$(dirname -- "$install_dir")"
 install -d -o root -g root -m 0755 -- "$install_parent"
@@ -210,7 +214,7 @@ fi
 
 install -d -o root -g "$PANEL_GROUP" -m 0750 -- "$config_dir"
 install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 0750 -- "$data_dir"
-for state_dir in instances staging backups logs keys; do
+for state_dir in instances staging backups logs runtime runtime/state keys; do
   install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 0750 -- "$data_dir/$state_dir"
 done
 
@@ -264,12 +268,25 @@ sed \
   -e "s|@INSTALL_DIR@|$install_dir|g" \
   -e "s|@CONFIG_DIR@|$config_dir|g" \
   -e "s|@DATA_DIR@|$data_dir|g" \
+  -e "s|@SERVICE_NAME@|$service_name|g" \
   "$service_template" > "$unit_tmp"
 chown root:root "$unit_tmp"
 chmod 0644 "$unit_tmp"
 mv -- "$unit_tmp" "/etc/systemd/system/$service_name.service"
 
+runtime_service_name="$service_name-runtime"
+runtime_unit_tmp="$(mktemp "/etc/systemd/system/.${runtime_service_name}.service.XXXXXX")"
+sed \
+  -e "s|@INSTALL_DIR@|$install_dir|g" \
+  -e "s|@CONFIG_DIR@|$config_dir|g" \
+  -e "s|@DATA_DIR@|$data_dir|g" \
+  "$runtime_service_template" > "$runtime_unit_tmp"
+chown root:root "$runtime_unit_tmp"
+chmod 0644 "$runtime_unit_tmp"
+mv -- "$runtime_unit_tmp" "/etc/systemd/system/$runtime_service_name.service"
+
 systemctl daemon-reload
+systemctl enable --now "$runtime_service_name.service"
 systemctl enable --now "$service_name.service"
 
 info "MC Panel was installed and started as $PANEL_USER."
@@ -281,3 +298,4 @@ else
   info "Existing configuration was retained. The setup token, if still needed, is under $config_dir."
 fi
 info "Check status with: systemctl status $service_name.service"
+info "Runtime status: systemctl status $runtime_service_name.service"

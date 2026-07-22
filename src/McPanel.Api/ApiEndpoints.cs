@@ -86,6 +86,19 @@ public static partial class ApiEndpoints
             var total = HostMetricsService.ReadMemory().Total;
             return new SystemInfoDto(typeof(Program).Assembly.GetName().Version?.ToString() ?? "1.0.0", paths.Data, paths.Instances, (long)(total * options.Value.MemoryAllocationFraction));
         });
+        api.MapGet("/system/settings", async (IDbContextFactory<StateDbContext> factory, CancellationToken token) =>
+        {
+            await using var db = await factory.CreateDbContextAsync(token);
+            return new PanelSettingsDto(await db.Admins.Select(x => x.KeepServersRunningOnPanelStop).SingleOrDefaultAsync(token));
+        });
+        api.MapPut("/system/settings", async (PanelSettingsDto request, IDbContextFactory<StateDbContext> factory, CancellationToken token) =>
+        {
+            await using var db = await factory.CreateDbContextAsync(token);
+            var admin = await db.Admins.SingleOrDefaultAsync(token) ?? throw PanelProblems.NotFound("Administrator");
+            admin.KeepServersRunningOnPanelStop = request.KeepServersRunningOnPanelStop;
+            await db.SaveChangesAsync(token);
+            return request;
+        });
     }
 
     private static void MapAuth(RouteGroupBuilder root)

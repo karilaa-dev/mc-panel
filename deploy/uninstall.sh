@@ -104,7 +104,7 @@ done
 ((!purge || purge_confirmed)) || \
   die "purge was not confirmed; repeat with both --purge and --yes-really-purge"
 
-for command_name in getent groupdel realpath rm systemctl userdel; do
+for command_name in getent groupdel realpath rm rmdir systemctl userdel; do
   command -v "$command_name" >/dev/null 2>&1 || die "required command not found: $command_name"
 done
 
@@ -132,15 +132,32 @@ if [[ -e "$install_dir" ]]; then
 fi
 
 unit_file="/etc/systemd/system/$service_name.service"
+runtime_service_name="$service_name-runtime"
+runtime_unit_file="/etc/systemd/system/$runtime_service_name.service"
 if [[ -e "$unit_file" ]]; then
   [[ -f "$unit_file" && ! -L "$unit_file" ]] || die "refusing to remove unsafe unit file: $unit_file"
 fi
+if [[ -e "$runtime_unit_file" ]]; then
+  [[ -f "$runtime_unit_file" && ! -L "$runtime_unit_file" ]] || die "refusing to remove unsafe runtime unit file: $runtime_unit_file"
+fi
 systemctl disable --now "$service_name.service" >/dev/null 2>&1 || true
+systemctl disable --now "$runtime_service_name.service" >/dev/null 2>&1 || true
 if [[ -e "$unit_file" ]]; then
   rm -f -- "$unit_file"
 fi
+if [[ -e "$runtime_unit_file" ]]; then
+  rm -f -- "$runtime_unit_file"
+fi
+memory_dropin_dir="/etc/systemd/system/$service_name.service.d"
+memory_dropin="$memory_dropin_dir/50-mcpanel-memory.conf"
+if [[ -e "$memory_dropin" ]]; then
+  [[ -f "$memory_dropin" && ! -L "$memory_dropin" ]] || die "refusing to remove unsafe memory delegation drop-in: $memory_dropin"
+  rm -f -- "$memory_dropin"
+  rmdir --ignore-fail-on-non-empty -- "$memory_dropin_dir" 2>/dev/null || true
+fi
 systemctl daemon-reload
 systemctl reset-failed "$service_name.service" >/dev/null 2>&1 || true
+systemctl reset-failed "$runtime_service_name.service" >/dev/null 2>&1 || true
 
 if [[ -d "$install_dir" ]]; then
   rm -rf --one-file-system -- "$install_dir"

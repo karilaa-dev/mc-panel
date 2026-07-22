@@ -35,6 +35,7 @@ const properties: ServerPropertiesDto = {
 const runtime: RuntimeConfigurationDto = {
   initialMemoryMb: 2048,
   maximumMemoryMb: 4096,
+  totalMemoryMb: 6144,
   javaRuntimeId: "java-21",
   jvmArguments: "-Dcustom=true",
   useAikarFlags: false,
@@ -137,21 +138,21 @@ describe("RuntimeSettingsPage", () => {
     mockedApi.systemInfo.mockResolvedValue({ version: "1.0.0", dataDirectory: "/var/lib/mcpanel", instancesDirectory: "/var/lib/mcpanel/instances", memoryAllocationLimitBytes: 8 * 1024 ** 3 })
   })
 
-  it("shows Xms in Advanced and includes independent heap and Aikar values in saves", async () => {
+  it("shows one RAM slider and applies it equally to Xms and Xmx", async () => {
     const user = userEvent.setup()
     renderPage("runtime")
 
-    await user.click(await screen.findByRole("button", { name: "Advanced" }))
-    const xms = screen.getByRole("spinbutton", { name: "Minimum RAM (Xms)" })
-    expect(xms).toHaveValue(2048)
-    await user.clear(xms)
-    await user.type(xms, "1024")
+    await waitFor(() => expect(document.querySelectorAll('[data-slot="slider"] input[type="range"]')).toHaveLength(1))
+    const slider = document.querySelector('[data-slot="slider"] input[type="range"]') as HTMLInputElement
+    expect(slider).toHaveAttribute("aria-label", "RAM")
+    fireEvent.change(slider, { target: { value: "3072" } })
     await user.click(screen.getByRole("switch", { name: "Use Aikar flags" }))
     await user.click(screen.getByRole("button", { name: "Save changes" }))
 
     await waitFor(() => expect(mockedApi.saveRuntime).toHaveBeenCalledWith("server-1", expect.objectContaining({
-      initialMemoryMb: 1024,
-      maximumMemoryMb: 4096,
+      totalMemoryMb: 4096,
+      initialMemoryMb: 3072,
+      maximumMemoryMb: 3072,
       useAikarFlags: true,
       jvmArguments: "-Dcustom=true",
     })))
@@ -170,19 +171,17 @@ describe("RuntimeSettingsPage", () => {
     await waitFor(() => expect(aikar).toBeChecked())
   })
 
-  it("synchronizes Xms whenever Xmx moves in either direction", async () => {
-    mockedApi.runtime.mockResolvedValue({ ...runtime, initialMemoryMb: 4096, maximumMemoryMb: 4096 })
-    const user = userEvent.setup()
+  it("caps automatic headroom for large RAM allocations", async () => {
+    mockedApi.runtime.mockResolvedValue({ ...runtime, initialMemoryMb: 65536, maximumMemoryMb: 65536, totalMemoryMb: 69632 })
+    mockedApi.systemInfo.mockResolvedValue({ version: "1.0.0", dataDirectory: "/var/lib/mcpanel", instancesDirectory: "/var/lib/mcpanel/instances", memoryAllocationLimitBytes: 68 * 1024 ** 3 })
     renderPage("runtime")
 
-    await waitFor(() => expect(document.querySelector('[data-slot="slider"] input[type="range"]')).toBeInTheDocument())
-    const slider = document.querySelector('[data-slot="slider"] input[type="range"]') as HTMLInputElement
-    fireEvent.change(slider, { target: { value: "3584" } })
-    await user.click(screen.getByRole("button", { name: "Advanced" }))
-    const xms = screen.getByRole("spinbutton", { name: "Minimum RAM (Xms)" })
-    await waitFor(() => expect(xms).toHaveValue(3584))
-
-    fireEvent.change(slider, { target: { value: "4096" } })
-    await waitFor(() => expect(xms).toHaveValue(4096))
+    expect(await screen.findByText("RAM: 64.0 GiB")).toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole("button", { name: "Save changes" }))
+    await waitFor(() => expect(mockedApi.saveRuntime).toHaveBeenCalledWith("server-1", expect.objectContaining({
+      totalMemoryMb: 69632,
+      initialMemoryMb: 65536,
+      maximumMemoryMb: 65536,
+    })))
   })
 })

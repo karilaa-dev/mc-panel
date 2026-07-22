@@ -188,14 +188,16 @@ public sealed class PropertiesService(
         EnsureStableState(server, processStatus.IsRunning(id));
         if (!await db.JavaRuntimes.AnyAsync(x => x.Id == dto.JavaRuntimeId, cancellationToken))
             throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
+        var totalLimitMb = MemorySizing.TotalForExistingHeapMb(dto.MaximumMemoryMb);
         var totalMemory = HostMetricsService.ReadMemory().Total;
-        if ((long)dto.MaximumMemoryMb * 1024 * 1024 > totalMemory * options.Value.MemoryAllocationFraction)
+        if ((long)totalLimitMb * 1024 * 1024 > totalMemory * options.Value.MemoryAllocationFraction)
             throw new PanelException(400, "MEMORY_LIMIT_EXCEEDED", "The selected memory exceeds the host allocation limit.");
 
-        var restartChanged = server.InitialMemoryMb != dto.InitialMemoryMb || server.MemoryMb != dto.MaximumMemoryMb ||
+        var restartChanged = server.InitialMemoryMb != dto.MaximumMemoryMb || server.MemoryMb != dto.MaximumMemoryMb || server.MemoryLimitMb != totalLimitMb ||
             server.JavaRuntimeId != dto.JavaRuntimeId || server.JvmArguments != dto.JvmArguments || server.UseAikarFlags != dto.UseAikarFlags;
-        server.InitialMemoryMb = dto.InitialMemoryMb;
+        server.InitialMemoryMb = dto.MaximumMemoryMb;
         server.MemoryMb = dto.MaximumMemoryMb;
+        server.MemoryLimitMb = totalLimitMb;
         server.JavaRuntimeId = dto.JavaRuntimeId;
         server.JvmArguments = dto.JvmArguments;
         server.UseAikarFlags = dto.UseAikarFlags;
@@ -243,8 +245,9 @@ public sealed class PropertiesService(
             throw PanelProblems.Conflict("PORT_IN_USE", "The selected port is already assigned.");
         if (!await db.JavaRuntimes.AnyAsync(x => x.Id == dto.JavaRuntimeId, cancellationToken))
             throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
+        var totalLimitMb = MemorySizing.TotalForExistingHeapMb(dto.MemoryMb);
         var totalMemory = HostMetricsService.ReadMemory().Total;
-        if ((long)dto.MemoryMb * 1024 * 1024 > totalMemory * options.Value.MemoryAllocationFraction)
+        if ((long)totalLimitMb * 1024 * 1024 > totalMemory * options.Value.MemoryAllocationFraction)
             throw new PanelException(400, "MEMORY_LIMIT_EXCEEDED", "The selected memory exceeds the host allocation limit.");
 
         var file = Path.Combine(paths.Instance(id), "server.properties");
@@ -260,9 +263,8 @@ public sealed class PropertiesService(
         document.Set("level-name", dto.WorldName); document.Set("server-port", dto.Port.ToString());
         var updatedText = document.ToString();
         var changedProperties = !fileExists || !string.Equals(originalText, updatedText, StringComparison.Ordinal);
-        var nextInitialMemory = Math.Min(server.InitialMemoryMb, dto.MemoryMb);
-        var changedRuntime = server.MemoryMb != dto.MemoryMb || server.InitialMemoryMb != nextInitialMemory || server.JavaRuntimeId != dto.JavaRuntimeId || server.JvmArguments != dto.JvmArguments || server.Port != dto.Port;
-        server.Port = dto.Port; server.MemoryMb = dto.MemoryMb; server.InitialMemoryMb = nextInitialMemory; server.JavaRuntimeId = dto.JavaRuntimeId;
+        var changedRuntime = server.MemoryLimitMb != totalLimitMb || server.MemoryMb != dto.MemoryMb || server.InitialMemoryMb != dto.MemoryMb || server.JavaRuntimeId != dto.JavaRuntimeId || server.JvmArguments != dto.JvmArguments || server.Port != dto.Port;
+        server.Port = dto.Port; server.MemoryLimitMb = totalLimitMb; server.MemoryMb = dto.MemoryMb; server.InitialMemoryMb = dto.MemoryMb; server.JavaRuntimeId = dto.JavaRuntimeId;
         server.JvmArguments = dto.JvmArguments; server.StartOnBoot = dto.StartOnBoot; server.CrashRecovery = dto.CrashRecovery;
         server.RestartRequired |= server.State == ServerState.Running && (changedProperties || changedRuntime);
         server.UpdatedAt = DateTimeOffset.UtcNow;
@@ -361,6 +363,7 @@ public sealed class PropertiesService(
     private static RuntimeConfigurationDto RuntimeDto(ServerEntity server) => new(
         server.InitialMemoryMb,
         server.MemoryMb,
+        server.MemoryLimitMb,
         server.JavaRuntimeId,
         server.JvmArguments,
         server.UseAikarFlags,
@@ -384,10 +387,8 @@ public sealed class PropertiesService(
             throw PanelProblems.Validation("Required runtime settings cannot be null.");
         if (dto.JvmArguments.Length > MaxJvmArgumentsLength)
             throw PanelProblems.Validation($"JVM arguments may contain at most {MaxJvmArgumentsLength} characters.");
-        if (dto.InitialMemoryMb < PanelOptions.MinimumServerMemoryMb || dto.MaximumMemoryMb < PanelOptions.MinimumServerMemoryMb ||
-            dto.InitialMemoryMb > dto.MaximumMemoryMb || dto.InitialMemoryMb % PanelOptions.ServerMemoryStepMb != 0 ||
-            dto.MaximumMemoryMb % PanelOptions.ServerMemoryStepMb != 0)
-            throw PanelProblems.Validation("Initial and maximum memory must use 512 MiB steps, and initial memory cannot exceed maximum memory.");
+        if (dto.MaximumMemoryMb is < PanelOptions.MinimumServerMemoryMb or > 1_048_576 || dto.MaximumMemoryMb % PanelOptions.ServerMemoryStepMb != 0)
+            throw PanelProblems.Validation("RAM must use 512 MiB steps and be at least 512 MiB. Xms and Xmx are set equally.");
     }
 
     private static void Validate(ServerConfigurationDto dto)
@@ -404,7 +405,7 @@ public sealed class PropertiesService(
         if (dto.Motd.Any(char.IsControl) || dto.WorldName.Any(char.IsControl))
             throw PanelProblems.Validation("MOTD and world name cannot contain control characters.");
         if (dto.MaxPlayers is < 1 or > 10_000 || dto.Port is < 1024 or > 65535 ||
-            dto.MemoryMb < PanelOptions.MinimumServerMemoryMb || dto.MemoryMb % PanelOptions.ServerMemoryStepMb != 0 ||
+            dto.MemoryMb is < PanelOptions.MinimumServerMemoryMb or > 1_048_576 || dto.MemoryMb % PanelOptions.ServerMemoryStepMb != 0 ||
             dto.ViewDistance is < 2 or > 64 || dto.SimulationDistance is < 2 or > 64 || dto.SpawnProtection is < 0 or > 10_000)
             throw PanelProblems.Validation("One or more numeric settings are outside the supported range.");
         if (!new[] { "survival", "creative", "adventure", "spectator" }.Contains(dto.GameMode, StringComparer.OrdinalIgnoreCase) ||

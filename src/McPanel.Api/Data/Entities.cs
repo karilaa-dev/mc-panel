@@ -12,6 +12,8 @@ public sealed class AdminEntity
     [MaxLength(64)] public required string Username { get; set; }
     [MaxLength(1024)] public required string PasswordHash { get; set; }
     [MaxLength(64)] public string SessionStamp { get; set; } = Guid.NewGuid().ToString("N");
+    public bool KeepServersRunningOnPanelStop { get; set; } = true;
+    public long LastConsoleSequence { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
@@ -31,6 +33,7 @@ public sealed class ServerEntity
     public int Port { get; set; } = 25565;
     public int MemoryMb { get; set; } = 4096;
     public int InitialMemoryMb { get; set; } = 4096;
+    public int MemoryLimitMb { get; set; } = 5120;
     [MaxLength(64)] public required string JavaRuntimeId { get; set; }
     [MaxLength(2048)] public string JvmArguments { get; set; } = "";
     public bool UseAikarFlags { get; set; }

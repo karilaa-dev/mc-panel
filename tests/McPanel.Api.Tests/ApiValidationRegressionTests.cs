@@ -37,6 +37,26 @@ public sealed class ApiValidationRegressionTests : IAsyncLifetime
     private PanelPaths? _paths;
     private string _fakeJavaPath = null!;
 
+    [Fact]
+    public async Task Panel_shutdown_policy_defaults_to_preserve_and_is_persisted()
+    {
+        using (var initial = await _client!.GetAsync("/api/v1/system/settings"))
+        {
+            initial.EnsureSuccessStatusCode();
+            using var document = JsonDocument.Parse(await initial.Content.ReadAsStringAsync());
+            Assert.True(document.RootElement.GetProperty("keepServersRunningOnPanelStop").GetBoolean());
+        }
+        using (var changed = await SendJsonAsync(HttpMethod.Put, "/api/v1/system/settings", "{\"keepServersRunningOnPanelStop\":false}"))
+            Assert.Equal(HttpStatusCode.OK, changed.StatusCode);
+        using (var saved = await _client.GetAsync("/api/v1/system/settings"))
+        {
+            using var document = JsonDocument.Parse(await saved.Content.ReadAsStringAsync());
+            Assert.False(document.RootElement.GetProperty("keepServersRunningOnPanelStop").GetBoolean());
+        }
+        using var restored = await SendJsonAsync(HttpMethod.Put, "/api/v1/system/settings", "{\"keepServersRunningOnPanelStop\":true}");
+        Assert.Equal(HttpStatusCode.OK, restored.StatusCode);
+    }
+
     public async Task InitializeAsync()
     {
         var data = Path.Combine(_root, "data");
@@ -114,6 +134,7 @@ done
             Port = 32_123,
             MemoryMb = PanelOptions.MinimumServerMemoryMb,
             InitialMemoryMb = PanelOptions.MinimumServerMemoryMb,
+            MemoryLimitMb = PanelOptions.MinimumServerTotalMemoryMb,
             JavaRuntimeId = JavaId,
             EulaAcceptedAt = DateTimeOffset.UtcNow
         });
@@ -167,7 +188,7 @@ done
     }
 
     [Fact]
-    public async Task Server_creation_rejects_less_than_512_mib_without_enqueuing_a_job()
+    public async Task Server_creation_rejects_less_than_heap_memory_minimum_without_enqueuing_a_job()
     {
         var request = JsonSerializer.Serialize(new
         {
@@ -193,7 +214,7 @@ done
     }
 
     [Fact]
-    public async Task Server_with_512_mib_starts_and_stops()
+    public async Task Server_with_minimum_heap_and_total_limit_starts_and_stops()
     {
         Assert.Equal(512, PanelOptions.MinimumServerMemoryMb);
         try
@@ -324,10 +345,10 @@ done
     }
 
     [Fact]
-    public async Task Configuration_rejects_less_than_512_mib_and_accepts_512_mib()
+    public async Task Configuration_rejects_less_than_heap_memory_minimum_and_accepts_minimum()
     {
         var configuration = ValidConfiguration();
-        configuration["memoryMb"] = 256;
+        configuration["memoryMb"] = PanelOptions.MinimumServerMemoryMb - 256;
         using (var rejected = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/configuration", configuration.ToJsonString()))
             await AssertProblemAsync(rejected, HttpStatusCode.BadRequest, "VALIDATION_FAILED");
 
@@ -489,12 +510,13 @@ done
     }
 
     [Fact]
-    public async Task Runtime_persists_independent_heap_and_aikar_and_rejects_invalid_heap_order()
+    public async Task Runtime_sets_xms_and_xmx_to_selected_ram_and_rejects_invalid_steps()
     {
         var runtime = JsonSerializer.Serialize(new
         {
             initialMemoryMb = 512,
             maximumMemoryMb = 1024,
+            totalMemoryMb = 2048,
             javaRuntimeId = JavaId,
             jvmArguments = "-Dcustom=true",
             useAikarFlags = true,
@@ -504,24 +526,26 @@ done
         using (var saved = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/runtime", runtime))
             Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
         var server = await ReadServerAsync();
-        Assert.Equal(512, server.InitialMemoryMb);
+        Assert.Equal(1024, server.InitialMemoryMb);
         Assert.Equal(1024, server.MemoryMb);
+        Assert.Equal(1536, server.MemoryLimitMb);
         Assert.True(server.UseAikarFlags);
         Assert.Equal("-Dcustom=true", server.JvmArguments);
 
         var invalid = JsonNode.Parse(runtime)!.AsObject();
-        invalid["initialMemoryMb"] = 1536;
+        invalid["maximumMemoryMb"] = 1025;
         using var rejected = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/runtime", invalid.ToJsonString());
         await AssertProblemAsync(rejected, HttpStatusCode.BadRequest, "VALIDATION_FAILED");
     }
 
     [Fact]
-    public async Task Legacy_configuration_preserves_aikar_and_only_clamps_xms_when_xmx_is_lowered_below_it()
+    public async Task Legacy_configuration_preserves_aikar_and_keeps_xms_and_xmx_equal()
     {
         var runtime = JsonSerializer.Serialize(new
         {
             initialMemoryMb = 1024,
             maximumMemoryMb = 2048,
+            totalMemoryMb = 3072,
             javaRuntimeId = JavaId,
             jvmArguments = "",
             useAikarFlags = true,
@@ -536,8 +560,9 @@ done
         using (var saved = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/configuration", raisedMaximum.ToJsonString()))
             Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
         var server = await ReadServerAsync();
-        Assert.Equal(1024, server.InitialMemoryMb);
+        Assert.Equal(3072, server.InitialMemoryMb);
         Assert.Equal(3072, server.MemoryMb);
+        Assert.Equal(4096, server.MemoryLimitMb);
         Assert.True(server.UseAikarFlags);
 
         var loweredMaximum = ValidConfiguration();
@@ -547,6 +572,7 @@ done
         server = await ReadServerAsync();
         Assert.Equal(512, server.InitialMemoryMb);
         Assert.Equal(512, server.MemoryMb);
+        Assert.Equal(1024, server.MemoryLimitMb);
         Assert.True(server.UseAikarFlags);
     }
 
@@ -651,6 +677,7 @@ END;
             {
                 initialMemoryMb = 512,
                 maximumMemoryMb = 512,
+                totalMemoryMb = 1024,
                 javaRuntimeId = JavaId,
                 jvmArguments = "",
                 useAikarFlags = false,
@@ -1448,7 +1475,7 @@ public sealed class PanelProblemTests
     }
 
     [Fact]
-    public void Create_server_contract_advertises_512_mib_minimum()
+    public void Create_server_contract_advertises_heap_memory_minimum()
     {
         var attribute = Assert.Single(typeof(CreateServerRequest).GetProperty(nameof(CreateServerRequest.MemoryMb))!
             .GetCustomAttributes(typeof(RangeAttribute), false).Cast<RangeAttribute>());

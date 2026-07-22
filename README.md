@@ -14,14 +14,14 @@ administration, or a dense operator interface.
 
 - Multiple Vanilla, Paper, and Fabric servers installed from verified upstream
   metadata and downloads.
-- Direct supervised Java processes—no Docker daemon and no privileged runtime.
+- Java processes supervised by a dedicated unprivileged runtime service—no Docker daemon or privileged runtime.
 - Discovery and validation of installed Java runtimes, including multiple Java
   major versions on one host.
-- Start, graceful stop, restart, crash recovery, resource metrics, and
+- Start, graceful stop, restart, crash recovery, cgroup v2 total-memory limits and metrics, and
   start-on-boot behavior.
 - Persistent live console with reconnect cursors, search, command history, and
   separate stdout/stderr display.
-- Synchronized Xms/Xmx controls, version-aware sectioned `server.properties`,
+- One server RAM control that sets Xms and Xmx equally, version-aware sectioned `server.properties`,
   cropped server icons, player actions, and a confined file manager.
 - Per-server backups and time-based automations.
 - One local administrator protected by cookie authentication, global session
@@ -36,10 +36,13 @@ not include AMP code, assets, or branding.
 
 ## Layout and process model
 
-The production service runs as the non-login `mcpanel` account. The panel
-starts each Minecraft server directly with a probed Java executable and
-redirected standard input/output; no shell, `sudo`, or container runtime is
-involved.
+The production panel and companion runtime services run as the non-login
+`mcpanel` account. The runtime starts each Minecraft server with a probed Java
+executable inside a dedicated delegated cgroup and owns its redirected console
+streams. Stopping or updating only the web panel therefore leaves active
+servers online and lets the panel reconnect when it returns. No shell, `sudo`,
+or container runtime is involved. The cgroup accounts the full workload and
+enforces its total RAM limit; `-Xmx` independently caps only the Java heap.
 
 | Path | Ownership and purpose |
 | --- | --- |
@@ -47,6 +50,7 @@ involved.
 | `/etc/mcpanel` | Root-owned service configuration and first-run secret |
 | `/var/lib/mcpanel` | `mcpanel`-owned databases, keys, instances, staging, backups, and logs |
 | `/etc/systemd/system/mcpanel.service` | Root-owned hardened systemd unit |
+| `/etc/systemd/system/mcpanel-runtime.service` | Persistent Java process and console supervisor |
 
 Every Minecraft server and every installed plugin/mod runs under the same Unix
 UID. This protects the host from ordinary writes outside the data directory,

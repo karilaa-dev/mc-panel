@@ -1,8 +1,7 @@
 [Unit]
-Description=MC Panel Minecraft server manager
+Description=MC Panel persistent Minecraft runtime
 Wants=network-online.target
-Wants=@SERVICE_NAME@-runtime.service
-After=network-online.target @SERVICE_NAME@-runtime.service
+After=network-online.target
 ConditionFileIsExecutable=@INSTALL_DIR@/McPanel.Api
 
 [Service]
@@ -11,17 +10,18 @@ User=mcpanel
 Group=mcpanel
 WorkingDirectory=@DATA_DIR@
 EnvironmentFile=@CONFIG_DIR@/mcpanel.env
-ExecStart=@INSTALL_DIR@/McPanel.Api
+ExecStart=@INSTALL_DIR@/McPanel.Api --mcpanel-runtime-host
 
-Restart=on-failure
+Restart=always
 RestartSec=5s
 TimeoutStartSec=30s
 TimeoutStopSec=75s
 KillSignal=SIGTERM
 KillMode=mixed
 SendSIGKILL=yes
+Delegate=memory
+MemoryAccounting=yes
 
-# The panel and the separate runtime service run as the unprivileged mcpanel account.
 UMask=0077
 NoNewPrivileges=yes
 CapabilityBoundingSet=
@@ -33,7 +33,7 @@ ProtectHome=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
-ProtectControlGroups=yes
+ProtectControlGroups=no
 ProtectClock=yes
 ProtectHostname=yes
 ProtectProc=invisible

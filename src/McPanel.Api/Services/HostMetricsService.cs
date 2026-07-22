@@ -128,7 +128,9 @@ public sealed class ServerQueryService(
         }
         catch { }
         return new(server.Id, server.Name, server.Kind, server.Version, server.State, server.Port, server.MemoryMb,
-            playerCount, maxPlayers, runtime.CpuPercent, runtime.MemoryUsedMb, runtime.UptimeSeconds, server.RestartRequired, server.StartOnBoot,
+            server.MemoryMb, playerCount, maxPlayers, runtime.CpuPercent, runtime.MemoryUsedMb, runtime.MemoryPeakMb,
+            runtime.SwapUsedMb, runtime.AnonymousMemoryMb, runtime.FileMemoryMb, runtime.KernelMemoryMb, runtime.SocketMemoryMb,
+            runtime.MemoryEnforced, runtime.UptimeSeconds, server.RestartRequired, server.StartOnBoot,
             server.IconRevision);
     }
 }

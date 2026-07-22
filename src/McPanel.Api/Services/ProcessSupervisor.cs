@@ -13,7 +13,10 @@ using Microsoft.Extensions.Options;
 
 namespace McPanel.Api.Services;
 
-public sealed record ServerRuntimeMetrics(double CpuPercent, double MemoryUsedMb, long UptimeSeconds);
+public sealed record ServerRuntimeMetrics(
+    double CpuPercent, double MemoryUsedMb, double MemoryPeakMb, double SwapUsedMb,
+    double AnonymousMemoryMb, double FileMemoryMb, double KernelMemoryMb, double SocketMemoryMb,
+    bool MemoryEnforced, long UptimeSeconds);
 
 public interface IServerProcessStatus
 {
@@ -26,6 +29,8 @@ public sealed class ProcessSupervisor(
     ConsoleService console,
     AsyncKeyedLock keyedLock,
     JavaDiscoveryService javaDiscovery,
+    CgroupMemoryService cgroups,
+    PersistentRuntimeClient persistentRuntime,
     OperationQueue operations,
     IOptions<PanelOptions> options,
     IHubContext<PanelHub> hub,
@@ -58,6 +63,31 @@ public sealed class ProcessSupervisor(
     };
     private readonly ConcurrentDictionary<Guid, ManagedProcess> _processes = new();
     private readonly SemaphoreSlim _memoryAdmission = new(1, 1);
+    private readonly ConcurrentDictionary<Guid, RuntimeProcessState> _runtimeStates = new();
+    private bool _persistentInitialized;
+
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+        if (persistentRuntime.Enabled)
+        {
+            IReadOnlyList<RuntimeServerSnapshot>? snapshots = null;
+            Exception? lastFailure = null;
+            for (var attempt = 0; attempt < 40 && snapshots is null; attempt++)
+            {
+                try { snapshots = await persistentRuntime.RefreshAsync(cancellationToken); }
+                catch (PanelException exception) when (exception.Code == "RUNTIME_UNAVAILABLE")
+                {
+                    lastFailure = exception;
+                    await Task.Delay(250, cancellationToken);
+                }
+            }
+            if (snapshots is null) throw lastFailure ?? new InvalidOperationException("The persistent runtime did not become ready.");
+            await ReconcilePersistentAsync(snapshots, true, cancellationToken);
+            await RelayRuntimeConsoleAsync(cancellationToken);
+            _persistentInitialized = true;
+        }
+        await base.StartAsync(cancellationToken);
+    }
 
     public Task<JobDto> QueueActionAsync(Guid id, string action, bool confirmKill, CancellationToken cancellationToken)
     {
@@ -78,10 +108,220 @@ public sealed class ProcessSupervisor(
 
     public async Task StartAsync(Guid id, bool recovery, CancellationToken cancellationToken)
     {
+        if (persistentRuntime.Enabled) { await StartPersistentAsync(id, recovery, cancellationToken); return; }
         StartAttempt attempt;
         using (await keyedLock.AcquireAsync(id, cancellationToken))
             attempt = await BeginStartLockedAsync(id, recovery, cancellationToken);
         await CompleteStartAsync(id, attempt, cancellationToken);
+    }
+
+    private async Task StartPersistentAsync(Guid id, bool recovery, CancellationToken cancellationToken)
+    {
+        using var serverLock = await keyedLock.AcquireAsync(id, cancellationToken);
+        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+        var server = await db.Servers.FindAsync([id], cancellationToken) ?? throw PanelProblems.NotFound("Server");
+        if (persistentRuntime.IsRunning(id) || server.State is ServerState.Running or ServerState.Starting or ServerState.Stopping)
+            throw PanelProblems.Conflict("SERVER_BUSY", "The server already has a managed process.");
+        if (server.State is ServerState.Installing or ServerState.Updating or ServerState.BackingUp or ServerState.Error)
+            throw PanelProblems.Conflict("SERVER_BUSY", "The server cannot be started in its current state.");
+        if (server.MemoryMb < PanelOptions.MinimumServerMemoryMb || server.MemoryLimitMb < PanelOptions.MinimumServerTotalMemoryMb || server.MemoryMb >= server.MemoryLimitMb)
+            throw new PanelException(409, "MEMORY_LIMIT_TOO_LOW", "The configured server memory is below the supported minimum.",
+                $"Allocate at least {PanelOptions.MinimumServerTotalMemoryMb} MiB total and leave native-memory headroom above the Java heap.");
+        var java = await db.JavaRuntimes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == server.JavaRuntimeId, cancellationToken)
+            ?? throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
+        var probed = await javaDiscovery.ProbeAsync(java.Path, java.IsCustom, cancellationToken);
+        var required = server.RequiredJavaMajor > 0 ? server.RequiredJavaMajor : RequiredJava(server.Version);
+        if (probed.Major < required) throw new PanelException(400, "JAVA_VERSION_INCOMPATIBLE", $"Minecraft {server.Version} requires Java {required} or newer.");
+        var jar = Path.Combine(paths.Instance(id), server.ExecutableJar);
+        if (!File.Exists(jar)) throw new PanelException(409, "OPERATION_FAILED", "The server executable JAR is missing.");
+        await _memoryAdmission.WaitAsync(cancellationToken);
+        try
+        {
+            var allocationMb = await db.Servers.Where(x => x.Id != id && (x.State == ServerState.Running || x.State == ServerState.Starting)).SumAsync(x => (long)x.MemoryLimitMb, cancellationToken);
+            var total = HostMetricsService.ReadMemory().Total;
+            if ((allocationMb + server.MemoryLimitMb) * 1024 * 1024 > total * options.Value.MemoryAllocationFraction)
+                throw new PanelException(409, "MEMORY_LIMIT_EXCEEDED", "Starting this server would exceed the host memory allocation limit.");
+            EnsurePortAvailable(server.Port);
+            var startInfo = BuildStartInfo(server, java.Path, jar);
+            server.State = ServerState.Starting; server.ProcessId = null; server.UpdatedAt = DateTimeOffset.UtcNow;
+            if (!recovery) server.CrashAttempts = 0;
+            await db.SaveChangesAsync(cancellationToken); await PublishStateAsync(server, cancellationToken);
+            RuntimeServerSnapshot snapshot;
+            try
+            {
+                snapshot = await persistentRuntime.StartAsync(new RuntimeLaunchRequest(id, java.Path, paths.Instance(id), startInfo.ArgumentList.ToList(), server.MemoryLimitMb, options.Value.GracefulStopSeconds), cancellationToken);
+            }
+            catch
+            {
+                server.State = ServerState.Crashed; server.ProcessId = null; server.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(CancellationToken.None); await PublishStateAsync(server, CancellationToken.None);
+                throw;
+            }
+            server.State = snapshot.State == RuntimeProcessState.Running ? ServerState.Running : ServerState.Starting;
+            server.ProcessId = snapshot.ProcessId; server.StartedAt = snapshot.StartedAt;
+            server.RestartRequired = false; server.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(cancellationToken); await PublishStateAsync(server, cancellationToken);
+            _runtimeStates[id] = snapshot.State;
+        }
+        finally { _memoryAdmission.Release(); }
+    }
+
+    private async Task StopPersistentAsync(Guid id, CancellationToken cancellationToken)
+    {
+        using var serverLock = await keyedLock.AcquireAsync(id, cancellationToken);
+        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+        var server = await db.Servers.FindAsync([id], cancellationToken) ?? throw PanelProblems.NotFound("Server");
+        if (!persistentRuntime.IsRunning(id))
+        {
+            if (server.State == ServerState.Stopped) return;
+            if (server.State == ServerState.Crashed)
+            {
+                server.State = ServerState.Stopped; server.CrashAttempts = 0; server.StartedAt = null; server.ProcessId = null;
+                await db.SaveChangesAsync(cancellationToken); await PublishStateAsync(server, cancellationToken); return;
+            }
+            throw PanelProblems.Conflict("SERVER_NOT_RUNNING", "The server is not running.");
+        }
+        server.State = ServerState.Stopping; server.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken); await PublishStateAsync(server, cancellationToken);
+        var snapshot = await persistentRuntime.StopAsync(id, cancellationToken);
+        ApplySnapshot(server, snapshot); server.CrashAttempts = 0;
+        await db.SaveChangesAsync(cancellationToken); await PublishStateAsync(server, cancellationToken);
+        _runtimeStates[id] = snapshot.State;
+    }
+
+    private async Task KillPersistentAsync(Guid id, CancellationToken cancellationToken)
+    {
+        using var serverLock = await keyedLock.AcquireAsync(id, cancellationToken);
+        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+        var server = await db.Servers.FindAsync([id], cancellationToken) ?? throw PanelProblems.NotFound("Server");
+        if (!persistentRuntime.IsRunning(id)) throw PanelProblems.Conflict("SERVER_NOT_RUNNING", "The server is not running.");
+        var snapshot = await persistentRuntime.KillAsync(id, cancellationToken);
+        ApplySnapshot(server, snapshot); server.CrashAttempts = 0;
+        await db.SaveChangesAsync(cancellationToken); await PublishStateAsync(server, cancellationToken);
+        _runtimeStates[id] = snapshot.State;
+    }
+
+    private async Task ExecutePersistentAsync(CancellationToken stoppingToken)
+    {
+        var initial = !_persistentInitialized;
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                var snapshots = initial ? await persistentRuntime.RefreshAsync(stoppingToken) : await persistentRuntime.SubscribeAsync(stoppingToken);
+                await ReconcilePersistentAsync(snapshots, initial, stoppingToken);
+                initial = false;
+                await RelayRuntimeConsoleAsync(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+            catch (Exception exception) { logger.LogWarning(exception, "Persistent runtime reconciliation failed; retrying"); }
+            try { await Task.Delay(TimeSpan.FromMilliseconds(500), stoppingToken); }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+        }
+
+        await using var db = await stateFactory.CreateDbContextAsync();
+        var keepRunning = await db.Admins.Select(x => x.KeepServersRunningOnPanelStop).SingleOrDefaultAsync();
+        if (!keepRunning)
+        {
+            try
+            {
+                var stops = (await persistentRuntime.RefreshAsync(CancellationToken.None)).Where(x => PersistentRuntimeClient.IsActive(x.State)).Select(x => StopForShutdownAsync(x.ServerId)).ToArray();
+                await Task.WhenAll(stops);
+            }
+            catch (Exception exception) { logger.LogWarning(exception, "Could not apply stop-on-panel-shutdown policy"); }
+        }
+    }
+
+    private async Task ReconcilePersistentAsync(IReadOnlyList<RuntimeServerSnapshot> snapshots, bool initial, CancellationToken cancellationToken)
+    {
+        var byId = snapshots.ToDictionary(x => x.ServerId);
+        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+        var servers = await db.Servers.ToListAsync(cancellationToken);
+        var known = servers.Select(x => x.Id).ToHashSet();
+        foreach (var orphan in snapshots.Where(x => !known.Contains(x.ServerId) && PersistentRuntimeClient.IsActive(x.State)))
+        {
+            try { await persistentRuntime.StopAsync(orphan.ServerId, cancellationToken); }
+            catch (Exception exception) { logger.LogWarning(exception, "Could not stop orphan runtime server {ServerId}", orphan.ServerId); }
+        }
+        foreach (var server in servers)
+        {
+            var oldState = server.State; var oldProcessId = server.ProcessId; var oldStartedAt = server.StartedAt;
+            var previous = _runtimeStates.GetValueOrDefault(server.Id, RuntimeProcessState.Stopped);
+            if (byId.TryGetValue(server.Id, out var snapshot))
+            {
+                ApplySnapshot(server, snapshot, preserveOperationState: !initial);
+                _runtimeStates[server.Id] = snapshot.State;
+                if (!initial && PersistentRuntimeClient.IsActive(previous) && snapshot.State == RuntimeProcessState.Crashed)
+                {
+                    server.CrashAttempts++;
+                    if (server.CrashRecovery && server.CrashAttempts <= 3) SchedulePersistentRecovery(server.Id, server.CrashAttempts);
+                }
+            }
+            else if (server.State is ServerState.Running or ServerState.Starting or ServerState.Stopping or ServerState.BackingUp or ServerState.Updating)
+            {
+                server.State = ServerState.Crashed; server.ProcessId = null;
+            }
+            if (server.State != oldState || server.ProcessId != oldProcessId || server.StartedAt != oldStartedAt)
+            {
+                server.UpdatedAt = DateTimeOffset.UtcNow;
+                await PublishStateAsync(server, cancellationToken);
+            }
+        }
+        if (db.ChangeTracker.HasChanges()) await db.SaveChangesAsync(cancellationToken);
+        if (initial)
+        {
+            var startIds = servers.Where(x => x.StartOnBoot && x.State == ServerState.Stopped).Select(x => x.Id).ToList();
+            foreach (var id in startIds)
+            {
+                try { await StartPersistentAsync(id, false, cancellationToken); }
+                catch (Exception exception) { logger.LogError(exception, "Start-on-boot failed for {ServerId}", id); }
+            }
+        }
+    }
+
+    private void SchedulePersistentRecovery(Guid id, int attempt)
+    {
+        var delay = new[] { 5, 15, 60 }[attempt - 1];
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(delay), lifetime.ApplicationStopping);
+                await StartPersistentAsync(id, true, lifetime.ApplicationStopping);
+            }
+            catch (OperationCanceledException) when (lifetime.ApplicationStopping.IsCancellationRequested) { }
+            catch (Exception exception) { logger.LogError(exception, "Persistent crash recovery failed for {ServerId}", id); }
+        });
+    }
+
+    private async Task RelayRuntimeConsoleAsync(CancellationToken cancellationToken)
+    {
+        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+        var admin = await db.Admins.SingleOrDefaultAsync(cancellationToken);
+        if (admin is null) return;
+        while (true)
+        {
+            await console.NormalizeRuntimeServerIdsAsync(admin.LastConsoleSequence, cancellationToken);
+            var lines = await console.ReadGlobalAsync(admin.LastConsoleSequence, 500, cancellationToken);
+            if (lines.Count == 0) break;
+            await console.PublishExistingAsync(lines, cancellationToken);
+            admin.LastConsoleSequence = lines[^1].Sequence;
+            await db.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    private static void ApplySnapshot(ServerEntity server, RuntimeServerSnapshot snapshot, bool preserveOperationState = false)
+    {
+        server.State = snapshot.State switch
+        {
+            RuntimeProcessState.Starting => ServerState.Starting,
+            RuntimeProcessState.Running => preserveOperationState && server.State is (ServerState.BackingUp or ServerState.Updating) ? server.State : ServerState.Running,
+            RuntimeProcessState.Stopping => ServerState.Stopping,
+            RuntimeProcessState.Crashed => ServerState.Crashed,
+            _ => ServerState.Stopped
+        };
+        server.ProcessId = PersistentRuntimeClient.IsActive(snapshot.State) ? snapshot.ProcessId : null;
+        server.StartedAt = snapshot.State == RuntimeProcessState.Stopped ? null : snapshot.StartedAt;
     }
 
     private async Task<StartAttempt> BeginStartLockedAsync(Guid id, bool recovery, CancellationToken cancellationToken)
@@ -93,9 +333,9 @@ public sealed class ProcessSupervisor(
             throw PanelProblems.Conflict("SERVER_BUSY", "The server already has a managed process.");
         if (server.State is ServerState.Installing or ServerState.Updating or ServerState.BackingUp or ServerState.Error)
             throw PanelProblems.Conflict("SERVER_BUSY", "The server cannot be started in its current state.");
-        if (server.MemoryMb < PanelOptions.MinimumServerMemoryMb)
+        if (server.MemoryMb < PanelOptions.MinimumServerMemoryMb || server.MemoryLimitMb < PanelOptions.MinimumServerTotalMemoryMb || server.MemoryMb >= server.MemoryLimitMb)
             throw new PanelException(409, "MEMORY_LIMIT_TOO_LOW", "The configured server memory is below the supported minimum.",
-                $"Allocate at least {PanelOptions.MinimumServerMemoryMb} MiB before starting the server.");
+                $"Allocate at least {PanelOptions.MinimumServerTotalMemoryMb} MiB total and leave native-memory headroom above the Java heap.");
         var runtime = await db.JavaRuntimes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == server.JavaRuntimeId, cancellationToken)
             ?? throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
         var probed = await javaDiscovery.ProbeAsync(runtime.Path, runtime.IsCustom, cancellationToken);
@@ -107,14 +347,16 @@ public sealed class ProcessSupervisor(
         await _memoryAdmission.WaitAsync(cancellationToken);
         Process process;
         ManagedProcess managedProcess;
+        CgroupWorkload? workload = null;
         try
         {
-            var allocationMb = await db.Servers.Where(x => x.Id != id && (x.State == ServerState.Running || x.State == ServerState.Starting)).SumAsync(x => (long)x.MemoryMb, cancellationToken);
+            var allocationMb = await db.Servers.Where(x => x.Id != id && (x.State == ServerState.Running || x.State == ServerState.Starting)).SumAsync(x => (long)x.MemoryLimitMb, cancellationToken);
             var total = HostMetricsService.ReadMemory().Total;
-            if ((allocationMb + server.MemoryMb) * 1024 * 1024 > total * options.Value.MemoryAllocationFraction)
+            if ((allocationMb + server.MemoryLimitMb) * 1024 * 1024 > total * options.Value.MemoryAllocationFraction)
                 throw new PanelException(409, "MEMORY_LIMIT_EXCEEDED", "Starting this server would exceed the host memory allocation limit.");
             EnsurePortAvailable(server.Port);
-            var start = BuildStartInfo(server, runtime.Path, jar);
+            workload = cgroups.Create(id, server.MemoryLimitMb);
+            var start = cgroups.Wrap(BuildStartInfo(server, runtime.Path, jar), workload);
             server.State = ServerState.Starting; server.ProcessId = null; server.UpdatedAt = DateTimeOffset.UtcNow;
             if (!recovery) server.CrashAttempts = 0;
             await db.SaveChangesAsync(cancellationToken);
@@ -122,13 +364,14 @@ public sealed class ProcessSupervisor(
             try { process = Process.Start(start) ?? throw new InvalidOperationException("Process.Start returned null."); }
             catch (Exception exception)
             {
+                cgroups.Remove(workload);
                 server.State = ServerState.Crashed; server.UpdatedAt = DateTimeOffset.UtcNow; await db.SaveChangesAsync(cancellationToken);
                 throw new PanelException(500, "OPERATION_FAILED", "Java could not start.", exception.Message);
             }
-            managedProcess = new ManagedProcess(process, DateTimeOffset.UtcNow);
+            managedProcess = new ManagedProcess(process, DateTimeOffset.UtcNow, workload, cgroups.Read(workload)?.OomKillCount ?? 0);
             if (!_processes.TryAdd(id, managedProcess))
             {
-                process.Kill(true); process.Dispose(); throw PanelProblems.Conflict("SERVER_BUSY", "A managed process already exists.");
+                process.Kill(true); process.Dispose(); cgroups.Remove(workload); throw PanelProblems.Conflict("SERVER_BUSY", "A managed process already exists.");
             }
             _ = PumpAsync(id, process.StandardOutput, "stdout", CancellationToken.None);
             _ = PumpAsync(id, process.StandardError, "stderr", CancellationToken.None);
@@ -142,6 +385,11 @@ public sealed class ProcessSupervisor(
                 try { process.Kill(true); } catch { }
                 throw;
             }
+        }
+        catch
+        {
+            if (!_processes.ContainsKey(id)) cgroups.Remove(workload);
+            throw;
         }
         finally { _memoryAdmission.Release(); }
         try { await console.AppendAsync(id, "system", $"Started Java process {process.Id} using Java {probed.Major}.", cancellationToken); }
@@ -178,6 +426,7 @@ public sealed class ProcessSupervisor(
 
     public async Task StopAsync(Guid id, CancellationToken cancellationToken)
     {
+        if (persistentRuntime.Enabled) { await StopPersistentAsync(id, cancellationToken); return; }
         ManagedProcess managed;
         using (await keyedLock.AcquireAsync(id, cancellationToken))
         {
@@ -212,12 +461,19 @@ public sealed class ProcessSupervisor(
 
     public async Task RestartAsync(Guid id, CancellationToken cancellationToken)
     {
+        if (persistentRuntime.Enabled)
+        {
+            if (persistentRuntime.IsRunning(id)) await StopPersistentAsync(id, cancellationToken);
+            await StartPersistentAsync(id, false, cancellationToken);
+            return;
+        }
         if (_processes.ContainsKey(id)) await StopAsync(id, cancellationToken);
         await StartAsync(id, false, cancellationToken);
     }
 
     public async Task KillAsync(Guid id, CancellationToken cancellationToken)
     {
+        if (persistentRuntime.Enabled) { await KillPersistentAsync(id, cancellationToken); return; }
         ManagedProcess managed;
         using (await keyedLock.AcquireAsync(id, cancellationToken))
         {
@@ -237,16 +493,28 @@ public sealed class ProcessSupervisor(
         if (string.IsNullOrWhiteSpace(command) || command.Length > 4096 || command.Any(x => x is '\r' or '\n' or '\0'))
             throw PanelProblems.Validation("Commands must be one non-empty line of at most 4096 characters.");
         if (command.Trim().Equals("stop", StringComparison.OrdinalIgnoreCase)) { await StopAsync(id, cancellationToken); return; }
+        if (persistentRuntime.Enabled)
+        {
+            if (!persistentRuntime.IsRunning(id)) throw PanelProblems.Conflict("SERVER_NOT_RUNNING", "The server is not running.");
+            await persistentRuntime.CommandAsync(id, command, cancellationToken);
+            return;
+        }
         if (!_processes.TryGetValue(id, out var managed)) throw PanelProblems.Conflict("SERVER_NOT_RUNNING", "The server is not running.");
         await WriteCommandInternalAsync(managed, command, cancellationToken);
     }
 
     public ServerRuntimeMetrics GetMetrics(Guid id)
     {
-        if (!_processes.TryGetValue(id, out var managed)) return new(0, 0, 0);
+        if (persistentRuntime.Enabled)
+        {
+            var snapshot = persistentRuntime.Get(id);
+            return snapshot is null ? new(0, 0, 0, 0, 0, 0, 0, 0, false, 0) : new(snapshot.CpuPercent, snapshot.MemoryUsedMb, snapshot.MemoryPeakMb, snapshot.SwapUsedMb,
+                snapshot.AnonymousMemoryMb, snapshot.FileMemoryMb, snapshot.KernelMemoryMb, snapshot.SocketMemoryMb, snapshot.MemoryEnforced, snapshot.UptimeSeconds);
+        }
+        if (!_processes.TryGetValue(id, out var managed)) return new(0, 0, 0, 0, 0, 0, 0, 0, cgroups.Available, 0);
         try
         {
-            if (managed.Process.HasExited) return new(0, 0, 0);
+            if (managed.Process.HasExited) return new(0, 0, 0, 0, 0, 0, 0, 0, managed.Cgroup is not null, 0);
             lock (managed.MetricsLock)
             {
                 managed.Process.Refresh();
@@ -255,16 +523,27 @@ public sealed class ProcessSupervisor(
                 var elapsedMs = (now - managed.LastMetricAt).TotalMilliseconds;
                 var cpuPercent = elapsedMs <= 0 ? managed.LastCpuPercent : Math.Clamp((cpu - managed.LastCpuTime).TotalMilliseconds / elapsedMs / Environment.ProcessorCount * 100, 0, 100);
                 managed.LastMetricAt = now; managed.LastCpuTime = cpu; managed.LastCpuPercent = cpuPercent;
-                return new(cpuPercent, managed.Process.WorkingSet64 / 1024d / 1024d, Math.Max(0, (long)(now - managed.StartedAt).TotalSeconds));
+                var memory = cgroups.Read(managed.Cgroup);
+                return new(cpuPercent,
+                    (memory?.CurrentBytes ?? managed.Process.WorkingSet64) / 1024d / 1024d,
+                    (memory?.PeakBytes ?? managed.Process.PeakWorkingSet64) / 1024d / 1024d,
+                    (memory?.SwapBytes ?? 0) / 1024d / 1024d,
+                    (memory?.AnonymousBytes ?? 0) / 1024d / 1024d,
+                    (memory?.FileBytes ?? 0) / 1024d / 1024d,
+                    (memory?.KernelBytes ?? 0) / 1024d / 1024d,
+                    (memory?.SocketBytes ?? 0) / 1024d / 1024d,
+                    managed.Cgroup is not null,
+                    Math.Max(0, (long)(now - managed.StartedAt).TotalSeconds));
             }
         }
-        catch { return new(0, 0, Math.Max(0, (long)(DateTimeOffset.UtcNow - managed.StartedAt).TotalSeconds)); }
+        catch { return new(0, 0, 0, 0, 0, 0, 0, 0, managed.Cgroup is not null, Math.Max(0, (long)(DateTimeOffset.UtcNow - managed.StartedAt).TotalSeconds)); }
     }
 
-    public bool IsRunning(Guid id) => _processes.ContainsKey(id);
+    public bool IsRunning(Guid id) => persistentRuntime.Enabled ? persistentRuntime.IsRunning(id) : _processes.ContainsKey(id);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (persistentRuntime.Enabled) { await ExecutePersistentAsync(stoppingToken); return; }
         try
         {
             await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);
@@ -294,9 +573,12 @@ public sealed class ProcessSupervisor(
         try { await managed.Process.WaitForExitAsync(); }
         catch (Exception exception) { logger.LogDebug(exception, "WaitForExit failed for {ServerId}", id); }
         var exitCode = managed.Process.HasExited ? managed.Process.ExitCode : -1;
+        var finalMemory = cgroups.Read(managed.Cgroup);
+        var memoryLimitExceeded = finalMemory is not null && finalMemory.OomKillCount > managed.InitialOomKillCount;
         _processes.TryRemove(new KeyValuePair<Guid, ManagedProcess>(id, managed));
         var requested = managed.StopRequested;
         managed.Process.Dispose();
+        cgroups.Remove(managed.Cgroup);
         int attempt = 0;
         bool recover = false;
         try
@@ -318,7 +600,12 @@ public sealed class ProcessSupervisor(
             }
             await db.SaveChangesAsync();
             await db.Players.Where(x => x.ServerId == id && x.Online).ExecuteUpdateAsync(x => x.SetProperty(p => p.Online, false));
-            try { await console.AppendAsync(id, "system", requested ? $"Server stopped (exit {exitCode})." : $"Server exited unexpectedly with code {exitCode}."); }
+            var exitMessage = requested
+                ? $"Server stopped (exit {exitCode})."
+                : memoryLimitExceeded
+                    ? $"Server exceeded its total RAM limit and was stopped by the cgroup OOM killer (exit {exitCode})."
+                    : $"Server exited unexpectedly with code {exitCode}.";
+            try { await console.AppendAsync(id, "system", exitMessage); }
             catch (Exception exception) { logger.LogWarning(exception, "Could not persist exit message for {ServerId}", id); }
             await PublishStateAsync(server, CancellationToken.None);
         }
@@ -420,11 +707,13 @@ public sealed class ProcessSupervisor(
 
     private sealed record StartAttempt(long ReadinessCursor, ManagedProcess Managed);
 
-    private sealed class ManagedProcess(Process process, DateTimeOffset startedAt)
+    private sealed class ManagedProcess(Process process, DateTimeOffset startedAt, CgroupWorkload? cgroup, long initialOomKillCount)
     {
         private int _stopRequested;
         public Process Process { get; } = process;
         public DateTimeOffset StartedAt { get; } = startedAt;
+        public CgroupWorkload? Cgroup { get; } = cgroup;
+        public long InitialOomKillCount { get; } = initialOomKillCount;
         public TaskCompletionSource<int> Exit { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public SemaphoreSlim InputLock { get; } = new(1, 1);
         public object MetricsLock { get; } = new();

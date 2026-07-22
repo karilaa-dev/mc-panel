@@ -32,8 +32,9 @@ public sealed partial class ServerInstallerService(
             throw PanelProblems.Conflict("PORT_IN_USE", "The selected port is already assigned to another server.");
         if (await db.Servers.AnyAsync(x => x.Name.ToLower() == request.Name.Trim().ToLower(), cancellationToken))
             throw PanelProblems.Conflict("VALIDATION_FAILED", "A server with that name already exists.");
+        var totalLimitMb = MemorySizing.TotalForExistingHeapMb(request.MemoryMb);
         var totalMemory = HostMetricsService.ReadMemory().Total;
-        if ((long)request.MemoryMb * 1024 * 1024 > totalMemory * options.Value.MemoryAllocationFraction)
+        if ((long)totalLimitMb * 1024 * 1024 > totalMemory * options.Value.MemoryAllocationFraction)
             throw new PanelException(400, "MEMORY_LIMIT_EXCEEDED", "The selected memory exceeds the host allocation limit.");
 
         var entity = new ServerEntity
@@ -41,7 +42,10 @@ public sealed partial class ServerInstallerService(
             Id = Guid.NewGuid(), Name = request.Name.Trim(), Kind = request.Kind, Version = request.Version,
             DistributionBuild = request.Build, FabricLoaderVersion = request.LoaderVersion,
             FabricInstallerVersion = request.InstallerVersion, JavaRuntimeId = runtime.Id,
-            MemoryMb = request.MemoryMb, InitialMemoryMb = request.MemoryMb, Port = request.Port, StartOnBoot = request.StartOnBoot,
+            MemoryLimitMb = totalLimitMb,
+            MemoryMb = request.MemoryMb,
+            InitialMemoryMb = request.MemoryMb,
+            Port = request.Port, StartOnBoot = request.StartOnBoot,
             State = ServerState.Installing, EulaAcceptedAt = DateTimeOffset.UtcNow
         };
         db.Servers.Add(entity);
@@ -239,8 +243,8 @@ public sealed partial class ServerInstallerService(
             throw PanelProblems.Validation("Name, version, and Java runtime are required.");
         if (!request.EulaAccepted) throw PanelProblems.Validation("You must explicitly accept the Minecraft EULA.");
         if (!NameRegex().IsMatch(request.Name.Trim())) throw PanelProblems.Validation("Server names may contain letters, numbers, spaces, '-' and '_'.");
-        if (request.MemoryMb < PanelOptions.MinimumServerMemoryMb || request.MemoryMb % PanelOptions.ServerMemoryStepMb != 0)
-            throw PanelProblems.Validation($"Memory must be at least {PanelOptions.MinimumServerMemoryMb} MiB and use {PanelOptions.ServerMemoryStepMb} MiB increments.");
+        if (request.MemoryMb is < PanelOptions.MinimumServerMemoryMb or > 1_048_576 || request.MemoryMb % PanelOptions.ServerMemoryStepMb != 0)
+            throw PanelProblems.Validation($"RAM must be at least {PanelOptions.MinimumServerMemoryMb} MiB and use {PanelOptions.ServerMemoryStepMb} MiB increments.");
         if (request.Port is < 1024 or > 65535) throw PanelProblems.Validation("Port must be between 1024 and 65535.");
         if (request.Version.Length > 64 || request.Build?.Length > 64 || request.LoaderVersion?.Length > 64 || request.InstallerVersion?.Length > 64)
             throw PanelProblems.Validation("Distribution metadata values are too long.");

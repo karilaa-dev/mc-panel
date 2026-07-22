@@ -15,7 +15,9 @@ public sealed record AddJavaRequest(string Path);
 
 public sealed record ServerSummaryDto(
     Guid Id, string Name, ServerKind Kind, string Version, ServerState State, int Port, int MemoryMb,
-    int PlayerCount, int MaxPlayers, double CpuPercent, double MemoryUsedMb, long UptimeSeconds,
+    int MaximumHeapMemoryMb, int PlayerCount, int MaxPlayers, double CpuPercent, double MemoryUsedMb,
+    double MemoryPeakMb, double SwapUsedMb, double AnonymousMemoryMb, double FileMemoryMb,
+    double KernelMemoryMb, double SocketMemoryMb, bool MemoryEnforced, long UptimeSeconds,
     bool RestartRequired, bool StartOnBoot, string? IconRevision);
 
 public sealed record CreateServerRequest(
@@ -53,7 +55,7 @@ public sealed record SaveServerPropertiesRequest(
     string Revision, IReadOnlyDictionary<string, string> Values,
     IReadOnlyCollection<string>? AcknowledgedIncompatibleKeys = null);
 public sealed record RuntimeConfigurationDto(
-    int InitialMemoryMb, int MaximumMemoryMb, string JavaRuntimeId, string JvmArguments,
+    int InitialMemoryMb, int MaximumMemoryMb, int TotalMemoryMb, string JavaRuntimeId, string JvmArguments,
     bool UseAikarFlags, bool StartOnBoot, bool CrashRecovery);
 public sealed record ServerIconDto(string Revision);
 
@@ -74,6 +76,7 @@ public sealed record ConfirmKillRequest(bool Confirm);
 public sealed record HostSampleDto(DateTimeOffset Time, double Cpu, double Memory);
 public sealed record HostStatusDto(double CpuPercent, long MemoryUsedBytes, long MemoryTotalBytes, long DiskUsedBytes, long DiskTotalBytes, DateTimeOffset SampleTime, IReadOnlyList<HostSampleDto> Samples);
 public sealed record SystemInfoDto(string Version, string DataDirectory, string InstancesDirectory, long MemoryAllocationLimitBytes);
+public sealed record PanelSettingsDto(bool KeepServersRunningOnPanelStop);
 
 public sealed record PaperBuildDto(string Id, string Channel, bool Experimental, string? DownloadName = null);
 public sealed record FabricChoiceDto(string Version, bool Stable);

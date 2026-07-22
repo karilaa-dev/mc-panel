@@ -55,22 +55,22 @@ describe("CreateServerPage", () => {
     expect(await screen.findByRole("combobox", { name: "Java runtime" })).toBeInTheDocument()
     await waitFor(() => expect(document.querySelector('[data-slot="slider"] input[type="range"]')).toBeInTheDocument())
     const slider = document.querySelector('[data-slot="slider"] input[type="range"]') as HTMLInputElement
-    expect(slider).toHaveAttribute("aria-label", "Maximum RAM")
+    expect(slider).toHaveAttribute("aria-label", "RAM")
     expect(slider).toHaveAttribute("min", "512")
-    expect(slider).toHaveAttribute("max", "8192")
+    expect(slider).toHaveAttribute("max", "6144")
     expect(slider).toHaveValue("4096")
-    expect(screen.getByText("Maximum RAM: 4.0 GiB")).toBeInTheDocument()
-    expect(screen.getByText(/Minimum 512 MiB, adjustable in 512 MiB steps/)).toBeInTheDocument()
-    expect(screen.getByText(/Host allocation ceiling: 8.0 GiB/)).toBeInTheDocument()
+    expect(screen.getByText("RAM: 4.0 GiB")).toBeInTheDocument()
+    expect(screen.getByText(/Sets both Xms and Xmx to this exact value/)).toBeInTheDocument()
+    expect(screen.getByText(/Maximum selectable RAM: 6.0 GiB/)).toBeInTheDocument()
     expect(screen.getByText(/Compatible runtime found/)).toBeInTheDocument()
 
     fireEvent.change(slider, { target: { value: "512" } })
     await waitFor(() => expect(slider).toHaveValue("512"))
-    expect(screen.getByText("Maximum RAM: 0.5 GiB")).toBeInTheDocument()
+    expect(screen.getByText("RAM: 0.5 GiB")).toBeInTheDocument()
     expect(screen.queryByText(/NaN GiB/)).not.toBeInTheDocument()
   })
 
-  it("uses and submits 512 MiB when that is the host ceiling", async () => {
+  it("blocks creation when the host ceiling is below the total-memory minimum", async () => {
     mockedApi.systemInfo.mockResolvedValue({ version: "1.0.0", dataDirectory: "/var/lib/mcpanel", instancesDirectory: "/var/lib/mcpanel/instances", memoryAllocationLimitBytes: 512 * 1024 ** 2 })
     const user = userEvent.setup()
     renderPage()
@@ -79,19 +79,11 @@ describe("CreateServerPage", () => {
     await screen.findByText("Minecraft version")
     await user.click(screen.getByRole("button", { name: /continue/i }))
 
-    const fixedMemory = screen.getByRole("textbox", { name: /Maximum RAM/i })
-    expect(fixedMemory).toBeDisabled()
-    expect(fixedMemory).toHaveValue("0.5 GiB")
     expect(document.querySelector('[data-slot="slider"]')).not.toBeInTheDocument()
-    expect(screen.getByText("Maximum RAM: 0.5 GiB")).toBeInTheDocument()
-    expect(screen.getByText(/Host allocation ceiling: 0.5 GiB/)).toBeInTheDocument()
-
-    await user.click(screen.getByRole("button", { name: /continue/i }))
-    await user.click(screen.getByRole("checkbox", { name: /I accept the Minecraft EULA/i }))
-    await user.click(screen.getByRole("button", { name: "Create server" }))
-
-    await waitFor(() => expect(mockedApi.createServer).toHaveBeenCalled())
-    expect(mockedApi.createServer).toHaveBeenCalledWith(expect.objectContaining({ memoryMb: 512 }))
+    expect(screen.getByText("Not enough allocatable host RAM")).toBeInTheDocument()
+    expect(screen.getByText(/host allocation ceiling is 0.5 GiB/)).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /continue/i })).toBeDisabled()
+    expect(mockedApi.createServer).not.toHaveBeenCalled()
   })
 })
 

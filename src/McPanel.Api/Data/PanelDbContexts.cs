@@ -43,10 +43,31 @@ public sealed class StateDbContext(DbContextOptions<StateDbContext> options) : D
                 await alter.ExecuteNonQueryAsync(cancellationToken);
             }
 
+            if (adminColumns.Count > 0 && !adminColumns.Contains(nameof(AdminEntity.KeepServersRunningOnPanelStop)))
+            {
+                await using var alter = connection.CreateCommand();
+                alter.CommandText = "ALTER TABLE \"Admins\" ADD COLUMN \"KeepServersRunningOnPanelStop\" INTEGER NOT NULL DEFAULT 1;";
+                await alter.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            if (adminColumns.Count > 0 && !adminColumns.Contains(nameof(AdminEntity.LastConsoleSequence)))
+            {
+                await using var alter = connection.CreateCommand();
+                alter.CommandText = "ALTER TABLE \"Admins\" ADD COLUMN \"LastConsoleSequence\" INTEGER NOT NULL DEFAULT 0;";
+                await alter.ExecuteNonQueryAsync(cancellationToken);
+            }
+
             if (serverColumns.Count > 0 && !serverColumns.Contains(nameof(ServerEntity.InitialMemoryMb)))
             {
                 await using var alter = connection.CreateCommand();
                 alter.CommandText = "ALTER TABLE \"Servers\" ADD COLUMN \"InitialMemoryMb\" INTEGER NOT NULL DEFAULT 0;";
+                await alter.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            if (serverColumns.Count > 0 && !serverColumns.Contains(nameof(ServerEntity.MemoryLimitMb)))
+            {
+                await using var alter = connection.CreateCommand();
+                alter.CommandText = "ALTER TABLE \"Servers\" ADD COLUMN \"MemoryLimitMb\" INTEGER NOT NULL DEFAULT 0;";
                 await alter.ExecuteNonQueryAsync(cancellationToken);
             }
 
@@ -72,6 +93,8 @@ public sealed class StateDbContext(DbContextOptions<StateDbContext> options) : D
             {
                 await using var initializeServers = connection.CreateCommand();
                 initializeServers.CommandText = "UPDATE \"Servers\" SET \"InitialMemoryMb\" = \"MemoryMb\" WHERE \"InitialMemoryMb\" IS NULL OR \"InitialMemoryMb\" <= 0;";
+                await initializeServers.ExecuteNonQueryAsync(cancellationToken);
+                initializeServers.CommandText = "UPDATE \"Servers\" SET \"MemoryLimitMb\" = \"MemoryMb\" + MAX(512, ((\"MemoryMb\" + 2047) / 2048) * 512) WHERE \"MemoryLimitMb\" IS NULL OR \"MemoryLimitMb\" <= \"MemoryMb\";";
                 await initializeServers.ExecuteNonQueryAsync(cancellationToken);
             }
         }
@@ -123,4 +146,7 @@ public sealed class ConsoleDbContext(DbContextOptions<ConsoleDbContext> options)
         modelBuilder.Entity<ConsoleLineEntity>().HasIndex(x => x.Timestamp);
         StateDbContext.ConfigureUtcTimestamps(modelBuilder);
     }
+
+    public Task<int> EnsureCompatibleSchemaAsync(CancellationToken cancellationToken = default) =>
+        Database.ExecuteSqlRawAsync("UPDATE \"Lines\" SET \"ServerId\" = upper(\"ServerId\") WHERE \"ServerId\" <> upper(\"ServerId\");", cancellationToken);
 }

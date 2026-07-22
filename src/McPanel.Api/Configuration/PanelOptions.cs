@@ -3,6 +3,7 @@ namespace McPanel.Api.Configuration;
 public sealed class PanelOptions
 {
     public const int MinimumServerMemoryMb = 512;
+    public const int MinimumServerTotalMemoryMb = 1024;
     public const int ServerMemoryStepMb = 512;
 
     public string DataDirectory { get; set; } = Environment.GetEnvironmentVariable("MCPANEL_DATA_DIR") ?? "/var/lib/mcpanel";
@@ -31,6 +32,7 @@ public sealed class PanelPaths
         Staging = Path.Combine(Data, "staging");
         Backups = Path.Combine(Data, "backups");
         Logs = Path.Combine(Data, "logs");
+        Runtime = Path.Combine(Data, "runtime");
         Keys = Path.Combine(Data, "keys");
         StateDatabase = Path.Combine(Data, "state.db");
         ConsoleDatabase = Path.Combine(Data, "console.db");
@@ -45,6 +47,9 @@ public sealed class PanelPaths
     public string Staging { get; }
     public string Backups { get; }
     public string Logs { get; }
+    public string Runtime { get; }
+    public string RuntimeSocket => Path.Combine(Runtime, "control.sock");
+    public string RuntimeState => Path.Combine(Runtime, "state");
     public string Keys { get; }
     public string StateDatabase { get; }
     public string ConsoleDatabase { get; }
@@ -52,7 +57,7 @@ public sealed class PanelPaths
 
     public void EnsureCreated()
     {
-        foreach (var directory in new[] { Data, Config, Instances, Staging, Backups, Logs, Keys })
+        foreach (var directory in new[] { Data, Config, Instances, Staging, Backups, Logs, Runtime, RuntimeState, Keys })
             Directory.CreateDirectory(directory);
     }
 

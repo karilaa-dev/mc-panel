@@ -17,6 +17,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Options;
 
+if (CgroupProcessLauncher.TryExec(args, out var launcherExitCode)) return launcherExitCode;
+if (PersistentRuntimeHost.IsInvocation(args)) return await PersistentRuntimeHost.RunAsync(args);
+
 // systemd intentionally uses the writable data directory as its working directory.
 // Anchor configuration and bundled web assets to the executable instead of the CWD.
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
@@ -83,8 +86,10 @@ builder.Services.AddHttpClient("minecraft-profile", client =>
 }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, AutomaticDecompression = System.Net.DecompressionMethods.All });
 
 builder.Services.AddSingleton<AsyncKeyedLock>(); builder.Services.AddSingleton<SafePathResolver>(); builder.Services.AddSingleton<SessionAudience>();
+builder.Services.AddSingleton<CgroupMemoryService>();
 builder.Services.AddSingleton<ValidatedDownloadClient>(); builder.Services.AddSingleton<DistributionCatalogService>();
 builder.Services.AddSingleton<JavaDiscoveryService>(); builder.Services.AddSingleton<ConsoleService>();
+builder.Services.AddSingleton<PersistentRuntimeClient>();
 builder.Services.AddSingleton<OperationQueue>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<OperationQueue>());
 builder.Services.AddSingleton<ProcessSupervisor>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<ProcessSupervisor>());
 builder.Services.AddSingleton<IServerProcessStatus>(sp => sp.GetRequiredService<ProcessSupervisor>());
@@ -141,6 +146,7 @@ if (Directory.Exists(webRoot))
 else app.MapGet("/", () => Results.Ok(new { name = "MC Panel API", api = "/api/v1", setup = "/api/v1/auth/status" })).AllowAnonymous();
 
 await app.RunAsync();
+return 0;
 
 static async Task InitializeAsync(IServiceProvider services)
 {
@@ -156,8 +162,11 @@ static async Task InitializeAsync(IServiceProvider services)
         await state.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
         var staleJobs = await state.Jobs.Where(x => x.State == JobState.Running || x.State == JobState.Queued).ToListAsync();
         foreach (var job in staleJobs) { job.State = JobState.Failed; job.Progress = 100; job.Message = "Interrupted"; job.Error = "The panel restarted before this operation completed."; }
-        var staleServers = await state.Servers.Where(x => x.State == ServerState.Running || x.State == ServerState.Starting || x.State == ServerState.Stopping || x.State == ServerState.BackingUp || x.State == ServerState.Updating).ToListAsync();
-        foreach (var server in staleServers) { server.State = ServerState.Stopped; server.ProcessId = null; server.StartedAt = null; }
+        if (!services.GetRequiredService<PersistentRuntimeClient>().Enabled)
+        {
+            var staleServers = await state.Servers.Where(x => x.State == ServerState.Running || x.State == ServerState.Starting || x.State == ServerState.Stopping || x.State == ServerState.BackingUp || x.State == ServerState.Updating).ToListAsync();
+            foreach (var server in staleServers) { server.State = ServerState.Stopped; server.ProcessId = null; server.StartedAt = null; }
+        }
         var interruptedInstalls = await state.Servers.Where(x => x.State == ServerState.Installing).ToListAsync();
         foreach (var server in interruptedInstalls) { server.State = ServerState.Error; server.ProcessId = null; }
         await state.Players.Where(x => x.Online).ExecuteUpdateAsync(x => x.SetProperty(p => p.Online, false));
@@ -167,7 +176,12 @@ static async Task InitializeAsync(IServiceProvider services)
     }
     services.GetRequiredService<SessionAudience>().Initialize(sessionStamp);
     await scope.ServiceProvider.GetRequiredService<ServerIconService>().BackfillAsync(CancellationToken.None);
-    await using (var console = await consoleFactory.CreateDbContextAsync()) { await console.Database.EnsureCreatedAsync(); await console.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;"); }
+    await using (var console = await consoleFactory.CreateDbContextAsync())
+    {
+        await console.Database.EnsureCreatedAsync();
+        await console.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
+        await console.EnsureCompatibleSchemaAsync();
+    }
     using (var javaTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
     {
         try { await scope.ServiceProvider.GetRequiredService<JavaDiscoveryService>().ScanAsync(javaTimeout.Token); } catch { }
