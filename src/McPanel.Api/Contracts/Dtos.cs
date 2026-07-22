@@ -77,14 +77,26 @@ public sealed record SystemInfoDto(string Version, string DataDirectory, string 
 
 public sealed record PaperBuildDto(string Id, string Channel, bool Experimental, string? DownloadName = null);
 public sealed record FabricChoiceDto(string Version, bool Stable);
+public sealed record LoaderBuildDto(string Version, string Channel, bool Experimental);
 public sealed record CatalogDto(
     IReadOnlyList<string> Vanilla,
     IReadOnlyList<string> Paper,
     IReadOnlyList<string> Fabric,
+    IReadOnlyList<string> Forge,
+    IReadOnlyList<string> NeoForge,
     IReadOnlyDictionary<string, IReadOnlyList<PaperBuildDto>> PaperBuilds,
     IReadOnlyList<FabricChoiceDto> FabricLoaders,
     IReadOnlyList<FabricChoiceDto> FabricInstallers,
+    IReadOnlyDictionary<string, IReadOnlyList<LoaderBuildDto>> ForgeBuilds,
+    IReadOnlyDictionary<string, IReadOnlyList<LoaderBuildDto>> NeoForgeBuilds,
     DateTimeOffset FetchedAt);
+
+public enum ModParseStatus { Parsed, Partial, Invalid, Unrecognized }
+public sealed record ModDeclarationDto(
+    string? Id, string? Name, string? Version, string? Description, IReadOnlyList<string> Authors);
+public sealed record ModFileDto(
+    string FileName, long Size, string? MetadataFormat, ModParseStatus Status,
+    string? Message, string? License, IReadOnlyList<ModDeclarationDto> Mods);
 
 public sealed record ScheduleActionDto(string Action, string? Command = null);
 public sealed record ScheduleDto(

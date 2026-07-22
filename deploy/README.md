@@ -34,8 +34,9 @@ and blocks an incompatible selection. As a current Paper-specific reference,
 the [official Paper requirements](https://docs.papermc.io/paper/getting-started/)
 recommend Java 8 for 1.7.10–1.11, Java 11 for 1.12–1.16.4, Java 16 for 1.16.5,
 Java 17 for 1.17–1.19, Java 21 for 1.20–1.21.11, and Java 25 for 26.1 and later.
-Vanilla and Fabric requirements come from the selected Minecraft version's
-metadata and may differ from old Paper releases. Recheck provider documentation
+Vanilla, Fabric, Forge, and NeoForge requirements come from the selected
+Minecraft version's metadata; legacy Forge releases that require Java 8 are
+kept on Java 8 exactly. These may differ from old Paper releases. Recheck provider documentation
 when adding a new release family.
 
 ## Publish

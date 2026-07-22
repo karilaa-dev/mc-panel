@@ -50,6 +50,7 @@ public static partial class ApiEndpoints
 
         api.MapGet("/servers/{id:guid}/players", (Guid id, PlayerService service, CancellationToken token) => service.ListAsync(id, token));
         api.MapPost("/servers/{id:guid}/players/{name}/{action}", (Guid id, string name, string action, PlayerService service, CancellationToken token) => service.ActionAsync(id, name, action, token));
+        api.MapGet("/servers/{id:guid}/mods", (Guid id, ModMetadataService service, CancellationToken token) => service.ListAsync(id, token));
 
         api.MapGet("/servers/{id:guid}/files", (Guid id, string? path, FileManagerService files) => files.List(id, path ?? ""));
         api.MapPost("/servers/{id:guid}/files", async (Guid id, CreateFileRequest request, FileManagerService files, CancellationToken token) => { await files.CreateAsync(id, request.Path, request.Directory, token); return Results.NoContent(); });

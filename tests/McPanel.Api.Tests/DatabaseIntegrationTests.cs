@@ -82,9 +82,13 @@ public sealed class DatabaseIntegrationTests : IDisposable
                 );
                 CREATE TABLE "Servers" (
                     "Id" TEXT NOT NULL CONSTRAINT "PK_Servers" PRIMARY KEY,
-                    "MemoryMb" INTEGER NOT NULL
+                    "MemoryMb" INTEGER NOT NULL,
+                    "FabricLoaderVersion" TEXT NULL,
+                    "FabricInstallerVersion" TEXT NULL,
+                    "ExecutableJar" TEXT NOT NULL
                 );
-                INSERT INTO "Servers" ("Id", "MemoryMb") VALUES ('00000000-0000-0000-0000-000000000001', 6144);
+                INSERT INTO "Servers" ("Id", "MemoryMb", "FabricLoaderVersion", "FabricInstallerVersion", "ExecutableJar")
+                VALUES ('00000000-0000-0000-0000-000000000001', 6144, '0.16.14', '1.0.3', 'fabric-server-launch.jar');
                 """;
             await command.ExecuteNonQueryAsync();
         }
@@ -99,11 +103,15 @@ public sealed class DatabaseIntegrationTests : IDisposable
         await using var verify = new SqliteConnection($"Data Source={_file}");
         await verify.OpenAsync();
         await using var select = verify.CreateCommand();
-        select.CommandText = "SELECT \"InitialMemoryMb\", \"UseAikarFlags\" FROM \"Servers\" LIMIT 1;";
+        select.CommandText = "SELECT \"InitialMemoryMb\", \"UseAikarFlags\", \"LoaderVersion\", \"InstallerVersion\", \"LaunchMode\", \"LaunchTarget\" FROM \"Servers\" LIMIT 1;";
         await using var reader = await select.ExecuteReaderAsync();
         Assert.True(await reader.ReadAsync());
         Assert.Equal(6144, reader.GetInt32(0));
         Assert.False(reader.GetBoolean(1));
+        Assert.Equal("0.16.14", reader.GetString(2));
+        Assert.Equal("1.0.3", reader.GetString(3));
+        Assert.Equal("Jar", reader.GetString(4));
+        Assert.Equal("fabric-server-launch.jar", reader.GetString(5));
     }
 
     public void Dispose() { SqliteConnection.ClearAllPools(); if (File.Exists(_file)) File.Delete(_file); }

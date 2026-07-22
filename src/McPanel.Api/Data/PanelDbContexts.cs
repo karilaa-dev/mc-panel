@@ -19,6 +19,7 @@ public sealed class StateDbContext(DbContextOptions<StateDbContext> options) : D
         modelBuilder.Entity<AdminEntity>().HasKey(x => x.Id);
         modelBuilder.Entity<ServerEntity>().Property(x => x.Kind).HasConversion<string>();
         modelBuilder.Entity<ServerEntity>().Property(x => x.State).HasConversion<string>();
+        modelBuilder.Entity<ServerEntity>().Property(x => x.LaunchMode).HasConversion<string>();
         modelBuilder.Entity<JobEntity>().Property(x => x.State).HasConversion<string>();
         modelBuilder.Entity<PlayerEntity>().HasIndex(x => new { x.ServerId, x.Name }).IsUnique();
         modelBuilder.Entity<ScheduleEntity>().HasIndex(x => new { x.Enabled, x.NextRunAt });
@@ -35,6 +36,7 @@ public sealed class StateDbContext(DbContextOptions<StateDbContext> options) : D
         {
             var adminColumns = await ColumnsAsync(connection, "Admins", cancellationToken);
             var serverColumns = await ColumnsAsync(connection, "Servers", cancellationToken);
+            var addingLaunchTarget = serverColumns.Count > 0 && !serverColumns.Contains(nameof(ServerEntity.LaunchTarget));
 
             if (!adminColumns.Contains(nameof(AdminEntity.SessionStamp)))
             {
@@ -64,6 +66,34 @@ public sealed class StateDbContext(DbContextOptions<StateDbContext> options) : D
                 await alter.ExecuteNonQueryAsync(cancellationToken);
             }
 
+            if (serverColumns.Count > 0 && !serverColumns.Contains(nameof(ServerEntity.LoaderVersion)))
+            {
+                await using var alter = connection.CreateCommand();
+                alter.CommandText = "ALTER TABLE \"Servers\" ADD COLUMN \"LoaderVersion\" TEXT NULL;";
+                await alter.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            if (serverColumns.Count > 0 && !serverColumns.Contains(nameof(ServerEntity.InstallerVersion)))
+            {
+                await using var alter = connection.CreateCommand();
+                alter.CommandText = "ALTER TABLE \"Servers\" ADD COLUMN \"InstallerVersion\" TEXT NULL;";
+                await alter.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            if (serverColumns.Count > 0 && !serverColumns.Contains(nameof(ServerEntity.LaunchMode)))
+            {
+                await using var alter = connection.CreateCommand();
+                alter.CommandText = "ALTER TABLE \"Servers\" ADD COLUMN \"LaunchMode\" TEXT NOT NULL DEFAULT 'Jar';";
+                await alter.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            if (addingLaunchTarget)
+            {
+                await using var alter = connection.CreateCommand();
+                alter.CommandText = "ALTER TABLE \"Servers\" ADD COLUMN \"LaunchTarget\" TEXT NOT NULL DEFAULT 'server.jar';";
+                await alter.ExecuteNonQueryAsync(cancellationToken);
+            }
+
             await using var initialize = connection.CreateCommand();
             initialize.CommandText = "UPDATE \"Admins\" SET \"SessionStamp\" = lower(hex(randomblob(16))) WHERE \"SessionStamp\" IS NULL OR length(trim(\"SessionStamp\")) = 0;";
             await initialize.ExecuteNonQueryAsync(cancellationToken);
@@ -73,6 +103,25 @@ public sealed class StateDbContext(DbContextOptions<StateDbContext> options) : D
                 await using var initializeServers = connection.CreateCommand();
                 initializeServers.CommandText = "UPDATE \"Servers\" SET \"InitialMemoryMb\" = \"MemoryMb\" WHERE \"InitialMemoryMb\" IS NULL OR \"InitialMemoryMb\" <= 0;";
                 await initializeServers.ExecuteNonQueryAsync(cancellationToken);
+
+                if (serverColumns.Contains("FabricLoaderVersion"))
+                {
+                    await using var migrateLoader = connection.CreateCommand();
+                    migrateLoader.CommandText = "UPDATE \"Servers\" SET \"LoaderVersion\" = \"FabricLoaderVersion\" WHERE \"LoaderVersion\" IS NULL AND \"FabricLoaderVersion\" IS NOT NULL;";
+                    await migrateLoader.ExecuteNonQueryAsync(cancellationToken);
+                }
+                if (serverColumns.Contains("FabricInstallerVersion"))
+                {
+                    await using var migrateInstaller = connection.CreateCommand();
+                    migrateInstaller.CommandText = "UPDATE \"Servers\" SET \"InstallerVersion\" = \"FabricInstallerVersion\" WHERE \"InstallerVersion\" IS NULL AND \"FabricInstallerVersion\" IS NOT NULL;";
+                    await migrateInstaller.ExecuteNonQueryAsync(cancellationToken);
+                }
+                if (addingLaunchTarget && serverColumns.Contains("ExecutableJar"))
+                {
+                    await using var migrateTarget = connection.CreateCommand();
+                    migrateTarget.CommandText = "UPDATE \"Servers\" SET \"LaunchTarget\" = \"ExecutableJar\" WHERE \"ExecutableJar\" IS NOT NULL AND length(trim(\"ExecutableJar\")) > 0;";
+                    await migrateTarget.ExecuteNonQueryAsync(cancellationToken);
+                }
             }
         }
         finally

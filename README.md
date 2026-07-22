@@ -12,8 +12,8 @@ administration, or a dense operator interface.
 
 ## Capabilities
 
-- Multiple Vanilla, Paper, and Fabric servers installed from verified upstream
-  metadata and downloads.
+- Multiple Vanilla, Paper, Fabric, Forge, and NeoForge servers installed from
+  verified upstream metadata and downloads.
 - Direct supervised Java processes—no Docker daemon and no privileged runtime.
 - Discovery and validation of installed Java runtimes, including multiple Java
   major versions on one host.
@@ -23,6 +23,8 @@ administration, or a dense operator interface.
   separate stdout/stderr display.
 - Synchronized Xms/Xmx controls, version-aware sectioned `server.properties`,
   cropped server icons, player actions, and a confined file manager.
+- Read-only Fabric, Forge, and NeoForge mod inventories with metadata details
+  parsed directly from each instance's top-level mod JARs.
 - Per-server backups and time-based automations.
 - One local administrator protected by cookie authentication, global session
   revocation, and antiforgery tokens.

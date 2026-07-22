@@ -1,4 +1,4 @@
-export type ServerKind = "Vanilla" | "Paper" | "Fabric"
+export type ServerKind = "Vanilla" | "Paper" | "Fabric" | "Forge" | "NeoForge"
 
 export type ServerState =
   | "Installing"
@@ -216,14 +216,44 @@ export interface FabricVersionDto {
   stable: boolean
 }
 
+export interface LoaderBuildDto {
+  version: string
+  channel: string
+  experimental: boolean
+}
+
 export interface CatalogDto {
   vanilla: string[]
   paper: string[]
   fabric: string[]
+  forge: string[]
+  neoForge: string[]
   paperBuilds: Record<string, PaperBuildDto[]>
   fabricLoaders: FabricVersionDto[]
   fabricInstallers: FabricVersionDto[]
+  forgeBuilds: Record<string, LoaderBuildDto[]>
+  neoForgeBuilds: Record<string, LoaderBuildDto[]>
   fetchedAt: string
+}
+
+export type ModParseStatus = "Parsed" | "Partial" | "Invalid" | "Unrecognized"
+
+export interface ModDeclarationDto {
+  id?: string | null
+  name?: string | null
+  version?: string | null
+  description?: string | null
+  authors: string[]
+}
+
+export interface ModFileDto {
+  fileName: string
+  size: number
+  metadataFormat?: string | null
+  status: ModParseStatus
+  message?: string | null
+  license?: string | null
+  mods: ModDeclarationDto[]
 }
 
 export interface CreateServerRequest {

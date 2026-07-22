@@ -35,9 +35,13 @@ describe("CreateServerPage", () => {
       vanilla: ["1.21.8"],
       paper: ["1.21.8"],
       fabric: ["1.21.8"],
+      forge: ["1.21.8"],
+      neoForge: ["1.21.8"],
       paperBuilds: {},
       fabricLoaders: [{ version: "0.16.14", stable: true }],
       fabricInstallers: [{ version: "1.0.3", stable: true }],
+      forgeBuilds: { "1.21.8": [{ version: "58.1.0", channel: "Recommended", experimental: false }] },
+      neoForgeBuilds: { "1.21.8": [{ version: "21.8.52", channel: "Stable", experimental: false }] },
       fetchedAt: new Date().toISOString(),
     })
     mockedApi.java.mockResolvedValue([{ id: "java-21", path: "/usr/bin/java", version: "21.0.7", major: 21, vendor: "OpenJDK", architecture: "x64", isCustom: false }])
@@ -92,6 +96,36 @@ describe("CreateServerPage", () => {
 
     await waitFor(() => expect(mockedApi.createServer).toHaveBeenCalled())
     expect(mockedApi.createServer).toHaveBeenCalledWith(expect.objectContaining({ memoryMb: 512 }))
+  })
+
+  it("creates Forge with one loader version and no Fabric installer", async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(screen.getByRole("button", { name: "Forge" }))
+    await user.click(screen.getByRole("button", { name: /continue/i }))
+    expect(await screen.findByRole("combobox", { name: "Forge version" })).toHaveTextContent("58.1.0")
+    expect(screen.queryByRole("combobox", { name: "Fabric installer" })).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: /continue/i }))
+    await user.click(screen.getByRole("button", { name: /continue/i }))
+    await user.click(screen.getByRole("checkbox", { name: /I accept the Minecraft EULA/i }))
+    await user.click(screen.getByRole("button", { name: "Create server" }))
+
+    await waitFor(() => expect(mockedApi.createServer).toHaveBeenCalled())
+    expect(mockedApi.createServer).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "Forge", version: "1.21.8", loaderVersion: "58.1.0",
+    }))
+    expect(mockedApi.createServer.mock.calls.at(-1)?.[0]).not.toHaveProperty("installerVersion")
+  })
+
+  it("offers a single NeoForge loader selector", async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(screen.getByRole("button", { name: "NeoForge" }))
+    await user.click(screen.getByRole("button", { name: /continue/i }))
+    expect(await screen.findByRole("combobox", { name: "NeoForge version" })).toHaveTextContent("21.8.52")
+    expect(screen.queryByRole("combobox", { name: /Fabric installer/i })).not.toBeInTheDocument()
   })
 })
 

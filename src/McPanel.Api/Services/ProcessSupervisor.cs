@@ -59,21 +59,31 @@ public sealed class ProcessSupervisor(
     private readonly ConcurrentDictionary<Guid, ManagedProcess> _processes = new();
     private readonly SemaphoreSlim _memoryAdmission = new(1, 1);
 
-    public Task<JobDto> QueueActionAsync(Guid id, string action, bool confirmKill, CancellationToken cancellationToken)
+    public async Task<JobDto> QueueActionAsync(Guid id, string action, bool confirmKill, CancellationToken cancellationToken)
     {
         var normalized = action.ToLowerInvariant();
         if (normalized == "kill" && !confirmKill) throw PanelProblems.Validation("Emergency kill requires confirm=true.");
-        return operations.EnqueueAsync(char.ToUpperInvariant(normalized[0]) + normalized[1..], id, async (_, _, token) =>
+        if (normalized is not ("start" or "stop" or "restart" or "kill")) throw PanelProblems.Validation("Unknown server action.");
+        using (await keyedLock.AcquireAsync(id, cancellationToken))
         {
-            switch (normalized)
+            await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+            var server = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, cancellationToken)
+                ?? throw PanelProblems.NotFound("Server");
+            if (await db.Jobs.AsNoTracking().AnyAsync(x => x.ServerId == id && (x.State == JobState.Queued || x.State == JobState.Running), cancellationToken))
+                throw PanelProblems.Conflict("SERVER_BUSY", "Another operation is already running for this server.");
+            if (normalized == "start") EnsurePortAvailable(server.Port);
+            return await operations.EnqueueAsync(char.ToUpperInvariant(normalized[0]) + normalized[1..], id, async (_, _, token) =>
             {
-                case "start": await StartAsync(id, false, token); break;
-                case "stop": await StopAsync(id, token); break;
-                case "restart": await RestartAsync(id, token); break;
-                case "kill": await KillAsync(id, token); break;
-                default: throw PanelProblems.Validation("Unknown server action.");
-            }
-        }, cancellationToken);
+                switch (normalized)
+                {
+                    case "start": await StartAsync(id, false, token); break;
+                    case "stop": await StopAsync(id, token); break;
+                    case "restart": await RestartAsync(id, token); break;
+                    case "kill": await KillAsync(id, token); break;
+                    default: throw PanelProblems.Validation("Unknown server action.");
+                }
+            }, cancellationToken);
+        }
     }
 
     public async Task StartAsync(Guid id, bool recovery, CancellationToken cancellationToken)
@@ -102,8 +112,11 @@ public sealed class ProcessSupervisor(
         var required = server.RequiredJavaMajor > 0 ? server.RequiredJavaMajor : RequiredJava(server.Version);
         if (probed.Major < required)
             throw new PanelException(400, "JAVA_VERSION_INCOMPATIBLE", $"Minecraft {server.Version} requires Java {required} or newer.");
-        var jar = Path.Combine(paths.Instance(id), server.ExecutableJar);
-        if (!File.Exists(jar)) throw new PanelException(409, "OPERATION_FAILED", "The server executable JAR is missing.");
+        if (server.Kind == ServerKind.Forge && required == 8 && probed.Major != 8)
+            throw new PanelException(400, "JAVA_VERSION_INCOMPATIBLE", $"Legacy Forge for Minecraft {server.Version} requires Java 8.");
+        var instance = paths.Instance(id);
+        var launchTarget = ResolveLaunchTarget(instance, server.LaunchTarget);
+        if (!File.Exists(launchTarget)) throw new PanelException(409, "OPERATION_FAILED", "The server launch target is missing.");
         await _memoryAdmission.WaitAsync(cancellationToken);
         Process process;
         ManagedProcess managedProcess;
@@ -114,7 +127,7 @@ public sealed class ProcessSupervisor(
             if ((allocationMb + server.MemoryMb) * 1024 * 1024 > total * options.Value.MemoryAllocationFraction)
                 throw new PanelException(409, "MEMORY_LIMIT_EXCEEDED", "Starting this server would exceed the host memory allocation limit.");
             EnsurePortAvailable(server.Port);
-            var start = BuildStartInfo(server, runtime.Path, jar);
+            var start = BuildStartInfo(server, runtime.Path, instance);
             server.State = ServerState.Starting; server.ProcessId = null; server.UpdatedAt = DateTimeOffset.UtcNow;
             if (!recovery) server.CrashAttempts = 0;
             await db.SaveChangesAsync(cancellationToken);
@@ -370,11 +383,11 @@ public sealed class ProcessSupervisor(
         { logger.LogDebug(exception, "Console stream ended for {ServerId}", id); }
     }
 
-    private static ProcessStartInfo BuildStartInfo(ServerEntity server, string javaPath, string jar)
+    private static ProcessStartInfo BuildStartInfo(ServerEntity server, string javaPath, string instance)
     {
         var start = new ProcessStartInfo
         {
-            FileName = javaPath, WorkingDirectory = Path.GetDirectoryName(jar)!, UseShellExecute = false,
+            FileName = javaPath, WorkingDirectory = instance, UseShellExecute = false,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true
         };
         start.ArgumentList.Add($"-Xms{server.InitialMemoryMb}M");
@@ -382,11 +395,24 @@ public sealed class ProcessSupervisor(
         if (server.UseAikarFlags)
             foreach (var argument in AikarFlags) start.ArgumentList.Add(argument);
         foreach (var argument in JvmArgumentParser.Parse(server.JvmArguments)) start.ArgumentList.Add(argument);
-        start.ArgumentList.Add("-jar"); start.ArgumentList.Add(server.ExecutableJar); start.ArgumentList.Add("nogui");
+        if (server.LaunchMode == LaunchMode.ArgumentFile) start.ArgumentList.Add("@" + server.LaunchTarget.Replace(Path.DirectorySeparatorChar, '/'));
+        else { start.ArgumentList.Add("-jar"); start.ArgumentList.Add(server.LaunchTarget); }
+        start.ArgumentList.Add("nogui");
         start.Environment.Remove("JAVA_TOOL_OPTIONS"); start.Environment.Remove("_JAVA_OPTIONS"); start.Environment.Remove("JDK_JAVA_OPTIONS");
         foreach (var key in start.Environment.Keys.Where(x => x.StartsWith("MCPANEL_", StringComparison.OrdinalIgnoreCase) || x.StartsWith("ASPNETCORE_", StringComparison.OrdinalIgnoreCase)).ToArray())
             start.Environment.Remove(key);
         return start;
+    }
+
+    internal static string ResolveLaunchTarget(string instance, string relative)
+    {
+        if (string.IsNullOrWhiteSpace(relative) || Path.IsPathRooted(relative))
+            throw new PanelException(409, "OPERATION_FAILED", "The server launch target is invalid.");
+        var root = Path.GetFullPath(instance);
+        var target = Path.GetFullPath(Path.Combine(root, relative));
+        if (!target.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            throw new PanelException(409, "OPERATION_FAILED", "The server launch target is outside the instance.");
+        return target;
     }
 
     private static async Task WriteCommandInternalAsync(ManagedProcess managed, string command, CancellationToken cancellationToken)
@@ -397,10 +423,10 @@ public sealed class ProcessSupervisor(
         finally { managed.InputLock.Release(); }
     }
 
-    private static void EnsurePortAvailable(int port)
+    internal static void EnsurePortAvailable(int port)
     {
         try { var listener = new TcpListener(IPAddress.Any, port); listener.Start(); listener.Stop(); }
-        catch (SocketException) { throw PanelProblems.Conflict("PORT_IN_USE", "The selected game port is already in use on the host."); }
+        catch (SocketException) { throw PanelProblems.Conflict("PORT_IN_USE", $"Port {port} is already in use. Choose a different game port in Server properties, then try again."); }
     }
 
     private async Task PublishStateAsync(ServerEntity server, CancellationToken cancellationToken)

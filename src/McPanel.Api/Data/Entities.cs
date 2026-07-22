@@ -2,7 +2,8 @@ using System.ComponentModel.DataAnnotations;
 
 namespace McPanel.Api.Data;
 
-public enum ServerKind { Vanilla, Paper, Fabric }
+public enum ServerKind { Vanilla, Paper, Fabric, Forge, NeoForge }
+public enum LaunchMode { Jar, ArgumentFile }
 public enum ServerState { Installing, Stopped, Starting, Running, Stopping, BackingUp, Updating, Crashed, Error }
 public enum JobState { Queued, Running, Completed, Failed }
 
@@ -22,9 +23,10 @@ public sealed class ServerEntity
     public ServerKind Kind { get; set; }
     [MaxLength(64)] public required string Version { get; set; }
     [MaxLength(64)] public string? DistributionBuild { get; set; }
-    [MaxLength(64)] public string? FabricLoaderVersion { get; set; }
-    [MaxLength(64)] public string? FabricInstallerVersion { get; set; }
-    [MaxLength(255)] public string ExecutableJar { get; set; } = "server.jar";
+    [MaxLength(64)] public string? LoaderVersion { get; set; }
+    [MaxLength(64)] public string? InstallerVersion { get; set; }
+    public LaunchMode LaunchMode { get; set; } = LaunchMode.Jar;
+    [MaxLength(512)] public string LaunchTarget { get; set; } = "server.jar";
     public int RequiredJavaMajor { get; set; }
     public bool IsExperimental { get; set; }
     public ServerState State { get; set; } = ServerState.Installing;

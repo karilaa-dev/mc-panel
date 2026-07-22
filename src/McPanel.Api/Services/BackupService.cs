@@ -157,8 +157,9 @@ public sealed class BackupService(
         {
             await operations.ProgressAsync(jobId, 40, "Validating and extracting backup", cancellationToken);
             await ExtractSafeAsync(archivePath, stage, cancellationToken);
-            if (!File.Exists(Path.Combine(stage, server.ExecutableJar)))
-                throw new PanelException(400, "OPERATION_FAILED", "The backup does not contain this server's executable JAR.");
+            var launchTarget = ProcessSupervisor.ResolveLaunchTarget(stage, server.LaunchTarget);
+            if (!File.Exists(launchTarget))
+                throw new PanelException(400, "OPERATION_FAILED", "The backup does not contain this server's launch target.");
             var current = paths.Instance(serverId);
             Directory.Move(current, old);
             try { Directory.Move(stage, current); }

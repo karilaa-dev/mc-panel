@@ -9,6 +9,7 @@ import type {
   HostStatusDto,
   JavaRuntimeDto,
   JobDto,
+  ModFileDto,
   PlayerDto,
   RuntimeConfigurationDto,
   ScheduleDto,
@@ -206,6 +207,7 @@ export const api = {
     `${API_BASE}${serverPath(id)}/files/download?path=${encodeURIComponent(path)}`,
 
   players: (id: string) => request<PlayerDto[]>(`${serverPath(id)}/players`),
+  mods: (id: string) => request<ModFileDto[]>(`${serverPath(id)}/mods`),
   playerAction: (
     id: string,
     name: string,

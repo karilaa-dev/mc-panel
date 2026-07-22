@@ -117,8 +117,20 @@ describe("AppShell", () => {
     expect(serverLink.compareDocumentPosition(java) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.getByRole("link", { name: "Server properties" })).toBeVisible()
     expect(screen.getByRole("link", { name: "Runtime" })).toBeVisible()
+    expect(screen.queryByRole("link", { name: "Mods" })).not.toBeInTheDocument()
 
     await user.click(screen.getByRole("button", { name: "Servers" }))
     expect(serverLink).not.toBeVisible()
+  })
+
+  it("shows Mods navigation for Fabric, Forge, and NeoForge servers", async () => {
+    mockedApi.servers.mockResolvedValue([{
+      id: "server-1", name: "Modded server", kind: "NeoForge", version: "1.21.8", state: "Stopped", port: 25565,
+      memoryMb: 2048, playerCount: 0, maxPlayers: 20, cpuPercent: 0, memoryUsedMb: 0, uptimeSeconds: 0,
+      restartRequired: false, startOnBoot: false,
+    }])
+    renderShell("/servers/server-1")
+
+    expect(await screen.findByRole("link", { name: "Mods" })).toHaveAttribute("href", "/servers/server-1/mods")
   })
 })
