@@ -34,7 +34,11 @@ public sealed class OperationQueueTests : IDisposable
             lifetime,
             NullLogger<OperationQueue>.Instance);
 
-        for (var index = 0; index < 256; index++)
+        var serverId = Guid.NewGuid();
+        var related = await queue.EnqueueAsync("Test", serverId, (_, _, _) => Task.CompletedTask, CancellationToken.None);
+        Assert.Equal(serverId, related.ServerId);
+
+        for (var index = 1; index < 256; index++)
             await queue.EnqueueAsync("Test", null, (_, _, _) => Task.CompletedTask, CancellationToken.None);
 
         using var request = new CancellationTokenSource();

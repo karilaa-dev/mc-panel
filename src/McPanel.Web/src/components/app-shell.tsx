@@ -96,7 +96,8 @@ export function AppShell() {
   const serverSection = serverItems.find((item) =>
     location.pathname === `/servers/${serverId}${item.path}`,
   )
-  const pageName = serverSection?.label
+  const pageName = location.pathname.match(/^\/servers\/[^/]+\/creating\/[^/]+$/) ? "Creating server"
+    : serverSection?.label
     ?? [dashboardItem, { label: "Create server", path: "/create", icon: PlusIcon }, ...systemItems].find((item) => item.path === location.pathname)?.label
     ?? "MC Panel"
 

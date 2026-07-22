@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { MemoryRouter } from "react-router-dom"
+import { MemoryRouter, useLocation } from "react-router-dom"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { CreateServerPage } from "@/pages/core-pages"
 import { api } from "@/lib/api"
@@ -18,12 +18,17 @@ vi.mock("@/lib/api", () => ({
 
 const mockedApi = vi.mocked(api)
 
+function CurrentLocation() {
+  return <output data-testid="current-location">{useLocation().pathname}</output>
+}
+
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <CreateServerPage />
+        <CurrentLocation />
       </QueryClientProvider>
     </MemoryRouter>,
   )
@@ -46,7 +51,7 @@ describe("CreateServerPage", () => {
     })
     mockedApi.java.mockResolvedValue([{ id: "java-21", path: "/usr/bin/java", version: "21.0.7", major: 21, vendor: "OpenJDK", architecture: "x64", isCustom: false }])
     mockedApi.systemInfo.mockResolvedValue({ version: "1.0.0", dataDirectory: "/var/lib/mcpanel", instancesDirectory: "/var/lib/mcpanel/instances", memoryAllocationLimitBytes: 8 * 1024 ** 3 })
-    mockedApi.createServer.mockResolvedValue({ id: "job-12345678", type: "Install", state: "Queued", progress: 0 })
+    mockedApi.createServer.mockResolvedValue({ id: "job-12345678", type: "Install", state: "Queued", progress: 0, serverId: "server-1" })
   })
 
   it("uses a simple host-bounded RAM slider", async () => {
@@ -108,6 +113,7 @@ describe("CreateServerPage", () => {
       kind: "Forge", version: "1.21.8", loaderVersion: "58.1.0",
     }))
     expect(mockedApi.createServer.mock.calls.at(-1)?.[0]).not.toHaveProperty("installerVersion")
+    expect(screen.getByTestId("current-location")).toHaveTextContent("/servers/server-1/creating/job-12345678")
   })
 
   it("offers a single NeoForge loader selector", async () => {

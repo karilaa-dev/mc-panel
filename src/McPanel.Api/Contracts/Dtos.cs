@@ -70,7 +70,9 @@ public sealed record ExtractFileRequest(string Path, string Destination);
 
 public sealed record PlayerDto(string Name, string? Uuid, bool Online, bool Whitelisted, bool Operator, bool Banned);
 public sealed record BackupDto(Guid Id, string FileName, long Size, DateTimeOffset CreatedAt, string Reason, string State);
-public sealed record JobDto(Guid Id, string Type, JobState State, int Progress, string? Message, string? Error);
+public sealed record JobDto(
+    Guid Id, string Type, JobState State, int Progress, string? Message, string? Error,
+    Guid? ServerId);
 public sealed record ConsoleEventDto(Guid ServerId, long Sequence, DateTimeOffset Timestamp, string Stream, string Level, string Text);
 public sealed record CommandRequest(string Command);
 public sealed record ConfirmKillRequest(bool Confirm);

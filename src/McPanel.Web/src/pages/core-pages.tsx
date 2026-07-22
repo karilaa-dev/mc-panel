@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useForm, useWatch } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -191,8 +191,8 @@ export function CreateServerPage() {
         ...(kind === "Fabric" ? { loaderVersion, installerVersion } : {}),
         ...((kind === "Forge" || kind === "NeoForge") ? { loaderVersion } : {}),
       })
-      toast.success("Server installation started", { description: `Operation ${job.id.slice(0, 8)} is running in the background.` })
-      navigate("/")
+      if (!job.serverId) throw new Error("The server was queued, but its installation page could not be opened.")
+      navigate(`/servers/${job.serverId}/creating/${job.id}`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not create the server.")
     }
@@ -211,6 +211,75 @@ export function CreateServerPage() {
         </form>
       </CardContent>
       <CardFooter className="justify-between"><Button variant="outline" disabled={step === 1 || isSubmitting} onClick={() => setStep((current) => current - 1)}>Back</Button>{step < 4 ? <Button disabled={!canAdvance} onClick={() => setStep((current) => current + 1)}>Continue<ArrowRightIcon data-icon="inline-end" /></Button> : <Button form="create-form" type="submit" disabled={isSubmitting || !eula}>{isSubmitting && <Spinner data-icon="inline-start" />}Create server</Button>}</CardFooter>
+    </Card>
+  </Page>
+}
+
+export function ServerCreationPage() {
+  const { serverId = "", jobId = "" } = useParams()
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const server = useQuery({
+    queryKey: ["server", serverId],
+    queryFn: () => api.server(serverId),
+    enabled: Boolean(serverId),
+    refetchInterval: 2_000,
+  })
+  const job = useQuery({
+    queryKey: ["job", jobId],
+    queryFn: () => api.job(jobId),
+    enabled: Boolean(jobId),
+    refetchInterval: (query) => {
+      const state = query.state.data?.state
+      return state === "Completed" || state === "Failed" ? false : 1_000
+    },
+  })
+
+  useEffect(() => {
+    if (job.data?.state !== "Completed") return
+    void queryClient.invalidateQueries({ queryKey: ["servers"] })
+    void queryClient.invalidateQueries({ queryKey: ["server", serverId] })
+    navigate(`/servers/${serverId}`, { replace: true })
+  }, [job.data?.state, navigate, queryClient, serverId])
+
+  const failed = job.data?.state === "Failed"
+  const progress = job.data?.progress ?? 0
+  const message = job.data?.message ?? (job.isLoading ? "Preparing installation" : "Waiting for an update")
+  const serverName = server.data?.name ?? "your server"
+
+  return <Page title={`Creating ${serverName}`} description="MC Panel is downloading, verifying, and configuring the server. This page updates automatically.">
+    <Card className="mx-auto w-full max-w-3xl">
+      <CardHeader>
+        <CardTitle>{failed ? "Installation stopped" : "Server installation in progress"}</CardTitle>
+        <CardDescription>{server.data ? `${server.data.kind} · Minecraft ${server.data.version} · Port ${server.data.port}` : `Installation job ${jobId.slice(0, 8)}`}</CardDescription>
+        <CardAction>{failed
+          ? <Badge variant="destructive"><AlertTriangleIcon data-icon="inline-start" />Failed</Badge>
+          : <Badge variant="outline"><Spinner data-icon="inline-start" />{job.data?.state === "Queued" ? "Queued" : "Installing"}</Badge>}
+        </CardAction>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-6">
+        <div className="flex items-center gap-4">
+          {server.data ? <ServerAvatar server={server.data} className="size-12" /> : <Skeleton className="size-12 rounded-full" />}
+          <div className="min-w-0">
+            <p className="font-medium">{message}</p>
+            <p className="text-sm text-muted-foreground">{failed ? "Review the error below before opening the server." : "Large mod loaders can take a few minutes to finish."}</p>
+          </div>
+        </div>
+        <Progress value={progress}>
+          <ProgressLabel>Installation progress</ProgressLabel>
+          <ProgressValue />
+        </Progress>
+        {failed && <Alert variant="destructive"><AlertTriangleIcon /><AlertTitle>Could not create the server</AlertTitle><AlertDescription>{job.data?.error ?? "The installation failed before it completed."}</AlertDescription></Alert>}
+        {job.isError && <Alert variant="destructive"><AlertTriangleIcon /><AlertTitle>Progress is unavailable</AlertTitle><AlertDescription>{job.error instanceof Error ? job.error.message : "Could not load the installation job."}</AlertDescription></Alert>}
+      </CardContent>
+      <CardFooter className="flex-wrap justify-between gap-3">
+        <p className="text-sm text-muted-foreground">You can safely leave this page; installation will continue in the background.</p>
+        <div className="flex gap-2">
+          {job.isError && <Button variant="outline" onClick={() => void job.refetch()}>Retry</Button>}
+          {failed && <Button nativeButton={false} render={<Link to={`/servers/${serverId}`} />}>Open server</Button>}
+          {!failed && <Button variant="outline" nativeButton={false} render={<Link to="/" />}>View dashboard</Button>}
+        </div>
+      </CardFooter>
     </Card>
   </Page>
 }

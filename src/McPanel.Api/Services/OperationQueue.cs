@@ -100,6 +100,6 @@ public sealed class OperationQueue(
         try { await audience.PublishAsync(group => hub.Clients.Group(group).SendAsync("JobUpdated", Map(job), cancellationToken), cancellationToken); } catch (Exception exception) { logger.LogDebug(exception, "Could not broadcast job {JobId}", job.Id); }
     }
 
-    private static JobDto Map(JobEntity job) => new(job.Id, job.Type, job.State, job.Progress, job.Message, job.Error);
+    private static JobDto Map(JobEntity job) => new(job.Id, job.Type, job.State, job.Progress, job.Message, job.Error, job.ServerId);
     private sealed record QueuedOperation(Guid JobId, Func<IServiceProvider, Guid, CancellationToken, Task> Action);
 }

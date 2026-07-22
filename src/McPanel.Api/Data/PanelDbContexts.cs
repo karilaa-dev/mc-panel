@@ -139,11 +139,21 @@ public sealed class StateDbContext(DbContextOptions<StateDbContext> options) : D
                     migrateInstaller.CommandText = "UPDATE \"Servers\" SET \"InstallerVersion\" = \"FabricInstallerVersion\" WHERE \"InstallerVersion\" IS NULL AND \"FabricInstallerVersion\" IS NOT NULL;";
                     await migrateInstaller.ExecuteNonQueryAsync(cancellationToken);
                 }
-                if (addingLaunchTarget && serverColumns.Contains("ExecutableJar"))
+                if (serverColumns.Contains("ExecutableJar"))
                 {
-                    await using var migrateTarget = connection.CreateCommand();
-                    migrateTarget.CommandText = "UPDATE \"Servers\" SET \"LaunchTarget\" = \"ExecutableJar\" WHERE \"ExecutableJar\" IS NOT NULL AND length(trim(\"ExecutableJar\")) > 0;";
-                    await migrateTarget.ExecuteNonQueryAsync(cancellationToken);
+                    if (addingLaunchTarget)
+                    {
+                        await using var migrateTarget = connection.CreateCommand();
+                        migrateTarget.CommandText = "UPDATE \"Servers\" SET \"LaunchTarget\" = \"ExecutableJar\" WHERE \"ExecutableJar\" IS NOT NULL AND length(trim(\"ExecutableJar\")) > 0;";
+                        await migrateTarget.ExecuteNonQueryAsync(cancellationToken);
+                    }
+
+                    // ExecutableJar was required in the original schema. Leaving it behind
+                    // makes SQLite reject inserts from the current model, which replaced it
+                    // with LaunchMode and LaunchTarget.
+                    await using var removeLegacyTarget = connection.CreateCommand();
+                    removeLegacyTarget.CommandText = "ALTER TABLE \"Servers\" DROP COLUMN \"ExecutableJar\";";
+                    await removeLegacyTarget.ExecuteNonQueryAsync(cancellationToken);
                 }
             }
         }

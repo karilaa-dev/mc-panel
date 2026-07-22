@@ -119,6 +119,35 @@ public sealed class DatabaseIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Legacy_required_executable_jar_column_does_not_block_new_server_inserts()
+    {
+        var options = new DbContextOptionsBuilder<StateDbContext>().UseSqlite($"Data Source={_file}").Options;
+        await using (var db = new StateDbContext(options))
+        {
+            await db.Database.EnsureCreatedAsync();
+            await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"Servers\" ADD COLUMN \"ExecutableJar\" TEXT NOT NULL;");
+            await db.EnsureCompatibleSchemaAsync();
+            db.Servers.Add(new ServerEntity
+            {
+                Id = Guid.NewGuid(),
+                Name = "New server",
+                Kind = ServerKind.Paper,
+                Version = "1.21.8",
+                JavaRuntimeId = "java-21",
+                EulaAcceptedAt = DateTimeOffset.UtcNow
+            });
+            await db.SaveChangesAsync();
+            Assert.Equal("New server", (await db.Servers.SingleAsync()).Name);
+        }
+
+        await using var verify = new SqliteConnection($"Data Source={_file}");
+        await verify.OpenAsync();
+        await using var columns = verify.CreateCommand();
+        columns.CommandText = "SELECT COUNT(*) FROM pragma_table_info('Servers') WHERE name = 'ExecutableJar';";
+        Assert.Equal(0L, (long)(await columns.ExecuteScalarAsync())!);
+    }
+
+    [Fact]
     public async Task Existing_lowercase_runtime_console_ids_are_made_queryable_by_ef()
     {
         var id = Guid.NewGuid();

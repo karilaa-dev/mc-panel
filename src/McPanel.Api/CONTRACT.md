@@ -29,7 +29,7 @@ them `SessionRevoked`; the bundled client immediately returns to authentication.
 | POST | `/auth/logout` | `204` |
 | PUT | `/auth/password` | `{currentPassword, newPassword}` -> `204` |
 | GET | `/servers` | `ServerSummary[]` |
-| POST | `/servers` | `CreateServerRequest` -> `202 Job` |
+| POST | `/servers` | `CreateServerRequest` -> `202 Job` (including `serverId`) |
 | GET/DELETE | `/servers/{id}` | summary / `204`; delete requires no process and removes managed files plus backups |
 | POST | `/servers/{id}/actions/{start|stop|restart|update}` | `202 Job` |
 | POST | `/servers/{id}/actions/kill` | `{confirm:true}` -> `202 Job` emergency process-tree kill |
@@ -59,7 +59,7 @@ them `SessionRevoked`; the bundled client immediately returns to authentication.
 | POST | `/servers/{id}/backups/{backupId}/restore` | `202 Job` (stopped only) |
 | GET/POST | `/servers/{id}/schedules` | schedules / schedule |
 | PUT/PATCH/DELETE | `/servers/{id}/schedules/{scheduleId}` | schedule / toggle / `204` |
-| GET | `/jobs/{id}` | durable operation status |
+| GET | `/jobs/{id}` | durable operation status, including the related `serverId` when applicable |
 | GET | `/java` | discovered Java runtimes |
 | POST | `/java/rescan` | refreshed runtimes |
 | POST | `/java/custom` | `{path}` -> validated runtime |

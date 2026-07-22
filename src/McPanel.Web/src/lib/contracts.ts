@@ -211,6 +211,7 @@ export interface JobDto {
   progress: number
   message?: string
   error?: string
+  serverId?: string | null
 }
 
 export interface ConsoleEventDto {

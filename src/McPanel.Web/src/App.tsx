@@ -11,6 +11,7 @@ import { api } from "@/lib/api"
 
 const DashboardPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.DashboardPage })))
 const CreateServerPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.CreateServerPage })))
+const ServerCreationPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.ServerCreationPage })))
 const ServerOverviewPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.ServerOverviewPage })))
 const ServerPropertiesPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.ServerPropertiesPage })))
 const ServerIconPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.ServerIconPage })))
@@ -76,6 +77,7 @@ function AppRoutes() {
       <Route element={<AppShell />}>
         <Route index element={<DashboardPage />} />
         <Route path="create" element={<CreateServerPage />} />
+        <Route path="servers/:serverId/creating/:jobId" element={<ServerCreationPage />} />
         <Route path="servers/:serverId" element={<ServerOverviewPage />} />
         <Route path="servers/:serverId/console" element={<ConsolePage />} />
         <Route path="servers/:serverId/properties" element={<ServerPropertiesPage />} />
