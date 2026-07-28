@@ -130,31 +130,39 @@ stopped.
 
 ## Build and install
 
-Create a complete self-contained artifact as a regular user. Choose the RID
-that matches the Debian/Ubuntu host:
+Install directly from the current checkout with one command. Run it as your
+regular development user; the script builds without privileges and invokes
+passwordless `sudo` only for system changes:
 
 ```bash
-./deploy/publish.sh linux-x64 ./artifacts/mcpanel-linux-x64
-# or: ./deploy/publish.sh linux-arm64 ./artifacts/mcpanel-linux-arm64
+./mcpanel.sh install
 ```
 
-The target host does not need Node.js or a .NET runtime. It does need every Java
-major required by the Minecraft versions it will run; MC Panel discovers Java
-but never installs it.
-
-Install the artifact as root. Binding to one LAN address is safer than the
-all-interface default:
+Binding to one LAN address is safer than the all-interface default:
 
 ```bash
-sudo ./deploy/install.sh \
+./mcpanel.sh install \
   --listen-address 192.168.1.20 \
-  --port 8080 \
-  ./artifacts/mcpanel-linux-x64
+  --port 8080
 ```
 
 The installer prints a random first-run token and stores root-only copies in
 `/etc/mcpanel`. The token remains readable only by root and is permanently
 ignored by the application after the first administrator is created.
+
+Future deployments from the current checkout are equally direct:
+
+```bash
+./mcpanel.sh update
+./mcpanel.sh status
+./mcpanel.sh uninstall  # preserves configuration, worlds, and databases
+```
+
+Use `./mcpanel.sh build OUTPUT_DIRECTORY` when a transferable self-contained
+artifact is needed instead. Source builds require Node.js and the .NET SDK;
+the installed target does not. The host still needs every Java major required
+by the Minecraft versions it will run because MC Panel discovers Java but
+never installs it.
 
 See [deploy/README.md](deploy/README.md) for Java compatibility, firewall
 responsibility, service operation, backup/restore, updates, rollback, and safe

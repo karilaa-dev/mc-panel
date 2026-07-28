@@ -1,8 +1,9 @@
 # Debian/Ubuntu operations
 
-These scripts install MC Panel as two conventional systemd services: the web
-panel and a persistent Java runtime companion. They do not install Docker, Java, Node.js, npm, or a .NET
-runtime on the target host, and the running service never invokes `sudo`.
+The root-level `mcpanel.sh` command builds and manages MC Panel as two
+conventional systemd services: the web panel and a persistent Java runtime
+companion. It does not install Docker or Java, and the running services never
+invoke `sudo`.
 
 ## Host and Java prerequisites
 
@@ -42,41 +43,39 @@ Minecraft version's metadata; legacy Forge releases that require Java 8 are
 kept on Java 8 exactly. These may differ from old Paper releases. Recheck provider documentation
 when adding a new release family.
 
-## Publish
+## Build
 
 On a development/build machine, install the .NET 10 SDK and Node.js 22 or newer.
-Create a clean self-contained directory as a regular user:
+Create a clean self-contained directory as a regular user when an artifact is
+needed for transfer:
 
 ```bash
-./deploy/publish.sh linux-x64 ./artifacts/mcpanel-linux-x64
-# ARM64 target:
-./deploy/publish.sh linux-arm64 ./artifacts/mcpanel-linux-arm64
+./mcpanel.sh build ./artifacts/mcpanel-linux-x64
+# Optional cross-build:
+./mcpanel.sh build --rid linux-arm64 ./artifacts/mcpanel-linux-arm64
 ```
 
-The wrapper runs `npm ci`, builds the React client, and publishes
+The command runs `npm ci`, builds the React client, and publishes
 `McPanel.Api` with its .NET runtime and web assets. It refuses root execution,
 unsupported RIDs, and an existing output directory. This follows Microsoft's
 [self-contained publish model](https://learn.microsoft.com/dotnet/core/tools/dotnet-publish).
 
-Review and transfer that directory through a trusted channel. The privileged
-installer accepts a directory only, rejects symbolic links, and normalizes its
-ownership/permissions.
-
 ## Install
 
-Run the installer from a checkout containing both `install.sh` and
-`mcpanel.service.in`:
+Install directly from a checkout. Do not prefix the command with `sudo`: the
+frontend and backend build as the current user, then the script uses
+passwordless `sudo` for the validated system changes:
 
 ```bash
-sudo ./deploy/install.sh \
+./mcpanel.sh install \
   --listen-address 192.168.1.20 \
-  --port 8080 \
-  ./artifacts/mcpanel-linux-x64
+  --port 8080
 ```
 
-Use `sudo ./deploy/install.sh --help` for parameterized install, configuration,
-data, and service paths. Paths must be absolute, non-overlapping, and made from
-conservative filesystem characters.
+Use `./mcpanel.sh help` for parameterized installation, configuration, data,
+and service paths. Paths must be absolute, non-overlapping, and made from
+conservative filesystem characters. Host architecture is detected
+automatically and the temporary install artifact is removed afterward.
 
 The default bind is `0.0.0.0:8080`, which listens on every host interface.
 Prefer a specific private-LAN address. The installer does **not** change a host
@@ -110,6 +109,7 @@ may remain on disk but is ignored and cannot reset the account.
 Common operations:
 
 ```bash
+./mcpanel.sh status
 sudo systemctl status mcpanel
 sudo systemctl status mcpanel-runtime
 sudo systemctl restart mcpanel
@@ -170,13 +170,14 @@ the data-tree ownership to `mcpanel:mcpanel`, and then start the service.
 
 ## Update and rollback
 
-Build a fresh artifact in a new directory, then run:
+Build the current checkout and update the system installation in one command:
 
 ```bash
-sudo ./deploy/update.sh ./artifacts/mcpanel-linux-x64-new
+./mcpanel.sh update
 ```
 
-The updater stages and validates the artifact before stopping only the panel service. The
+The updater builds as the current user, stages and validates the artifact, and
+then stops only the panel service. The
 runtime and active Minecraft servers remain online, and the panel reconnects
 after the binary swap. When the runtime is idle it automatically reloads the
 updated executable. The updater
@@ -197,7 +198,7 @@ The safe default removes the active binaries and unit while preserving all
 configuration/data and the service account:
 
 ```bash
-sudo ./deploy/uninstall.sh
+./mcpanel.sh uninstall
 ```
 
 This is suitable before a later reinstall and keeps numeric file ownership
@@ -208,7 +209,7 @@ A permanent purge requires both flags and deletes every managed instance,
 world, database, key, log, and panel backup:
 
 ```bash
-sudo ./deploy/uninstall.sh --purge --yes-really-purge
+./mcpanel.sh purge --yes-really-purge
 ```
 
 Make and verify an external backup before purging. Custom paths used during
