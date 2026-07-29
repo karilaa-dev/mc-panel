@@ -55,6 +55,7 @@ export interface ServerSummaryDto {
   restartRequired: boolean
   startOnBoot: boolean
   iconRevision?: string | null
+  modpack?: ModpackSummaryDto | null
 }
 
 export interface IconLibraryItemDto {
@@ -273,6 +274,107 @@ export interface ModFileDto {
   message?: string | null
   license?: string | null
   mods: ModDeclarationDto[]
+}
+
+export interface ModpackSummaryDto {
+  name: string
+  version: string
+  projectId?: string | null
+  versionId?: string | null
+  source: string
+}
+
+export interface ModrinthProjectDto {
+  id: string
+  slug: string
+  title: string
+  description: string
+  projectType: "mod" | "modpack" | "plugin"
+  author: string
+  iconUrl?: string | null
+  downloads: number
+  versions: string[]
+  categories: string[]
+  featuredGalleryUrl?: string | null
+  followers: number
+  modifiedAt?: string | null
+}
+
+export interface ModrinthSearchDto {
+  projects: ModrinthProjectDto[]
+  offset: number
+  limit: number
+  total: number
+}
+
+export interface ModrinthDependencyDto {
+  type: string
+  projectId?: string | null
+  versionId?: string | null
+  fileName?: string | null
+  projectTitle?: string | null
+  projectUrl?: string | null
+  installedVersions: Array<{
+    versionId: string
+    versionNumber: string
+    fileName: string
+  }>
+}
+
+export interface ModrinthVersionDto {
+  id: string
+  projectId: string
+  name: string
+  versionNumber: string
+  versionType: "release" | "beta" | "alpha"
+  publishedAt: string
+  gameVersions: string[]
+  loaders: string[]
+  fileName: string
+  fileSize: number
+  dependencies: ModrinthDependencyDto[]
+}
+
+export interface ModpackInspectionDto {
+  token: string
+  expiresAt: string
+  name: string
+  version: string
+  kind: ServerKind
+  minecraftVersion: string
+  loaderVersion?: string | null
+  source: string
+  projectId?: string | null
+  modrinthVersionId?: string | null
+  optionalFiles: Array<{ path: string; size: number }>
+}
+
+export interface CreateModpackServerRequest {
+  name: string
+  importToken: string
+  javaRuntimeId: string
+  memoryMb: number
+  port: number
+  eulaAccepted: true
+  startOnBoot?: boolean
+  selectedOptionalFiles?: string[]
+}
+
+export type ModpackChangeStatus = "Added" | "Modified" | "Removed"
+
+export interface ModpackChangesDto {
+  modpack?: ModpackSummaryDto | null
+  scannedAt: string
+  added: number
+  modified: number
+  removed: number
+  changes: Array<{
+    path: string
+    status: ModpackChangeStatus
+    expectedSize?: number | null
+    currentSize?: number | null
+  }>
+  message?: string | null
 }
 
 export interface CreateServerRequest {

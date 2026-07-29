@@ -42,6 +42,11 @@ public sealed class ServerEntity
     public bool StartOnBoot { get; set; }
     public bool CrashRecovery { get; set; } = true;
     [MaxLength(64)] public string? IconRevision { get; set; }
+    [MaxLength(256)] public string? ModpackName { get; set; }
+    [MaxLength(128)] public string? ModpackVersion { get; set; }
+    [MaxLength(64)] public string? ModrinthProjectId { get; set; }
+    [MaxLength(64)] public string? ModrinthVersionId { get; set; }
+    [MaxLength(32)] public string? ModpackSource { get; set; }
     public DateTimeOffset EulaAcceptedAt { get; set; }
     public bool RestartRequired { get; set; }
     public int CrashAttempts { get; set; }

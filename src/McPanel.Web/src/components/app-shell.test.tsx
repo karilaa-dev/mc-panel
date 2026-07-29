@@ -119,6 +119,7 @@ describe("AppShell", () => {
     expect(screen.getByRole("link", { name: "Server icon" })).toBeVisible()
     expect(screen.getByRole("link", { name: "Runtime" })).toBeVisible()
     expect(screen.queryByRole("link", { name: "Mods" })).not.toBeInTheDocument()
+    expect(screen.getByRole("link", { name: "Plugins" })).toHaveAttribute("href", "/servers/server-1/plugins")
 
     await user.click(screen.getByRole("button", { name: "Servers" }))
     expect(serverLink).not.toBeVisible()
@@ -133,5 +134,6 @@ describe("AppShell", () => {
     renderShell("/servers/server-1")
 
     expect(await screen.findByRole("link", { name: "Mods" })).toHaveAttribute("href", "/servers/server-1/mods")
+    expect(screen.queryByRole("link", { name: "Plugins" })).not.toBeInTheDocument()
   })
 })

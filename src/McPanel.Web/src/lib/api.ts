@@ -11,6 +11,11 @@ import type {
   JavaRuntimeDto,
   JobDto,
   ModFileDto,
+  ModpackChangesDto,
+  ModpackInspectionDto,
+  ModrinthSearchDto,
+  ModrinthVersionDto,
+  CreateModpackServerRequest,
   PlayerDto,
   RuntimeConfigurationDto,
   ScheduleDto,
@@ -123,6 +128,8 @@ export const api = {
   server: (id: string) => request<ServerSummaryDto>(serverPath(id)),
   createServer: (body: CreateServerRequest) =>
     request<JobDto>("/servers", { method: "POST", body: JSON.stringify(body) }),
+  createModpackServer: (body: CreateModpackServerRequest) =>
+    request<JobDto>("/servers/modpack", { method: "POST", body: JSON.stringify(body) }),
   lifecycle: (id: string, action: "start" | "stop" | "restart" | "update") =>
     request<JobDto>(`${serverPath(id)}/actions/${action}`, { method: "POST" }),
   kill: (id: string) => request<JobDto>(`${serverPath(id)}/actions/kill`, {
@@ -190,6 +197,50 @@ export const api = {
   }),
   catalog: (experimental = false) =>
     request<CatalogDto>(`/catalog?experimental=${experimental}`),
+  modrinthSearch: (
+    projectType: "mod" | "modpack" | "plugin",
+    query: string,
+    offset = 0,
+    options?: { serverId?: string; gameVersion?: string; loader?: string; limit?: number },
+  ) => {
+    const parameters = new URLSearchParams({
+      projectType,
+      query,
+      offset: String(offset),
+    })
+    if (options?.serverId) parameters.set("serverId", options.serverId)
+    if (options?.gameVersion) parameters.set("gameVersion", options.gameVersion)
+    if (options?.loader) parameters.set("loader", options.loader)
+    if (options?.limit) parameters.set("limit", String(options.limit))
+    return request<ModrinthSearchDto>(`/modrinth/search?${parameters}`)
+  },
+  modrinthVersions: (
+    projectId: string,
+    options?: { serverId?: string; projectType?: "mod" | "plugin"; gameVersion?: string; loader?: string },
+  ) => {
+    const parameters = new URLSearchParams()
+    if (options?.serverId) parameters.set("serverId", options.serverId)
+    if (options?.projectType) parameters.set("projectType", options.projectType)
+    if (options?.gameVersion) parameters.set("gameVersion", options.gameVersion)
+    if (options?.loader) parameters.set("loader", options.loader)
+    const query = parameters.size ? `?${parameters}` : ""
+    return request<ModrinthVersionDto[]>(
+      `/modrinth/projects/${encodeURIComponent(projectId)}/versions${query}`,
+    )
+  },
+  prepareModrinthPack: (versionId: string) =>
+    request<ModpackInspectionDto>("/modrinth/modpacks/imports/modrinth", {
+      method: "POST",
+      body: JSON.stringify({ versionId }),
+    }),
+  uploadModpack: (file: File) => {
+    const body = new FormData()
+    body.set("file", file)
+    return request<ModpackInspectionDto>("/modrinth/modpacks/imports/upload", {
+      method: "POST",
+      body,
+    })
+  },
 
   files: (id: string, path = "") =>
     request<FileEntryDto[]>(`${serverPath(id)}/files?path=${encodeURIComponent(path)}`),
@@ -230,6 +281,29 @@ export const api = {
 
   players: (id: string) => request<PlayerDto[]>(`${serverPath(id)}/players`),
   mods: (id: string) => request<ModFileDto[]>(`${serverPath(id)}/mods`),
+  plugins: (id: string) => request<ModFileDto[]>(`${serverPath(id)}/plugins`),
+  installModrinthMod: (
+    id: string,
+    projectId: string,
+    versionId: string,
+    selectedDependencyProjectIds: string[] = [],
+  ) =>
+    request<JobDto>(`${serverPath(id)}/mods/modrinth`, {
+      method: "POST",
+      body: JSON.stringify({ projectId, versionId, selectedDependencyProjectIds }),
+    }),
+  installModrinthPlugin: (
+    id: string,
+    projectId: string,
+    versionId: string,
+    selectedDependencyProjectIds: string[] = [],
+  ) =>
+    request<JobDto>(`${serverPath(id)}/plugins/modrinth`, {
+      method: "POST",
+      body: JSON.stringify({ projectId, versionId, selectedDependencyProjectIds }),
+    }),
+  modpackChanges: (id: string) =>
+    request<ModpackChangesDto>(`${serverPath(id)}/modpack/changes`),
   playerAction: (
     id: string,
     name: string,

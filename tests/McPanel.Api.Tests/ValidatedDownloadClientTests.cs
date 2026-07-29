@@ -1,5 +1,6 @@
 using System.Net;
 using System.Security.Cryptography;
+using System.Text.Json;
 using McPanel.Api.Infrastructure;
 using McPanel.Api.Services;
 
@@ -95,6 +96,47 @@ public sealed class ValidatedDownloadClientTests : IDisposable
     }
 
     [Fact]
+    public async Task Valid_sha512_modrinth_download_is_preserved()
+    {
+        var payload = "verified Modrinth artifact"u8.ToArray();
+        var destination = Destination();
+        var client = Client(new StubHandler(_ => Response(payload)));
+        var hash = Convert.ToHexString(SHA512.HashData(payload)).ToLowerInvariant();
+
+        await client.DownloadAsync(new(
+            new Uri("https://cdn.modrinth.com/data/test/file.jar"), "sha512", hash,
+            payload.Length, "file.jar", DownloadPolicy.Modrinth), destination, CancellationToken.None);
+
+        Assert.Equal(payload, await File.ReadAllBytesAsync(destination));
+    }
+
+    [Fact]
+    public async Task Modrinth_json_post_uses_the_scoped_host_and_serializes_hashes()
+    {
+        HttpMethod? method = null;
+        string? body = null;
+        var client = Client(new StubHandler(request =>
+        {
+            method = request.Method;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{}")
+            };
+        }));
+
+        using var result = await client.JsonPostAsync(
+            new Uri("https://api.modrinth.com/v2/version_files"),
+            new { hashes = new[] { "abc" }, algorithm = "sha512" },
+            CancellationToken.None,
+            DownloadPolicy.Modrinth);
+
+        Assert.Equal(HttpMethod.Post, method);
+        Assert.Contains("\"hashes\":[\"abc\"]", body);
+        Assert.Equal(JsonValueKind.Object, result.RootElement.ValueKind);
+    }
+
+    [Fact]
     public async Task Preexisting_destination_is_preserved_when_create_new_fails()
     {
         var payload = "verified artifact"u8.ToArray();
@@ -119,6 +161,22 @@ public sealed class ValidatedDownloadClientTests : IDisposable
     [InlineData("https://maven.neoforged.net:444/file.jar")]
     public void Non_official_or_non_https_loader_urls_are_rejected(string url) =>
         Assert.Throws<PanelException>(() => ValidatedDownloadClient.Validate(new Uri(url)));
+
+    [Theory]
+    [InlineData("https://api.modrinth.com/v2/search", DownloadPolicy.Modrinth)]
+    [InlineData("https://cdn.modrinth.com/data/test/file.jar", DownloadPolicy.Modrinth)]
+    [InlineData("https://github.com/example/project/releases/file.jar", DownloadPolicy.Mrpack)]
+    [InlineData("https://release-assets.githubusercontent.com/file.jar", DownloadPolicy.Mrpack)]
+    public void Modrinth_policy_allows_only_scoped_hosts(string url, DownloadPolicy policy) =>
+        ValidatedDownloadClient.Validate(new Uri(url), policy);
+
+    [Fact]
+    public void Distribution_policy_does_not_gain_modrinth_or_github_hosts()
+    {
+        Assert.Throws<PanelException>(() => ValidatedDownloadClient.Validate(new Uri("https://api.modrinth.com/v2/search")));
+        Assert.Throws<PanelException>(() => ValidatedDownloadClient.Validate(
+            new Uri("https://github.com/example/file.jar"), DownloadPolicy.Modrinth));
+    }
 
     public void Dispose()
     {

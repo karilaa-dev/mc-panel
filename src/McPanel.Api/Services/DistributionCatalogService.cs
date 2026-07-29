@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Xml.Linq;
@@ -11,7 +12,10 @@ using Microsoft.Extensions.Options;
 
 namespace McPanel.Api.Services;
 
-public sealed record DownloadArtifact(Uri Url, string HashAlgorithm, string Hash, long? Size, string FileName);
+public enum DownloadPolicy { Distribution, Modrinth, Mrpack }
+public sealed record DownloadArtifact(
+    Uri Url, string HashAlgorithm, string Hash, long? Size, string FileName,
+    DownloadPolicy Policy = DownloadPolicy.Distribution);
 public sealed record InstallPlan(
     ServerKind Kind, string Version, int RequiredJavaMajor, DownloadArtifact Artifact,
     string? Build = null, string? LoaderVersion = null, string? InstallerVersion = null, bool Experimental = false);
@@ -19,24 +23,61 @@ public sealed record InstallPlan(
 public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
 {
     private const long MaximumArtifactBytes = 1_073_741_824;
-    private static readonly HashSet<string> AllowedHosts = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> DistributionHosts = new(StringComparer.OrdinalIgnoreCase)
     {
         "piston-meta.mojang.com", "piston-data.mojang.com", "launcher.mojang.com",
         "fill.papermc.io", "fill-data.papermc.io", "meta.fabricmc.net", "maven.fabricmc.net",
         "files.minecraftforge.net", "maven.minecraftforge.net", "maven.neoforged.net"
     };
-
-    public async Task<JsonDocument> JsonAsync(Uri uri, CancellationToken cancellationToken)
+    private static readonly HashSet<string> ModrinthHosts = new(StringComparer.OrdinalIgnoreCase)
     {
-        using var response = await SendAsync(uri, HttpCompletionOption.ResponseContentRead, cancellationToken);
+        "api.modrinth.com", "cdn.modrinth.com"
+    };
+    private static readonly HashSet<string> MrpackHosts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "cdn.modrinth.com", "github.com", "raw.githubusercontent.com", "gitlab.com",
+        "objects.githubusercontent.com", "release-assets.githubusercontent.com"
+    };
+
+    public async Task<JsonDocument> JsonAsync(
+        Uri uri, CancellationToken cancellationToken,
+        DownloadPolicy policy = DownloadPolicy.Distribution)
+    {
+        using var response = await SendAsync(uri, HttpCompletionOption.ResponseContentRead, policy, cancellationToken);
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
     }
 
-    public async Task<string> StringAsync(Uri uri, CancellationToken cancellationToken)
+    public async Task<string> StringAsync(
+        Uri uri, CancellationToken cancellationToken,
+        DownloadPolicy policy = DownloadPolicy.Distribution)
     {
-        using var response = await SendAsync(uri, HttpCompletionOption.ResponseContentRead, cancellationToken);
+        using var response = await SendAsync(uri, HttpCompletionOption.ResponseContentRead, policy, cancellationToken);
         return await response.Content.ReadAsStringAsync(cancellationToken);
+    }
+
+    public async Task<JsonDocument> JsonPostAsync<T>(
+        Uri uri, T body, CancellationToken cancellationToken,
+        DownloadPolicy policy = DownloadPolicy.Distribution)
+    {
+        Validate(uri, policy);
+        using var request = new HttpRequestMessage(HttpMethod.Post, uri)
+        {
+            Content = JsonContent.Create(body)
+        };
+        using var response = await clients.CreateClient("upstream").SendAsync(
+            request, HttpCompletionOption.ResponseContentRead, cancellationToken);
+        if ((int)response.StatusCode is >= 300 and < 400)
+            throw new PanelException(
+                502, "INSTALL_DOWNLOAD_REJECTED",
+                "The upstream service unexpectedly redirected a metadata request.");
+        if (!response.IsSuccessStatusCode)
+            throw new PanelException(
+                502, "UPSTREAM_UNAVAILABLE",
+                "The upstream distribution service is unavailable.",
+                $"Upstream returned {(int)response.StatusCode} {response.StatusCode}.");
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
     }
 
     public async Task DownloadAsync(DownloadArtifact artifact, string destination, CancellationToken cancellationToken)
@@ -50,7 +91,7 @@ public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
         var createdDestination = false;
         try
         {
-            using var response = await SendAsync(artifact.Url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            using var response = await SendAsync(artifact.Url, HttpCompletionOption.ResponseHeadersRead, artifact.Policy, cancellationToken);
             if (artifact.Size.HasValue && response.Content.Headers.ContentLength.HasValue && response.Content.Headers.ContentLength != artifact.Size)
                 throw new PanelException(502, "INSTALL_CHECKSUM_FAILED", "The upstream artifact size did not match its metadata.");
             if (response.Content.Headers.ContentLength is > MaximumArtifactBytes)
@@ -92,6 +133,7 @@ public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
         {
             "sha1" => (HashAlgorithmName.SHA1, 20),
             "sha256" => (HashAlgorithmName.SHA256, 32),
+            "sha512" => (HashAlgorithmName.SHA512, 64),
             _ => throw new PanelException(502, "INSTALL_CHECKSUM_FAILED", "The upstream artifact checksum algorithm is unsupported.")
         };
         if (artifact.Hash is null || artifact.Hash.Length != byteLength * 2)
@@ -109,12 +151,14 @@ public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
         }
     }
 
-    private async Task<HttpResponseMessage> SendAsync(Uri initial, HttpCompletionOption completion, CancellationToken cancellationToken)
+    private async Task<HttpResponseMessage> SendAsync(
+        Uri initial, HttpCompletionOption completion, DownloadPolicy policy,
+        CancellationToken cancellationToken)
     {
         var uri = initial;
         for (var redirect = 0; redirect < 4; redirect++)
         {
-            Validate(uri);
+            Validate(uri, policy);
             var response = await clients.CreateClient("upstream").GetAsync(uri, completion, cancellationToken);
             if ((int)response.StatusCode is >= 300 and < 400 && response.Headers.Location is not null)
             {
@@ -134,9 +178,15 @@ public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
         throw new PanelException(502, "INSTALL_DOWNLOAD_REJECTED", "The upstream download redirected too many times.");
     }
 
-    public static void Validate(Uri uri)
+    public static void Validate(Uri uri, DownloadPolicy policy = DownloadPolicy.Distribution)
     {
-        if (uri.Scheme != Uri.UriSchemeHttps || !AllowedHosts.Contains(uri.IdnHost) || !string.IsNullOrEmpty(uri.UserInfo) || !uri.IsDefaultPort)
+        var hosts = policy switch
+        {
+            DownloadPolicy.Modrinth => ModrinthHosts,
+            DownloadPolicy.Mrpack => MrpackHosts,
+            _ => DistributionHosts
+        };
+        if (uri.Scheme != Uri.UriSchemeHttps || !hosts.Contains(uri.IdnHost) || !string.IsNullOrEmpty(uri.UserInfo) || !uri.IsDefaultPort)
             throw new PanelException(502, "INSTALL_DOWNLOAD_REJECTED", "The upstream download URL is not allowed.");
     }
 }

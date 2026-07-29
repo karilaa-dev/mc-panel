@@ -95,6 +95,7 @@ builder.Services.AddSingleton<ProcessSupervisor>(); builder.Services.AddHostedSe
 builder.Services.AddSingleton<IServerProcessStatus>(sp => sp.GetRequiredService<ProcessSupervisor>());
 builder.Services.AddSingleton<HostMetricsService>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<HostMetricsService>());
 builder.Services.AddSingleton<SchedulerService>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<SchedulerService>());
+builder.Services.AddSingleton<ModrinthService>(); builder.Services.AddSingleton<ModpackService>(); builder.Services.AddSingleton<ModrinthModInstallerService>();
 builder.Services.AddSingleton<ServerInstallerService>(); builder.Services.AddSingleton<PropertiesService>(); builder.Services.AddSingleton<ServerIconService>(); builder.Services.AddSingleton<FileManagerService>(); builder.Services.AddSingleton<ModMetadataService>();
 builder.Services.AddSingleton<BackupService>(); builder.Services.AddSingleton<PlayerService>(); builder.Services.AddSingleton<ServerQueryService>(); builder.Services.AddSingleton<AdminAuthService>();
 builder.Services.AddSingleton<IPasswordHasher<AdminEntity>, PasswordHasher<AdminEntity>>();
@@ -175,6 +176,7 @@ static async Task InitializeAsync(IServiceProvider services)
         sessionStamp = await state.Admins.Select(x => x.SessionStamp).SingleOrDefaultAsync();
     }
     services.GetRequiredService<SessionAudience>().Initialize(sessionStamp);
+    services.GetRequiredService<ModpackService>().CleanupExpiredImports();
     await scope.ServiceProvider.GetRequiredService<ServerIconService>().BackfillAsync(CancellationToken.None);
     await using (var console = await consoleFactory.CreateDbContextAsync())
     {

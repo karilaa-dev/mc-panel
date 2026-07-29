@@ -21,8 +21,9 @@ import {
   memoryLimitMb,
   totalMemoryForHeapMb,
 } from "@/lib/memory-allocation"
-import type { RuntimeConfigurationDto, ServerConfigurationDto, ServerKind, ServerPropertiesDto, ServerPropertyDefinitionDto, ServerPropertyDto, ServerState } from "@/lib/contracts"
+import type { ModpackInspectionDto, RuntimeConfigurationDto, ServerConfigurationDto, ServerKind, ServerPropertiesDto, ServerPropertyDefinitionDto, ServerPropertyDto, ServerState } from "@/lib/contracts"
 import { Page } from "@/components/page"
+import { ModpackPicker } from "@/components/modpack-picker"
 import { ServerAvatar, ServerIconEditor } from "@/components/server-icon"
 import { StatusBadge } from "@/components/status-badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -113,7 +114,10 @@ type CreateFields = z.infer<typeof createSchema>
 export function CreateServerPage() {
   const navigate = useNavigate()
   const [step, setStep] = useState(1)
+  const [source, setSource] = useState<"Software" | "Modpack">("Software")
   const [kind, setKind] = useState<ServerKind>("Paper")
+  const [packInspection, setPackInspection] = useState<ModpackInspectionDto>()
+  const [selectedOptionalFiles, setSelectedOptionalFiles] = useState<string[]>([])
   const [selectedVersion, setSelectedVersion] = useState("")
   const [selectedJavaId, setSelectedJavaId] = useState("")
   const [selectedBuild, setSelectedBuild] = useState("")
@@ -127,35 +131,38 @@ export function CreateServerPage() {
   })
   const { data: java = [] } = useQuery({ queryKey: ["java"], queryFn: api.java })
   const { data: systemInfo } = useQuery({ queryKey: ["system-info"], queryFn: api.systemInfo })
+  const serverKind = source === "Modpack" ? (packInspection?.kind ?? "Vanilla") : kind
   const versions = useMemo(
     () => {
       if (!catalog) return []
-      if (kind === "NeoForge") return catalog.neoForge
-      return catalog[kind.toLowerCase() as "vanilla" | "paper" | "fabric" | "forge"]
+      if (serverKind === "NeoForge") return catalog.neoForge
+      return catalog[serverKind.toLowerCase() as "vanilla" | "paper" | "fabric" | "forge"]
     },
-    [catalog, kind],
+    [catalog, serverKind],
   )
-  const version = versions.includes(selectedVersion) ? selectedVersion : (versions[0] ?? "")
-  const requiredJava = recommendedJavaMajor(version, kind)
-  const compatibleJava = java.filter((runtime) => kind === "Forge" && requiredJava === 8
+  const version = source === "Modpack"
+    ? (packInspection?.minecraftVersion ?? "")
+    : versions.includes(selectedVersion) ? selectedVersion : (versions[0] ?? "")
+  const requiredJava = recommendedJavaMajor(version, serverKind)
+  const compatibleJava = java.filter((runtime) => serverKind === "Forge" && requiredJava === 8
     ? runtime.major === requiredJava
     : runtime.major >= requiredJava)
   const javaId = compatibleJava.some((runtime) => runtime.id === selectedJavaId)
     ? selectedJavaId
     : (compatibleJava[0]?.id ?? "")
   const selectedRuntime = java.find((runtime) => runtime.id === javaId)
-  const builds = kind === "Paper" ? (catalog?.paperBuilds[version] ?? []) : []
+  const builds = serverKind === "Paper" ? (catalog?.paperBuilds[version] ?? []) : []
   const visibleBuilds = showExperimental ? builds : builds.filter((build) => !build.experimental)
   const build = visibleBuilds.some((item) => item.id === selectedBuild)
     ? selectedBuild
     : (visibleBuilds[0]?.id ?? "")
   const fabricLoaders = (catalog?.fabricLoaders ?? []).filter((item) => showExperimental || item.stable)
   const installers = (catalog?.fabricInstallers ?? []).filter((item) => showExperimental || item.stable)
-  const loaderBuilds = kind === "Forge"
+  const loaderBuilds = serverKind === "Forge"
     ? (catalog?.forgeBuilds[version] ?? [])
-    : kind === "NeoForge" ? (catalog?.neoForgeBuilds[version] ?? []) : []
+    : serverKind === "NeoForge" ? (catalog?.neoForgeBuilds[version] ?? []) : []
   const visibleLoaderBuilds = showExperimental ? loaderBuilds : loaderBuilds.filter((item) => !item.experimental)
-  const loaderChoices = kind === "Fabric" ? fabricLoaders : visibleLoaderBuilds
+  const loaderChoices = serverKind === "Fabric" ? fabricLoaders : visibleLoaderBuilds
   const loaderVersion = loaderChoices.some((item) => item.version === selectedLoader)
     ? selectedLoader
     : (loaderChoices[0]?.version ?? "")
@@ -172,25 +179,35 @@ export function CreateServerPage() {
   const memoryCapacityAvailable = supportedMemoryLimitMb >= MEMORY_MIN_MB
   const { register, handleSubmit, control, setValue, formState: { errors, isSubmitting } } = useForm<CreateFields>({ resolver: zodResolver(createSchema), defaultValues: { name: "My server", port: 25565, eulaAccepted: false } })
   const eula = useWatch({ control, name: "eulaAccepted" })
-  const distributionReady = kind === "Fabric"
+  const distributionReady = source === "Modpack" ? Boolean(packInspection)
+    : serverKind === "Fabric"
     ? Boolean(loaderVersion && installerVersion)
-    : kind === "Forge" || kind === "NeoForge" ? Boolean(loaderVersion) : true
-  const canAdvance = step === 1 ? Boolean(kind) : step === 2 ? Boolean(version && distributionReady) : step === 3 ? Boolean(javaId) && memoryCapacityAvailable : eula
+    : serverKind === "Forge" || serverKind === "NeoForge" ? Boolean(loaderVersion) : true
+  const canAdvance = step === 1 ? Boolean(source === "Modpack" || kind) : step === 2 ? Boolean(version && distributionReady) : step === 3 ? Boolean(javaId) && memoryCapacityAvailable : eula
 
   async function submit(values: CreateFields) {
     try {
-      const job = await api.createServer({
-        ...values,
-        eulaAccepted: true,
-        kind,
-        version,
-        javaRuntimeId: javaId,
-        memoryMb: effectiveMemoryMb,
-        includeExperimental: showExperimental,
-        ...(kind === "Paper" && build ? { build } : {}),
-        ...(kind === "Fabric" ? { loaderVersion, installerVersion } : {}),
-        ...((kind === "Forge" || kind === "NeoForge") ? { loaderVersion } : {}),
-      })
+      const job = source === "Modpack" && packInspection
+        ? await api.createModpackServer({
+          ...values,
+          eulaAccepted: true,
+          importToken: packInspection.token,
+          javaRuntimeId: javaId,
+          memoryMb: effectiveMemoryMb,
+          selectedOptionalFiles,
+        })
+        : await api.createServer({
+          ...values,
+          eulaAccepted: true,
+          kind: serverKind,
+          version,
+          javaRuntimeId: javaId,
+          memoryMb: effectiveMemoryMb,
+          includeExperimental: showExperimental,
+          ...(serverKind === "Paper" && build ? { build } : {}),
+          ...(serverKind === "Fabric" ? { loaderVersion, installerVersion } : {}),
+          ...((serverKind === "Forge" || serverKind === "NeoForge") ? { loaderVersion } : {}),
+        })
       if (!job.serverId) throw new Error("The server was queued, but its installation page could not be opened.")
       navigate(`/servers/${job.serverId}/creating/${job.id}`)
     } catch (error) {
@@ -198,14 +215,15 @@ export function CreateServerPage() {
     }
   }
 
-  return <Page title="Create server" description="Install a verified Vanilla, Paper, Fabric, Forge, or NeoForge server in four simple steps.">
+  return <Page title="Create server" description="Install verified server software or a Modrinth modpack in four simple steps.">
     <Card className="mx-auto w-full max-w-3xl">
       <CardHeader><CardTitle>Step {step} of 4</CardTitle><CardDescription>{["Choose a server type", "Select a Minecraft version", "Assign Java and memory", "Name and confirm"][step - 1]}</CardDescription></CardHeader>
       <CardContent><Progress value={step * 25}><ProgressLabel>Setup progress</ProgressLabel><ProgressValue /></Progress></CardContent>
       <CardContent>
         <form id="create-form" onSubmit={handleSubmit(submit)}>
-          {step === 1 && <FieldGroup><Field><FieldLabel>Server type</FieldLabel><ToggleGroup value={[kind]} onValueChange={(values) => values[0] && setKind(values[0] as ServerKind)} variant="outline" spacing={0}><ToggleGroupItem value="Vanilla">Vanilla</ToggleGroupItem><ToggleGroupItem value="Paper">Paper</ToggleGroupItem><ToggleGroupItem value="Fabric">Fabric</ToggleGroupItem><ToggleGroupItem value="Forge">Forge</ToggleGroupItem><ToggleGroupItem value="NeoForge">NeoForge</ToggleGroupItem></ToggleGroup><FieldDescription>Paper supports plugins. Fabric, Forge, and NeoForge support their respective mod ecosystems, while Vanilla stays official.</FieldDescription></Field></FieldGroup>}
-          {step === 2 && <FieldGroup><Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="experimental">Show experimental versions</FieldLabel><FieldDescription>Includes snapshots, unstable loader tools, and non-recommended builds.</FieldDescription></FieldContent><Switch id="experimental" checked={showExperimental} onCheckedChange={setShowExperimental} /></Field>{showExperimental && <Alert><AlertTriangleIcon /><AlertTitle>Experimental software</AlertTitle><AlertDescription>Snapshots and unstable builds can corrupt worlds or break plugins. Back up important data before using them.</AlertDescription></Alert>}<Field><FieldLabel>Minecraft version</FieldLabel>{catalogLoading ? <Skeleton className="h-9 w-full" /> : versions.length ? <Select items={versions.map((item) => ({ value: item, label: item }))} value={version} onValueChange={(value) => value && setSelectedVersion(value)}><SelectTrigger className="w-full" aria-label="Minecraft version"><SelectValue placeholder="Choose a stable release" /></SelectTrigger><SelectContent><SelectGroup>{versions.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectGroup></SelectContent></Select> : <Alert variant="destructive"><AlertTitle>Catalog unavailable</AlertTitle><AlertDescription>Check the panel’s network connection and retry.</AlertDescription></Alert>}</Field>{kind === "Paper" && visibleBuilds.length > 0 && <Field><FieldLabel>Paper build</FieldLabel><Select items={visibleBuilds.map((item) => ({ value: item.id, label: `${item.id} · ${item.channel}` }))} value={build} onValueChange={(value) => value && setSelectedBuild(value)}><SelectTrigger className="w-full" aria-label="Paper build"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{visibleBuilds.map((item) => <SelectItem key={item.id} value={item.id}>{item.id} · {item.channel}{item.experimental ? " (experimental)" : ""}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>}{kind === "Fabric" && <><Field><FieldLabel>Fabric loader</FieldLabel><Select items={fabricLoaders.map((item) => ({ value: item.version, label: item.version }))} value={loaderVersion} onValueChange={(value) => value && setSelectedLoader(value)}><SelectTrigger className="w-full" aria-label="Fabric loader"><SelectValue placeholder="Choose loader" /></SelectTrigger><SelectContent><SelectGroup>{fabricLoaders.map((item) => <SelectItem key={item.version} value={item.version}>{item.version}{item.stable ? "" : " (unstable)"}</SelectItem>)}</SelectGroup></SelectContent></Select></Field><Field><FieldLabel>Fabric installer</FieldLabel><Select items={installers.map((item) => ({ value: item.version, label: item.version }))} value={installerVersion} onValueChange={(value) => value && setSelectedInstaller(value)}><SelectTrigger className="w-full" aria-label="Fabric installer"><SelectValue placeholder="Choose installer" /></SelectTrigger><SelectContent><SelectGroup>{installers.map((item) => <SelectItem key={item.version} value={item.version}>{item.version}{item.stable ? "" : " (unstable)"}</SelectItem>)}</SelectGroup></SelectContent></Select></Field></>}{(kind === "Forge" || kind === "NeoForge") && <Field><FieldLabel>{kind} version</FieldLabel><Select items={visibleLoaderBuilds.map((item) => ({ value: item.version, label: `${item.version} · ${item.channel}` }))} value={loaderVersion} onValueChange={(value) => value && setSelectedLoader(value)}><SelectTrigger className="w-full" aria-label={`${kind} version`}><SelectValue placeholder={`Choose ${kind} version`} /></SelectTrigger><SelectContent><SelectGroup>{visibleLoaderBuilds.map((item) => <SelectItem key={item.version} value={item.version}>{item.version} · {item.channel}{item.experimental ? " (experimental)" : ""}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>}</FieldGroup>}
+          {step === 1 && <FieldGroup><Field><FieldLabel>Creation source</FieldLabel><ToggleGroup value={[source]} onValueChange={(values) => values[0] && setSource(values[0] as "Software" | "Modpack")} variant="outline" spacing={0}><ToggleGroupItem value="Software">Server software</ToggleGroupItem><ToggleGroupItem value="Modpack">Modrinth modpack</ToggleGroupItem></ToggleGroup><FieldDescription>Choose a distribution directly, or let a Modrinth pack define Minecraft and its loader.</FieldDescription></Field>{source === "Software" && <Field><FieldLabel>Server type</FieldLabel><ToggleGroup value={[kind]} onValueChange={(values) => values[0] && setKind(values[0] as ServerKind)} variant="outline" spacing={0}><ToggleGroupItem value="Vanilla">Vanilla</ToggleGroupItem><ToggleGroupItem value="Paper">Paper</ToggleGroupItem><ToggleGroupItem value="Fabric">Fabric</ToggleGroupItem><ToggleGroupItem value="Forge">Forge</ToggleGroupItem><ToggleGroupItem value="NeoForge">NeoForge</ToggleGroupItem></ToggleGroup><FieldDescription>Paper supports plugins. Fabric, Forge, and NeoForge support their respective mod ecosystems.</FieldDescription></Field>}</FieldGroup>}
+          {step === 2 && source === "Modpack" && <ModpackPicker inspection={packInspection} selectedOptionalFiles={selectedOptionalFiles} onChange={(value, optional) => { setPackInspection(value); setSelectedOptionalFiles(optional) }} />}
+          {step === 2 && source === "Software" && <FieldGroup><Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="experimental">Show experimental versions</FieldLabel><FieldDescription>Includes snapshots, unstable loader tools, and non-recommended builds.</FieldDescription></FieldContent><Switch id="experimental" checked={showExperimental} onCheckedChange={setShowExperimental} /></Field>{showExperimental && <Alert><AlertTriangleIcon /><AlertTitle>Experimental software</AlertTitle><AlertDescription>Snapshots and unstable builds can corrupt worlds or break plugins. Back up important data before using them.</AlertDescription></Alert>}<Field><FieldLabel>Minecraft version</FieldLabel>{catalogLoading ? <Skeleton className="h-9 w-full" /> : versions.length ? <Select items={versions.map((item) => ({ value: item, label: item }))} value={version} onValueChange={(value) => value && setSelectedVersion(value)}><SelectTrigger className="w-full" aria-label="Minecraft version"><SelectValue placeholder="Choose a stable release" /></SelectTrigger><SelectContent><SelectGroup>{versions.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectGroup></SelectContent></Select> : <Alert variant="destructive"><AlertTitle>Catalog unavailable</AlertTitle><AlertDescription>Check the panel’s network connection and retry.</AlertDescription></Alert>}</Field>{serverKind === "Paper" && visibleBuilds.length > 0 && <Field><FieldLabel>Paper build</FieldLabel><Select items={visibleBuilds.map((item) => ({ value: item.id, label: `${item.id} · ${item.channel}` }))} value={build} onValueChange={(value) => value && setSelectedBuild(value)}><SelectTrigger className="w-full" aria-label="Paper build"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{visibleBuilds.map((item) => <SelectItem key={item.id} value={item.id}>{item.id} · {item.channel}{item.experimental ? " (experimental)" : ""}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>}{serverKind === "Fabric" && <><Field><FieldLabel>Fabric loader</FieldLabel><Select items={fabricLoaders.map((item) => ({ value: item.version, label: item.version }))} value={loaderVersion} onValueChange={(value) => value && setSelectedLoader(value)}><SelectTrigger className="w-full" aria-label="Fabric loader"><SelectValue placeholder="Choose loader" /></SelectTrigger><SelectContent><SelectGroup>{fabricLoaders.map((item) => <SelectItem key={item.version} value={item.version}>{item.version}{item.stable ? "" : " (unstable)"}</SelectItem>)}</SelectGroup></SelectContent></Select></Field><Field><FieldLabel>Fabric installer</FieldLabel><Select items={installers.map((item) => ({ value: item.version, label: item.version }))} value={installerVersion} onValueChange={(value) => value && setSelectedInstaller(value)}><SelectTrigger className="w-full" aria-label="Fabric installer"><SelectValue placeholder="Choose installer" /></SelectTrigger><SelectContent><SelectGroup>{installers.map((item) => <SelectItem key={item.version} value={item.version}>{item.version}{item.stable ? "" : " (unstable)"}</SelectItem>)}</SelectGroup></SelectContent></Select></Field></>}{(serverKind === "Forge" || serverKind === "NeoForge") && <Field><FieldLabel>{serverKind} version</FieldLabel><Select items={visibleLoaderBuilds.map((item) => ({ value: item.version, label: `${item.version} · ${item.channel}` }))} value={loaderVersion} onValueChange={(value) => value && setSelectedLoader(value)}><SelectTrigger className="w-full" aria-label={`${serverKind} version`}><SelectValue placeholder={`Choose ${serverKind} version`} /></SelectTrigger><SelectContent><SelectGroup>{visibleLoaderBuilds.map((item) => <SelectItem key={item.version} value={item.version}>{item.version} · {item.channel}{item.experimental ? " (experimental)" : ""}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>}</FieldGroup>}
           {step === 3 && <FieldGroup><Field><FieldLabel>Java runtime</FieldLabel>{compatibleJava.length ? <Select items={compatibleJava.map((item) => ({ value: item.id, label: `Java ${item.major} · ${item.vendor}` }))} value={javaId} onValueChange={(value) => value && setSelectedJavaId(value)}><SelectTrigger className="w-full" aria-label="Java runtime"><SelectValue placeholder="Choose Java" /></SelectTrigger><SelectContent><SelectGroup>{compatibleJava.map((item) => <SelectItem key={item.id} value={item.id}>Java {item.major} · {item.vendor}</SelectItem>)}</SelectGroup></SelectContent></Select> : <Alert variant="destructive"><AlertTitle>Java {requiredJava}+ is required</AlertTitle><AlertDescription>Install a compatible Java runtime on the host, then rescan from the Java page.</AlertDescription></Alert>} {selectedRuntime && <Alert><CheckIcon /><AlertTitle>Compatible runtime found</AlertTitle><AlertDescription>{selectedRuntime.path} · Java {selectedRuntime.major}</AlertDescription></Alert>}</Field>{memoryCapacityAvailable ? <Field><FieldLabel>RAM: {(effectiveMemoryMb / 1024).toFixed(1)} GiB</FieldLabel>{supportedMemoryLimitMb > MEMORY_MIN_MB ? <Slider aria-label="RAM" min={MEMORY_MIN_MB} max={supportedMemoryLimitMb} step={MEMORY_STEP_MB} value={[effectiveMemoryMb]} onValueChange={(value) => setMemoryMb(clampMemoryMb(Array.isArray(value) ? value[0] : value, supportedMemoryLimitMb, MEMORY_MIN_MB))} /> : <Input aria-label="RAM" value={`${(effectiveMemoryMb / 1024).toFixed(1)} GiB`} disabled readOnly />}<FieldDescription>Sets both Xms and Xmx to this exact value. MC Panel privately reserves JVM overhead. Maximum selectable RAM: {(supportedMemoryLimitMb / 1024).toFixed(1)} GiB.</FieldDescription></Field> : <Alert variant="destructive"><AlertTitle>Not enough allocatable host RAM</AlertTitle><AlertDescription>A server needs room for a 0.5 GiB heap plus JVM overhead, but the host allocation ceiling is {(hostTotalMemoryLimitMb / 1024).toFixed(1)} GiB.</AlertDescription></Alert>}</FieldGroup>}
           {step === 4 && <FieldGroup><Field data-invalid={Boolean(errors.name)}><FieldLabel htmlFor="server-name">Server name</FieldLabel><Input id="server-name" aria-invalid={Boolean(errors.name)} {...register("name")} /><FieldError errors={[errors.name]} /></Field><Field data-invalid={Boolean(errors.port)}><FieldLabel htmlFor="port">Game port</FieldLabel><Input id="port" type="number" aria-invalid={Boolean(errors.port)} {...register("port", { valueAsNumber: true })} /><FieldError errors={[errors.port]} /></Field><Field data-invalid={Boolean(errors.eulaAccepted)} orientation="horizontal"><Checkbox id="eula" checked={eula} onCheckedChange={(checked) => setValue("eulaAccepted", checked === true, { shouldValidate: true })} aria-invalid={Boolean(errors.eulaAccepted)} /><FieldContent><FieldLabel htmlFor="eula">I accept the Minecraft EULA</FieldLabel><FieldDescription>This writes eula=true for this server. MC Panel never bundles Minecraft server files.</FieldDescription><FieldError errors={[errors.eulaAccepted]} /></FieldContent></Field></FieldGroup>}
         </form>
@@ -440,7 +458,7 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
       <InputGroupInput aria-label="Search server properties" placeholder="Search properties" value={search} onChange={(event) => changeSearch(event.target.value)} />
     </InputGroup>
     <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as PropertyTab)}>
-      <TabsList className="w-full justify-start overflow-x-auto">{propertyTabs.map((tab) => <TabsTrigger key={tab.value} value={tab.value}>{tab.label}</TabsTrigger>)}</TabsList>
+      <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">{propertyTabs.map((tab) => <TabsTrigger key={tab.value} value={tab.value} className="w-full">{tab.label}</TabsTrigger>)}</TabsList>
       {tabGroups.map((tab) => <TabsContent key={tab.value} value={tab.value}><Card>
         <CardHeader><CardTitle>{tab.title}</CardTitle><CardDescription>{tab.description}</CardDescription></CardHeader>
         <CardContent>{tab.entries.length ? <FieldGroup>{tab.entries.map(propertyField)}</FieldGroup> : <Empty><EmptyHeader><EmptyTitle>{normalizedSearch ? "No matching properties in this tab" : "No properties in this tab"}</EmptyTitle><EmptyDescription>{normalizedSearch ? "Try another tab or a different search." : "Properties appear here when they are present in server.properties."}</EmptyDescription></EmptyHeader></Empty>}</CardContent>

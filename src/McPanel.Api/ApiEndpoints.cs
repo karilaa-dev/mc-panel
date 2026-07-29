@@ -24,6 +24,11 @@ public static partial class ApiEndpoints
             var (_, job) = await installer.CreateAsync(request, token);
             return Results.Accepted($"/api/v1/jobs/{job.Id}", job);
         });
+        api.MapPost("/servers/modpack", async (CreateModpackServerRequest request, ServerInstallerService installer, CancellationToken token) =>
+        {
+            var (_, job) = await installer.CreateModpackAsync(request, token);
+            return Results.Accepted($"/api/v1/jobs/{job.Id}", job);
+        });
         api.MapDelete("/servers/{id:guid}", DeleteServerAsync);
         api.MapPost("/servers/{id:guid}/actions/{action}", HandleActionAsync);
         foreach (var action in new[] { "start", "stop", "restart", "update" })
@@ -59,6 +64,24 @@ public static partial class ApiEndpoints
         api.MapGet("/servers/{id:guid}/players", (Guid id, PlayerService service, CancellationToken token) => service.ListAsync(id, token));
         api.MapPost("/servers/{id:guid}/players/{name}/{action}", (Guid id, string name, string action, PlayerService service, CancellationToken token) => service.ActionAsync(id, name, action, token));
         api.MapGet("/servers/{id:guid}/mods", (Guid id, ModMetadataService service, CancellationToken token) => service.ListAsync(id, token));
+        api.MapPost("/servers/{id:guid}/mods/modrinth", async (
+            Guid id, InstallModrinthModRequest request, ModrinthModInstallerService service,
+            CancellationToken token) =>
+        {
+            var job = await service.QueueAsync(id, request, token);
+            return Results.Accepted($"/api/v1/jobs/{job.Id}", job);
+        });
+        api.MapGet("/servers/{id:guid}/plugins", (Guid id, ModMetadataService service, CancellationToken token) =>
+            service.ListPluginsAsync(id, token));
+        api.MapPost("/servers/{id:guid}/plugins/modrinth", async (
+            Guid id, InstallModrinthPluginRequest request, ModrinthModInstallerService service,
+            CancellationToken token) =>
+        {
+            var job = await service.QueuePluginAsync(id, request, token);
+            return Results.Accepted($"/api/v1/jobs/{job.Id}", job);
+        });
+        api.MapGet("/servers/{id:guid}/modpack/changes", (
+            Guid id, ModpackService service, CancellationToken token) => service.ChangesAsync(id, token));
 
         api.MapGet("/servers/{id:guid}/files", (Guid id, string? path, FileManagerService files) => files.List(id, path ?? ""));
         api.MapPost("/servers/{id:guid}/files", async (Guid id, CreateFileRequest request, FileManagerService files, CancellationToken token) => { await files.CreateAsync(id, request.Path, request.Directory, token); return Results.NoContent(); });
@@ -88,6 +111,19 @@ public static partial class ApiEndpoints
         api.MapPost("/java/custom", (AddJavaRequest request, JavaDiscoveryService java, CancellationToken token) =>
             string.IsNullOrWhiteSpace(request?.Path) ? throw PanelProblems.Validation("A Java executable path is required.") : java.AddCustomAsync(request.Path, token));
         api.MapGet("/catalog", (bool? experimental, DistributionCatalogService catalog, CancellationToken token) => catalog.GetCatalogAsync(experimental ?? false, token));
+        api.MapGet("/modrinth/search", (
+            string projectType, string? query, int? offset, int? limit, Guid? serverId,
+            string? gameVersion, string? loader,
+            ModrinthService service, CancellationToken token) =>
+            service.SearchAsync(projectType, query, offset ?? 0, limit, serverId, gameVersion, loader, token));
+        api.MapGet("/modrinth/projects/{projectId}/versions", (
+            string projectId, Guid? serverId, string? projectType, string? gameVersion,
+            string? loader, ModrinthService service, CancellationToken token) =>
+            service.VersionsAsync(projectId, serverId, projectType, gameVersion, loader, token));
+        api.MapPost("/modrinth/modpacks/imports/modrinth", (
+            PrepareModrinthPackRequest request, ModpackService service, CancellationToken token) =>
+            service.PrepareRemoteAsync(request, token));
+        api.MapPost("/modrinth/modpacks/imports/upload", PrepareModpackUploadAsync);
         api.MapGet("/catalog/paper/{version}/builds", (string version, bool? experimental, DistributionCatalogService catalog, CancellationToken token) => catalog.PaperBuildsAsync(version, experimental ?? false, token));
         api.MapGet("/system/status", (HostMetricsService metrics) => metrics.GetStatus());
         api.MapGet("/system/info", (PanelPaths paths, IOptions<PanelOptions> options) =>
@@ -145,7 +181,7 @@ public static partial class ApiEndpoints
         return Results.Accepted($"/api/v1/jobs/{job.Id}", job);
     }
 
-    private static async Task<IResult> DeleteServerAsync(Guid id, IDbContextFactory<StateDbContext> stateFactory, IDbContextFactory<ConsoleDbContext> consoleFactory, PanelPaths paths, AsyncKeyedLock keyedLock, ProcessSupervisor supervisor, CancellationToken token)
+    private static async Task<IResult> DeleteServerAsync(Guid id, IDbContextFactory<StateDbContext> stateFactory, IDbContextFactory<ConsoleDbContext> consoleFactory, PanelPaths paths, AsyncKeyedLock keyedLock, ProcessSupervisor supervisor, ModpackService modpacks, CancellationToken token)
     {
         using var serverLock = await keyedLock.AcquireAsync(id, token);
         await using var db = await stateFactory.CreateDbContextAsync(token);
@@ -160,9 +196,23 @@ public static partial class ApiEndpoints
         db.Servers.Remove(server); await db.SaveChangesAsync(token);
         var backupDirectory = paths.ServerBackups(id);
         if (Directory.Exists(backupDirectory)) Directory.Delete(backupDirectory, true);
+        modpacks.Delete(id);
         await using var consoleDb = await consoleFactory.CreateDbContextAsync(token);
         await consoleDb.Lines.Where(x => x.ServerId == id).ExecuteDeleteAsync(token);
         return Results.NoContent();
+    }
+
+    private static async Task<ModpackInspectionDto> PrepareModpackUploadAsync(
+        HttpRequest request, ModpackService service, CancellationToken token)
+    {
+        if (!request.HasFormContentType) throw PanelProblems.Validation("Modpack upload must use multipart/form-data.");
+        IFormCollection form;
+        try { form = await request.ReadFormAsync(token); }
+        catch (InvalidDataException exception) when (exception.Message.Contains("length limit", StringComparison.OrdinalIgnoreCase))
+        { throw new PanelException(413, "FILE_TOO_LARGE", "The uploaded modpack exceeds the configured limit."); }
+        catch (InvalidDataException) { throw PanelProblems.Validation("The multipart form data is invalid."); }
+        var file = form.Files.GetFile("file") ?? throw PanelProblems.Validation("Multipart field 'file' is required.");
+        return await service.PrepareUploadAsync(file, token);
     }
 
     private static async Task<IResult> UploadAsync(Guid id, string? path, HttpRequest request, FileManagerService files, CancellationToken token)

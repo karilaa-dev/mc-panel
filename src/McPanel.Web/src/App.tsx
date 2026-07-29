@@ -17,6 +17,7 @@ const ServerPropertiesPage = lazy(() => import("@/pages/core-pages").then((modul
 const ServerIconPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.ServerIconPage })))
 const RuntimeSettingsPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.RuntimeSettingsPage })))
 const ModsPage = lazy(() => import("@/pages/mods-page").then((module) => ({ default: module.ModsPage })))
+const PluginsPage = lazy(() => import("@/pages/mods-page").then((module) => ({ default: module.PluginsPage })))
 const ConsolePage = lazy(() => import("@/pages/operations-pages").then((module) => ({ default: module.ConsolePage })))
 const FilesPage = lazy(() => import("@/pages/operations-pages").then((module) => ({ default: module.FilesPage })))
 const PlayersPage = lazy(() => import("@/pages/operations-pages").then((module) => ({ default: module.PlayersPage })))
@@ -84,6 +85,7 @@ function AppRoutes() {
         <Route path="servers/:serverId/icon" element={<ServerIconPage />} />
         <Route path="servers/:serverId/runtime" element={<RuntimeSettingsPage />} />
         <Route path="servers/:serverId/mods" element={<ModsPage />} />
+        <Route path="servers/:serverId/plugins" element={<PluginsPage />} />
         <Route path="servers/:serverId/settings" element={<LegacySettingsRedirect />} />
         <Route path="servers/:serverId/files" element={<FilesPage />} />
         <Route path="servers/:serverId/players" element={<PlayersPage />} />

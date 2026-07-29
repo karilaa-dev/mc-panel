@@ -130,6 +130,41 @@ public sealed class ModMetadataServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Reads_paper_plugin_descriptors_and_authors()
+    {
+        var (service, paths, serverId) = CreateService(ServerKind.Paper);
+        CreateJar(Path.Combine(paths.Instance(serverId), "plugins", "example.jar"),
+            ("paper-plugin.yml", """
+                name: ExamplePlugin
+                version: "2.3.4"
+                description: A Paper fixture
+                authors:
+                  - Ada
+                  - Grace
+                """));
+
+        var file = Assert.Single(await service.ListPluginsAsync(serverId, CancellationToken.None));
+
+        Assert.Equal(ModParseStatus.Parsed, file.Status);
+        Assert.Equal("paper-plugin.yml", file.MetadataFormat);
+        var plugin = Assert.Single(file.Mods);
+        Assert.Equal("ExamplePlugin", plugin.Name);
+        Assert.Equal("2.3.4", plugin.Version);
+        Assert.Equal(["Ada", "Grace"], plugin.Authors);
+    }
+
+    [Fact]
+    public async Task Rejects_plugin_inventory_for_non_paper_servers()
+    {
+        var (service, _, serverId) = CreateService(ServerKind.Fabric);
+
+        var exception = await Assert.ThrowsAsync<PanelException>(
+            () => service.ListPluginsAsync(serverId, CancellationToken.None));
+
+        Assert.Equal("VALIDATION_FAILED", exception.Code);
+    }
+
+    [Fact]
     public async Task Reports_partial_metadata_and_enforces_archive_limits()
     {
         var (service, paths, serverId) = CreateService(ServerKind.Forge, maxArchiveEntries: 2);

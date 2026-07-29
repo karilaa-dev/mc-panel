@@ -25,6 +25,11 @@ administration, or a dense operator interface.
   cropped server icons, player actions, and a confined file manager.
 - Read-only Fabric, Forge, and NeoForge mod inventories with metadata details
   parsed directly from each instance's top-level mod JARs.
+- Paper plugin inventory and verified Modrinth plugin installation.
+- Filtered Modrinth mod/plugin browsing with list and gallery views, plus server
+  creation from public Modrinth packs or uploaded `.mrpack` archives.
+- Retained modpack baselines that report modified or removed pack files and
+  added top-level mod JARs without flagging generated worlds, logs, or configs.
 - Per-server backups and time-based automations.
 - One local administrator protected by cookie authentication, global session
   revocation, and antiforgery tokens.

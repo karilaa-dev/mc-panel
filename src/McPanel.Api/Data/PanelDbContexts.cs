@@ -87,6 +87,19 @@ public sealed class StateDbContext(DbContextOptions<StateDbContext> options) : D
                 await alter.ExecuteNonQueryAsync(cancellationToken);
             }
 
+            foreach (var column in new[]
+            {
+                nameof(ServerEntity.ModpackName), nameof(ServerEntity.ModpackVersion),
+                nameof(ServerEntity.ModrinthProjectId), nameof(ServerEntity.ModrinthVersionId),
+                nameof(ServerEntity.ModpackSource)
+            })
+            {
+                if (serverColumns.Count == 0 || serverColumns.Contains(column)) continue;
+                await using var alter = connection.CreateCommand();
+                alter.CommandText = $"ALTER TABLE \"Servers\" ADD COLUMN \"{column}\" TEXT NULL;";
+                await alter.ExecuteNonQueryAsync(cancellationToken);
+            }
+
             if (serverColumns.Count > 0 && !serverColumns.Contains(nameof(ServerEntity.LoaderVersion)))
             {
                 await using var alter = connection.CreateCommand();
