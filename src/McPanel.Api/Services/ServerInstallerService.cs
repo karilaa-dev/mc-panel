@@ -16,6 +16,7 @@ public sealed partial class ServerInstallerService(
     IDbContextFactory<StateDbContext> stateFactory,
     DistributionCatalogService catalog,
     ValidatedDownloadClient downloads,
+    ModpackService modpacks,
     OperationQueue operations,
     ConsoleService console,
     AsyncKeyedLock keyedLock,
@@ -67,6 +68,61 @@ public sealed partial class ServerInstallerService(
                 await db.SaveChangesAsync(CancellationToken.None);
             }
             catch (Exception exception) { logger.LogError(exception, "Could not mark unqueued install {ServerId} as failed", entity.Id); }
+            throw;
+        }
+    }
+
+    public async Task<(ServerEntity Server, JobDto Job)> CreateModpackAsync(
+        CreateModpackServerRequest request, CancellationToken cancellationToken)
+    {
+        if (request is null) throw PanelProblems.Validation("A modpack server request is required.");
+        var inspection = await modpacks.InspectAsync(request.ImportToken, cancellationToken);
+        ValidateCommon(request.Name, inspection.MinecraftVersion, request.JavaRuntimeId,
+            request.MemoryMb, request.Port, request.EulaAccepted);
+        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+        var runtime = await db.JavaRuntimes.AsNoTracking().SingleOrDefaultAsync(
+            x => x.Id == request.JavaRuntimeId, cancellationToken)
+            ?? throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
+        if (await db.Servers.AnyAsync(x => x.Port == request.Port, cancellationToken))
+            throw PanelProblems.Conflict("PORT_IN_USE", "The selected port is already assigned to another server.");
+        if (await db.Servers.AnyAsync(x => x.Name.ToLower() == request.Name.Trim().ToLower(), cancellationToken))
+            throw PanelProblems.Conflict("VALIDATION_FAILED", "A server with that name already exists.");
+        var totalLimitMb = MemorySizing.TotalForExistingHeapMb(request.MemoryMb);
+        var totalMemory = HostMetricsService.ReadMemory().Total;
+        if ((long)totalLimitMb * 1024 * 1024 > totalMemory * options.Value.MemoryAllocationFraction)
+            throw new PanelException(400, "MEMORY_LIMIT_EXCEEDED", "The selected memory exceeds the host allocation limit.");
+
+        var claim = await modpacks.ClaimAsync(request.ImportToken, cancellationToken);
+        var entity = new ServerEntity
+        {
+            Id = Guid.NewGuid(), Name = request.Name.Trim(), Kind = inspection.Kind,
+            Version = inspection.MinecraftVersion, LoaderVersion = inspection.LoaderVersion,
+            JavaRuntimeId = runtime.Id, MemoryLimitMb = totalLimitMb, MemoryMb = request.MemoryMb,
+            InitialMemoryMb = request.MemoryMb, Port = request.Port, StartOnBoot = request.StartOnBoot,
+            State = ServerState.Installing, EulaAcceptedAt = DateTimeOffset.UtcNow,
+            ModpackName = inspection.Name, ModpackVersion = inspection.Version,
+            ModrinthProjectId = inspection.ProjectId, ModrinthVersionId = inspection.ModrinthVersionId,
+            ModpackSource = inspection.Source
+        };
+        db.Servers.Add(entity);
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            var job = await operations.EnqueueAsync("InstallModpack", entity.Id,
+                (_, jobId, token) => InstallModpackAsync(
+                    entity.Id, jobId, claim, request.SelectedOptionalFiles, token), cancellationToken);
+            return (entity, job);
+        }
+        catch
+        {
+            claim.Dispose();
+            try
+            {
+                entity.State = ServerState.Error;
+                entity.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(CancellationToken.None);
+            }
+            catch (Exception exception) { logger.LogError(exception, "Could not mark unqueued modpack install {ServerId} as failed", entity.Id); }
             throw;
         }
     }
@@ -139,6 +195,99 @@ public sealed partial class ServerInstallerService(
             throw;
         }
         finally { if (Directory.Exists(stage)) Directory.Delete(stage, true); }
+    }
+
+    private async Task InstallModpackAsync(
+        Guid id, Guid jobId, ModpackService.ClaimedModpack claim,
+        IReadOnlyCollection<string>? selectedOptionalFiles, CancellationToken cancellationToken)
+    {
+        using (claim)
+        using (await keyedLock.AcquireAsync(id, cancellationToken))
+        {
+            var stage = Path.Combine(paths.Staging, $"install-{id:N}-{jobId:N}");
+            try
+            {
+                if (Directory.Exists(stage)) Directory.Delete(stage, true);
+                Directory.CreateDirectory(stage);
+                await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+                var server = await db.Servers.FindAsync([id], cancellationToken) ?? throw PanelProblems.NotFound("Server");
+                var runtime = await db.JavaRuntimes.AsNoTracking().SingleOrDefaultAsync(
+                    x => x.Id == server.JavaRuntimeId, cancellationToken)
+                    ?? throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
+                await operations.ProgressAsync(jobId, 5, "Resolving modpack server distribution", cancellationToken);
+                var plan = await catalog.ResolveAsync(server.Kind, server.Version, server.DistributionBuild,
+                    server.LoaderVersion, server.InstallerVersion, true, cancellationToken);
+                if (runtime.Major < plan.RequiredJavaMajor)
+                    throw new PanelException(400, "JAVA_VERSION_INCOMPATIBLE", $"Minecraft {server.Version} requires Java {plan.RequiredJavaMajor} or newer.");
+                if (server.Kind == ServerKind.Forge && plan.RequiredJavaMajor == 8 && runtime.Major != 8)
+                    throw new PanelException(400, "JAVA_VERSION_INCOMPATIBLE", $"Legacy Forge for Minecraft {server.Version} requires Java 8.");
+                await operations.ProgressAsync(jobId, 15, "Downloading and verifying server files", cancellationToken);
+                var artifactPath = Path.Combine(stage, plan.Artifact.FileName);
+                await downloads.DownloadAsync(plan.Artifact, artifactPath, cancellationToken);
+                if (IsModLoader(server.Kind))
+                {
+                    await operations.ProgressAsync(jobId, 25, $"Running the verified {server.Kind} installer", cancellationToken);
+                    var launch = await RunLoaderInstallerAsync(server, runtime.Path, plan, artifactPath, stage, cancellationToken);
+                    server.LaunchMode = launch.Mode; server.LaunchTarget = launch.Target;
+                    server.LoaderVersion = plan.LoaderVersion; server.InstallerVersion = plan.InstallerVersion;
+                    File.Delete(artifactPath);
+                    Directory.CreateDirectory(Path.Combine(stage, "mods"));
+                }
+                else
+                {
+                    File.Move(artifactPath, Path.Combine(stage, "server.jar"));
+                    server.LaunchMode = LaunchMode.Jar; server.LaunchTarget = "server.jar";
+                    server.DistributionBuild = plan.Build;
+                }
+                server.RequiredJavaMajor = plan.RequiredJavaMajor;
+                server.IsExperimental = plan.Experimental;
+                var installed = await modpacks.InstallFilesAsync(claim, stage, selectedOptionalFiles,
+                    (progress, message) => operations.ProgressAsync(jobId, progress, message, cancellationToken),
+                    cancellationToken);
+                await operations.ProgressAsync(jobId, 75, "Applying server configuration", cancellationToken);
+                var propertiesPath = Path.Combine(stage, "server.properties");
+                var properties = File.Exists(propertiesPath)
+                    ? PropertiesDocument.Parse(await File.ReadAllTextAsync(propertiesPath, cancellationToken))
+                    : PropertiesDocument.Empty();
+                properties.Set("server-port", server.Port.ToString());
+                if (properties.Get("motd") is null) properties.Set("motd", server.Name);
+                if (properties.Get("max-players") is null) properties.Set("max-players", "20");
+                if (properties.Get("online-mode") is null) properties.Set("online-mode", "true");
+                await File.WriteAllTextAsync(propertiesPath, properties.ToString(), new UTF8Encoding(false), cancellationToken);
+                await File.WriteAllTextAsync(Path.Combine(stage, "eula.txt"),
+                    $"# Accepted through MC Panel at {server.EulaAcceptedAt:O}{Environment.NewLine}eula=true{Environment.NewLine}",
+                    new UTF8Encoding(false), cancellationToken);
+                await modpacks.CommitBaselineAsync(server, claim, installed, stage, cancellationToken);
+                var destination = paths.Instance(id);
+                if (Directory.Exists(destination)) throw PanelProblems.Conflict("SERVER_BUSY", "The managed server directory already exists.");
+                Directory.Move(stage, destination);
+                server.State = ServerState.Stopped;
+                server.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(cancellationToken);
+                await console.AppendAsync(id, "system",
+                    $"Installed modpack {server.ModpackName} {server.ModpackVersion} for {server.Kind} {server.Version}.",
+                    cancellationToken);
+                await operations.ProgressAsync(jobId, 95, "Modpack installation complete", cancellationToken);
+            }
+            catch
+            {
+                modpacks.Delete(id);
+                try
+                {
+                    await using var failureDb = await stateFactory.CreateDbContextAsync(CancellationToken.None);
+                    var server = await failureDb.Servers.FindAsync([id], CancellationToken.None);
+                    if (server is not null)
+                    {
+                        server.State = ServerState.Error; server.UpdatedAt = DateTimeOffset.UtcNow;
+                        await failureDb.SaveChangesAsync();
+                    }
+                    await console.AppendAsync(id, "system", "Modpack installation failed. No partial server directory was activated.");
+                }
+                catch (Exception exception) { logger.LogWarning(exception, "Could not record modpack installation failure"); }
+                throw;
+            }
+            finally { if (Directory.Exists(stage)) Directory.Delete(stage, true); }
+        }
     }
 
     private async Task UpdateAsync(Guid id, Guid jobId, CancellationToken cancellationToken)
@@ -284,15 +433,23 @@ public sealed partial class ServerInstallerService(
 
     private static void Validate(CreateServerRequest request)
     {
-        if (request is null || string.IsNullOrWhiteSpace(request.Name) || string.IsNullOrWhiteSpace(request.Version) || string.IsNullOrWhiteSpace(request.JavaRuntimeId))
-            throw PanelProblems.Validation("Name, version, and Java runtime are required.");
-        if (!request.EulaAccepted) throw PanelProblems.Validation("You must explicitly accept the Minecraft EULA.");
-        if (!NameRegex().IsMatch(request.Name.Trim())) throw PanelProblems.Validation("Server names may contain letters, numbers, spaces, '-' and '_'.");
-        if (request.MemoryMb is < PanelOptions.MinimumServerMemoryMb or > 1_048_576 || request.MemoryMb % PanelOptions.ServerMemoryStepMb != 0)
-            throw PanelProblems.Validation($"RAM must be at least {PanelOptions.MinimumServerMemoryMb} MiB and use {PanelOptions.ServerMemoryStepMb} MiB increments.");
-        if (request.Port is < 1024 or > 65535) throw PanelProblems.Validation("Port must be between 1024 and 65535.");
+        if (request is null) throw PanelProblems.Validation("A server request is required.");
+        ValidateCommon(request.Name, request.Version, request.JavaRuntimeId, request.MemoryMb,
+            request.Port, request.EulaAccepted);
         if (request.Version.Length > 64 || request.Build?.Length > 64 || request.LoaderVersion?.Length > 64 || request.InstallerVersion?.Length > 64)
             throw PanelProblems.Validation("Distribution metadata values are too long.");
+    }
+
+    private static void ValidateCommon(
+        string name, string version, string javaRuntimeId, int memoryMb, int port, bool eulaAccepted)
+    {
+        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(version) || string.IsNullOrWhiteSpace(javaRuntimeId))
+            throw PanelProblems.Validation("Name, version, and Java runtime are required.");
+        if (!eulaAccepted) throw PanelProblems.Validation("You must explicitly accept the Minecraft EULA.");
+        if (!NameRegex().IsMatch(name.Trim())) throw PanelProblems.Validation("Server names may contain letters, numbers, spaces, '-' and '_'.");
+        if (memoryMb is < PanelOptions.MinimumServerMemoryMb or > 1_048_576 || memoryMb % PanelOptions.ServerMemoryStepMb != 0)
+            throw PanelProblems.Validation($"RAM must be at least {PanelOptions.MinimumServerMemoryMb} MiB and use {PanelOptions.ServerMemoryStepMb} MiB increments.");
+        if (port is < 1024 or > 65535) throw PanelProblems.Validation("Port must be between 1024 and 65535.");
     }
 
     [GeneratedRegex("^[A-Za-z0-9 _-]{2,48}$")]

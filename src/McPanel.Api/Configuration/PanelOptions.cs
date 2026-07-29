@@ -35,6 +35,8 @@ public sealed class PanelPaths
         Runtime = Path.Combine(Data, "runtime");
         Keys = Path.Combine(Data, "keys");
         Icons = Path.Combine(Data, "icons");
+        Modpacks = Path.Combine(Data, "modpacks");
+        ModpackImports = Path.Combine(Data, "modpack-imports");
         StateDatabase = Path.Combine(Data, "state.db");
         ConsoleDatabase = Path.Combine(Data, "console.db");
         SetupTokenFile = options.SetupTokenFile is { Length: > 0 }
@@ -53,16 +55,19 @@ public sealed class PanelPaths
     public string RuntimeState => Path.Combine(Runtime, "state");
     public string Keys { get; }
     public string Icons { get; }
+    public string Modpacks { get; }
+    public string ModpackImports { get; }
     public string StateDatabase { get; }
     public string ConsoleDatabase { get; }
     public string SetupTokenFile { get; }
 
     public void EnsureCreated()
     {
-        foreach (var directory in new[] { Data, Config, Instances, Staging, Backups, Logs, Runtime, RuntimeState, Keys, Icons })
+        foreach (var directory in new[] { Data, Config, Instances, Staging, Backups, Logs, Runtime, RuntimeState, Keys, Icons, Modpacks, ModpackImports })
             Directory.CreateDirectory(directory);
     }
 
     public string Instance(Guid id) => Path.Combine(Instances, id.ToString("N"));
     public string ServerBackups(Guid id) => Path.Combine(Backups, id.ToString("N"));
+    public string ServerModpack(Guid id) => Path.Combine(Modpacks, id.ToString("N"));
 }

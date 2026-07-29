@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   ArchiveIcon, BlocksIcon, BoxIcon, ChevronDownIcon, ChevronUpIcon, CircleGaugeIcon, PlusIcon,
   Clock3Icon, CommandIcon, FileIcon, GaugeIcon, ImageIcon, LogOutIcon, MonitorCogIcon, MoonIcon,
-  PackageIcon, PanelsTopLeftIcon, Settings2Icon, SunIcon, TerminalSquareIcon, UsersIcon,
+  PackageIcon, PanelsTopLeftIcon, PlugIcon, Settings2Icon, SunIcon, TerminalSquareIcon, UsersIcon,
 } from "lucide-react"
 import { api } from "@/lib/api"
 import { useTheme } from "@/components/theme-provider"
@@ -37,6 +37,7 @@ const serverItems = [
   { label: "Server icon", path: "/icon", icon: ImageIcon },
   { label: "Runtime", path: "/runtime", icon: GaugeIcon },
   { label: "Mods", path: "/mods", icon: PackageIcon, moddedOnly: true },
+  { label: "Plugins", path: "/plugins", icon: PlugIcon, paperOnly: true },
   { label: "Files", path: "/files", icon: FileIcon },
   { label: "Players", path: "/players", icon: UsersIcon },
   { label: "Backups", path: "/backups", icon: ArchiveIcon },
@@ -92,7 +93,9 @@ export function AppShell() {
     onError: (error) => toast.error(error.message),
   })
   const currentServer = servers.find((server) => server.id === serverId)
-  const visibleServerItems = serverItems.filter((item) => !item.moddedOnly || currentServer && ["Fabric", "Forge", "NeoForge"].includes(currentServer.kind))
+  const visibleServerItems = serverItems.filter((item) =>
+    (!item.moddedOnly || currentServer && (["Fabric", "Forge", "NeoForge"].includes(currentServer.kind) || Boolean(currentServer.modpack))) &&
+    (!item.paperOnly || currentServer?.kind === "Paper"))
   const serverSection = serverItems.find((item) =>
     location.pathname === `/servers/${serverId}${item.path}`,
   )

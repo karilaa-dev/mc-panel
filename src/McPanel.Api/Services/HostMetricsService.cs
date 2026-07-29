@@ -131,6 +131,9 @@ public sealed class ServerQueryService(
             server.MemoryMb, playerCount, maxPlayers, runtime.CpuPercent, runtime.MemoryUsedMb, runtime.MemoryPeakMb,
             runtime.SwapUsedMb, runtime.AnonymousMemoryMb, runtime.FileMemoryMb, runtime.KernelMemoryMb, runtime.SocketMemoryMb,
             runtime.MemoryEnforced, runtime.UptimeSeconds, server.RestartRequired, server.StartOnBoot,
-            server.IconRevision);
+            server.IconRevision,
+            server.ModpackName is null || server.ModpackVersion is null ? null : new ModpackSummaryDto(
+                server.ModpackName, server.ModpackVersion, server.ModrinthProjectId, server.ModrinthVersionId,
+                server.ModpackSource ?? "Upload"));
     }
 }

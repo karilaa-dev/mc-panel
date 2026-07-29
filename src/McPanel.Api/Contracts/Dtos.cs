@@ -18,7 +18,7 @@ public sealed record ServerSummaryDto(
     int MaximumHeapMemoryMb, int PlayerCount, int MaxPlayers, double CpuPercent, double MemoryUsedMb,
     double MemoryPeakMb, double SwapUsedMb, double AnonymousMemoryMb, double FileMemoryMb,
     double KernelMemoryMb, double SocketMemoryMb, bool MemoryEnforced, long UptimeSeconds,
-    bool RestartRequired, bool StartOnBoot, string? IconRevision);
+    bool RestartRequired, bool StartOnBoot, string? IconRevision, ModpackSummaryDto? Modpack);
 
 public sealed record CreateServerRequest(
     [property: Required, StringLength(48, MinimumLength = 2)] string Name,
@@ -104,6 +104,58 @@ public sealed record ModDeclarationDto(
 public sealed record ModFileDto(
     string FileName, long Size, string? MetadataFormat, ModParseStatus Status,
     string? Message, string? License, IReadOnlyList<ModDeclarationDto> Mods);
+
+public sealed record ModpackSummaryDto(
+    string Name, string Version, string? ProjectId, string? VersionId, string Source);
+
+public sealed record ModrinthProjectDto(
+    string Id, string Slug, string Title, string Description, string ProjectType,
+    string Author, string? IconUrl, long Downloads, IReadOnlyList<string> Versions,
+    IReadOnlyList<string> Categories, string? FeaturedGalleryUrl, long Followers,
+    DateTimeOffset? ModifiedAt);
+public sealed record ModrinthSearchDto(
+    IReadOnlyList<ModrinthProjectDto> Projects, int Offset, int Limit, int Total);
+public sealed record InstalledModrinthVersionDto(
+    string VersionId, string VersionNumber, string FileName);
+public sealed record ModrinthDependencyDto(
+    string Type, string? ProjectId, string? VersionId, string? FileName,
+    string? ProjectTitle, string? ProjectUrl,
+    IReadOnlyList<InstalledModrinthVersionDto> InstalledVersions);
+public sealed record ModrinthVersionDto(
+    string Id, string ProjectId, string Name, string VersionNumber, string VersionType,
+    DateTimeOffset PublishedAt, IReadOnlyList<string> GameVersions, IReadOnlyList<string> Loaders,
+    string FileName, long FileSize, IReadOnlyList<ModrinthDependencyDto> Dependencies);
+
+public sealed record PrepareModrinthPackRequest(string VersionId);
+public sealed record ModpackOptionalFileDto(string Path, long Size);
+public sealed record ModpackInspectionDto(
+    string Token, DateTimeOffset ExpiresAt, string Name, string Version, ServerKind Kind,
+    string MinecraftVersion, string? LoaderVersion, string Source, string? ProjectId,
+    string? ModrinthVersionId, IReadOnlyList<ModpackOptionalFileDto> OptionalFiles);
+public sealed record CreateModpackServerRequest(
+    [property: Required, StringLength(48, MinimumLength = 2)] string Name,
+    [property: Required] string ImportToken,
+    [property: Required] string JavaRuntimeId,
+    [property: Range(PanelOptions.MinimumServerMemoryMb, 1_048_576)] int MemoryMb,
+    [property: Range(1024, 65535)] int Port,
+    bool EulaAccepted,
+    bool StartOnBoot = false,
+    IReadOnlyCollection<string>? SelectedOptionalFiles = null);
+public sealed record InstallModrinthModRequest(
+    string ProjectId,
+    string VersionId,
+    IReadOnlyCollection<string>? SelectedDependencyProjectIds = null);
+public sealed record InstallModrinthPluginRequest(
+    string ProjectId,
+    string VersionId,
+    IReadOnlyCollection<string>? SelectedDependencyProjectIds = null);
+
+public enum ModpackChangeStatus { Added, Modified, Removed }
+public sealed record ModpackChangeDto(
+    string Path, ModpackChangeStatus Status, long? ExpectedSize, long? CurrentSize);
+public sealed record ModpackChangesDto(
+    ModpackSummaryDto? Modpack, DateTimeOffset ScannedAt, int Added, int Modified, int Removed,
+    IReadOnlyList<ModpackChangeDto> Changes, string? Message = null);
 
 public sealed record ScheduleActionDto(string Action, string? Command = null);
 public sealed record ScheduleDto(

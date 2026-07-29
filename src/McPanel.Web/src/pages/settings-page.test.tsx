@@ -78,6 +78,8 @@ describe("ServerPropertiesPage", () => {
     expect(screen.getByRole("switch", { name: "White list" })).not.toBeChecked()
     expect(screen.queryByText("Plugin unknown")).not.toBeInTheDocument()
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["General", "World & gameplay", "Players", "Network", "Advanced"])
+    expect(screen.getByRole("tablist")).toHaveClass("grid")
+    expect(screen.getByRole("tablist")).not.toHaveClass("overflow-x-auto")
 
     await user.click(screen.getByRole("tab", { name: "Advanced" }))
     expect(screen.getByText("Plugin unknown")).toBeVisible()

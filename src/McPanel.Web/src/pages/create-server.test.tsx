@@ -13,6 +13,11 @@ vi.mock("@/lib/api", () => ({
     java: vi.fn(),
     systemInfo: vi.fn(),
     createServer: vi.fn(),
+    createModpackServer: vi.fn(),
+    modrinthSearch: vi.fn(),
+    modrinthVersions: vi.fn(),
+    prepareModrinthPack: vi.fn(),
+    uploadModpack: vi.fn(),
   },
 }))
 
@@ -52,6 +57,15 @@ describe("CreateServerPage", () => {
     mockedApi.java.mockResolvedValue([{ id: "java-21", path: "/usr/bin/java", version: "21.0.7", major: 21, vendor: "OpenJDK", architecture: "x64", isCustom: false }])
     mockedApi.systemInfo.mockResolvedValue({ version: "1.0.0", dataDirectory: "/var/lib/mcpanel", instancesDirectory: "/var/lib/mcpanel/instances", memoryAllocationLimitBytes: 8 * 1024 ** 3 })
     mockedApi.createServer.mockResolvedValue({ id: "job-12345678", type: "Install", state: "Queued", progress: 0, serverId: "server-1" })
+    mockedApi.createModpackServer.mockResolvedValue({ id: "job-pack", type: "InstallModpack", state: "Queued", progress: 0, serverId: "pack-server" })
+    mockedApi.modrinthSearch.mockResolvedValue({ projects: [], offset: 0, limit: 5, total: 0 })
+    mockedApi.modrinthVersions.mockResolvedValue([])
+    mockedApi.uploadModpack.mockResolvedValue({
+      token: "pack-token", expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      name: "Uploaded Pack", version: "1.0", kind: "Fabric", minecraftVersion: "1.21.8",
+      loaderVersion: "0.16.14", source: "Upload",
+      optionalFiles: [{ path: "mods/optional.jar", size: 123 }],
+    })
   })
 
   it("uses a simple host-bounded RAM slider", async () => {
@@ -124,6 +138,110 @@ describe("CreateServerPage", () => {
     await user.click(screen.getByRole("button", { name: /continue/i }))
     expect(await screen.findByRole("combobox", { name: "NeoForge version" })).toHaveTextContent("21.8.52")
     expect(screen.queryByRole("combobox", { name: /Fabric installer/i })).not.toBeInTheDocument()
+  })
+
+  it("creates a server from an uploaded mrpack with optional files selected", async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(screen.getByRole("button", { name: "Modrinth modpack" }))
+    await user.click(screen.getByRole("button", { name: /continue/i }))
+    const upload = await screen.findByLabelText("Upload .mrpack")
+    await user.upload(upload, new File(["pack"], "example.mrpack", { type: "application/x-modrinth-modpack+zip" }))
+    expect(await screen.findByText("Uploaded Pack 1.0")).toBeVisible()
+    expect(screen.getByRole("checkbox", { name: "Install mods/optional.jar" })).toBeChecked()
+
+    await user.click(screen.getByRole("button", { name: /continue/i }))
+    expect(await screen.findByRole("combobox", { name: "Java runtime" })).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: /continue/i }))
+    await user.click(screen.getByRole("checkbox", { name: /I accept the Minecraft EULA/i }))
+    await user.click(screen.getByRole("button", { name: "Create server" }))
+
+    await waitFor(() => expect(mockedApi.createModpackServer).toHaveBeenCalledWith(expect.objectContaining({
+      importToken: "pack-token",
+      selectedOptionalFiles: ["mods/optional.jar"],
+    })))
+    await waitFor(() => expect(screen.getByTestId("current-location")).toHaveTextContent("/servers/pack-server/creating/job-pack"))
+  })
+
+  it("shows five fixed-size Modrinth packs and opens version selection in a dialog", async () => {
+    mockedApi.modrinthSearch.mockResolvedValue({
+      projects: [{
+        id: "pack-1", slug: "pack", title: "Icon Pack", description: "Pack description",
+        projectType: "modpack", author: "Author", iconUrl: "https://cdn.modrinth.com/data/pack-1/icon.png",
+        downloads: 100, versions: ["1.21.8"], categories: ["fabric"], followers: 2,
+      }],
+      offset: 0, limit: 5, total: 1,
+    })
+    mockedApi.modrinthVersions.mockResolvedValue([{
+      id: "pack-version-1", projectId: "pack-1", name: "Pack release", versionNumber: "1.0",
+      versionType: "release", publishedAt: new Date().toISOString(), gameVersions: ["1.21.8"],
+      loaders: ["fabric"], fileName: "icon-pack.mrpack", fileSize: 1024, dependencies: [],
+    }])
+    mockedApi.prepareModrinthPack.mockResolvedValue({
+      token: "remote-pack-token", expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      name: "Icon Pack", version: "1.0", kind: "Fabric", minecraftVersion: "1.21.8",
+      loaderVersion: "0.16.14", source: "Modrinth", projectId: "pack-1",
+      modrinthVersionId: "pack-version-1", optionalFiles: [],
+    })
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(screen.getByRole("button", { name: "Modrinth modpack" }))
+    await user.click(screen.getByRole("button", { name: /continue/i }))
+
+    expect(await screen.findByText("Icon Pack")).toBeVisible()
+    expect(mockedApi.modrinthSearch).toHaveBeenCalledWith("modpack", "", 0, { limit: 5 })
+    expect(document.querySelector('[data-slot="avatar"]')).toHaveClass("size-24", "rounded-xl")
+    expect(document.querySelector('[data-modrinth-card="list"]')).toHaveClass("h-48", "sm:h-32")
+
+    await user.click(screen.getByRole("button", { name: "Choose Icon Pack" }))
+    const dialog = await screen.findByRole("dialog", { name: "Icon Pack" })
+    expect(dialog).toHaveTextContent("Pack description")
+    expect(screen.getByRole("combobox", { name: "Modpack version" })).toHaveTextContent("1.0")
+    await user.click(screen.getByRole("button", { name: "Use this modpack" }))
+    await waitFor(() => expect(mockedApi.prepareModrinthPack).toHaveBeenCalledWith("pack-version-1"))
+  })
+
+  it("keeps the current modpack page mounted while the next page loads", async () => {
+    mockedApi.modrinthSearch.mockImplementation((_type, _query, offset) => {
+      if (offset === 0) {
+        return Promise.resolve({
+          projects: [{
+            id: "pack-1", slug: "pack", title: "First Pack", description: "Pack description",
+            projectType: "modpack", author: "Author", downloads: 100, versions: ["1.21.8"],
+            categories: ["fabric"], followers: 2,
+          }],
+          offset: 0, limit: 5, total: 10,
+        })
+      }
+      return new Promise(() => undefined)
+    })
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(screen.getByRole("button", { name: "Modrinth modpack" }))
+    await user.click(screen.getByRole("button", { name: /continue/i }))
+    expect(await screen.findByText("First Pack")).toBeVisible()
+    const next = screen.getByRole("button", { name: "Next" })
+
+    await user.click(next)
+
+    expect(screen.getByRole("button", { name: "Next" })).toBe(next)
+    expect(next).toBeDisabled()
+    expect(next).toHaveFocus()
+    expect(screen.getByText("First Pack")).toBeVisible()
+  })
+
+  it("reserves five standardized modpack cards while the catalog loads", async () => {
+    mockedApi.modrinthSearch.mockReturnValue(new Promise(() => undefined))
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(screen.getByRole("button", { name: "Modrinth modpack" }))
+    await user.click(screen.getByRole("button", { name: /continue/i }))
+
+    await waitFor(() => expect(document.querySelectorAll('[data-modrinth-card-skeleton="list"]')).toHaveLength(5))
   })
 })
 

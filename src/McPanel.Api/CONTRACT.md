@@ -30,6 +30,7 @@ them `SessionRevoked`; the bundled client immediately returns to authentication.
 | PUT | `/auth/password` | `{currentPassword, newPassword}` -> `204` |
 | GET | `/servers` | `ServerSummary[]` |
 | POST | `/servers` | `CreateServerRequest` -> `202 Job` (including `serverId`) |
+| POST | `/servers/modpack` | inspected `CreateModpackServerRequest` -> `202 Job` |
 | GET/DELETE | `/servers/{id}` | summary / `204`; delete requires no process and removes managed files plus backups |
 | POST | `/servers/{id}/actions/{start|stop|restart|update}` | `202 Job` |
 | POST | `/servers/{id}/actions/kill` | `{confirm:true}` -> `202 Job` emergency process-tree kill |
@@ -46,6 +47,10 @@ them `SessionRevoked`; the bundled client immediately returns to authentication.
 | GET | `/servers/{id}/players` | observed players merged with authoritative whitelist, operator, and ban JSON files |
 | POST | `/servers/{id}/players/{name}/{whitelist|unwhitelist|op|deop|ban|pardon|kick}` | resulting `PlayerDto` |
 | GET | `/servers/{id}/mods` | Fabric/Forge/NeoForge top-level JAR metadata as `ModFileDto[]` |
+| POST | `/servers/{id}/mods/modrinth` | `{projectId,versionId,selectedDependencyProjectIds?}` -> verified install `202 Job` |
+| GET | `/servers/{id}/plugins` | Paper top-level plugin JAR metadata as `ModFileDto[]` |
+| POST | `/servers/{id}/plugins/modrinth` | `{projectId,versionId,selectedDependencyProjectIds?}` -> verified install `202 Job` |
+| GET | `/servers/{id}/modpack/changes` | retained pack baseline summary and changed files |
 | GET | `/servers/{id}/files?path=` | directory entries |
 | POST | `/servers/{id}/files` | `{path,directory}` -> `204` |
 | GET/PUT | `/servers/{id}/files/content?path=` | text content / `{content}` |
@@ -64,6 +69,10 @@ them `SessionRevoked`; the bundled client immediately returns to authentication.
 | POST | `/java/rescan` | refreshed runtimes |
 | POST | `/java/custom` | `{path}` -> validated runtime |
 | GET | `/catalog?experimental=false` | Vanilla/Paper/Fabric/Forge/NeoForge version arrays plus detailed build choices |
+| GET | `/modrinth/search?projectType=&query=&offset=&limit=&serverId=&gameVersion=&loader=` | paginated mod, plugin, or modpack projects |
+| GET | `/modrinth/projects/{projectId}/versions?serverId=&projectType=&gameVersion=&loader=` | filtered release, beta, and alpha versions with resolved dependency titles, links, and installed-version matches |
+| POST | `/modrinth/modpacks/imports/modrinth` | `{versionId}` -> inspected single-use pack token |
+| POST | `/modrinth/modpacks/imports/upload` | multipart `.mrpack` -> inspected single-use pack token |
 | GET | `/system/status` | host CPU, memory, disk, and recent samples |
 | GET | `/system/info` | panel paths/version/allocation ceiling |
 | GET/PUT | `/system/settings` | `{keepServersRunningOnPanelStop}` |
@@ -77,6 +86,14 @@ Xmx, then derives a larger internal cgroup ceiling for native-memory headroom.
 Legacy entries below the minimum must be raised in Runtime before they can
 start. Only new, verified upstream installs are accepted; arbitrary source
 directories and URLs are never adopted.
+
+`POST /servers/modpack` accepts `name`, `importToken`, `javaRuntimeId`,
+`memoryMb`, `port`, `eulaAccepted`, optional `startOnBoot`, and optional
+`selectedOptionalFiles`. Import tokens expire after one hour and are claimed
+once. The inspected `.mrpack` determines Minecraft and the loader; Fabric,
+Forge, NeoForge, and loader-free Vanilla packs are supported. Client-unsupported
+files and `client-overrides` are skipped, selected optional files are installed,
+and common overrides are applied before `server-overrides`.
 
 The properties API updates existing entries and can append missing keys from the
 checked-in historical catalog. It requires the revision returned by GET and an
@@ -111,6 +128,29 @@ legacy `mcmod.info`, and NeoForge `META-INF/neoforge.mods.toml` with a
 transitional `mods.toml` fallback. A malformed or unknown JAR is represented by
 its own `Invalid`, `Partial`, or `Unrecognized` result rather than failing the
 inventory.
+
+Paper exposes the same live inventory for regular, non-symlinked
+`plugins/*.jar` files and recognizes `paper-plugin.yml` and `plugin.yml`.
+Modrinth browsing defaults to the server's Minecraft version and loader but
+accepts explicit catalog filters. Installation always revalidates against the
+actual server; Paper accepts Paper-compatible Bukkit, Spigot, and Purpur plugin
+versions. A selected primary JAR is checksum-verified and activated atomically
+under `mods/` or `plugins/`. Required Modrinth project dependencies are
+selectable, preselected by default, resolved to exact or latest compatible
+versions, checksum-verified in the same staging operation, and activated with
+the selected mod or plugin. Existing top-level JARs are matched to Modrinth
+projects by SHA-512. Installed dependencies are reported with their versions,
+left unselected, and retained instead of installing another version; attempts
+to install a different version of the primary project fail with a clear
+conflict. Filename-only external dependencies remain informational. A live
+install is allowed and sets `restartRequired`.
+
+Servers created from a modpack retain the original `.mrpack` and a normalized
+SHA-512 baseline outside the instance directory. The changes endpoint hashes
+tracked paths on demand and reports `Modified` or `Removed`, plus regular
+non-symlinked top-level `mods/*.jar` files as `Added`. Unselected optional files
+and newly generated configs, worlds, logs, libraries, and runtime files are not
+reported.
 
 Server summaries include nullable `iconRevision`; clients use it for presence
 detection and cache-busted icon URLs. Icon uploads are PNG multipart payloads
