@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using McPanel.Api.Configuration;
 using McPanel.Api.Contracts;
 using McPanel.Api.Data;
@@ -127,6 +128,41 @@ public sealed class ModpackServiceTests : IDisposable
         Assert.Contains("unsupported loader", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("dependencies")]
+    [InlineData("files")]
+    [InlineData("file")]
+    [InlineData("hashes")]
+    [InlineData("downloads")]
+    public async Task Rejects_explicit_null_manifest_members(string member)
+    {
+        var (service, _) = await CreateServiceAsync();
+        var manifest = ValidManifest();
+        switch (member)
+        {
+            case "dependencies":
+                manifest["dependencies"] = null;
+                break;
+            case "files":
+                manifest["files"] = null;
+                break;
+            case "file":
+                manifest["files"]!.AsArray()[0] = null;
+                break;
+            default:
+                manifest["files"]!.AsArray()[0]![member] = null;
+                break;
+        }
+        var pack = CreatePack(manifest.ToJsonString());
+        await using var stream = new MemoryStream(pack);
+        var upload = new FormFile(stream, 0, pack.Length, "file", "null-member.mrpack");
+
+        var exception = await Assert.ThrowsAsync<PanelException>(
+            () => service.PrepareUploadAsync(upload, CancellationToken.None));
+
+        Assert.Equal("VALIDATION_FAILED", exception.Code);
+    }
+
     private async Task<(ModpackService Service, IDbContextFactory<StateDbContext> Factory)> CreateServiceAsync()
     {
         var options = new PanelOptions
@@ -155,36 +191,48 @@ public sealed class ModpackServiceTests : IDisposable
     private static byte[] CreatePack(
         byte[] mod, string targetPath = "mods/example.jar", string loader = "fabric-loader")
     {
+        var manifest = ValidManifest(mod, targetPath, loader);
+        return CreatePack(manifest.ToJsonString());
+    }
+
+    private static JsonObject ValidManifest(
+        byte[]? mod = null, string targetPath = "mods/example.jar", string loader = "fabric-loader")
+    {
+        mod ??= "mod"u8.ToArray();
+        return JsonSerializer.SerializeToNode(new
+        {
+            formatVersion = 1,
+            game = "minecraft",
+            versionId = "1.0.0",
+            name = "Example Pack",
+            files = new[]
+            {
+                new
+                {
+                    path = targetPath,
+                    hashes = new
+                    {
+                        sha1 = Convert.ToHexString(SHA1.HashData(mod)).ToLowerInvariant(),
+                        sha512 = Convert.ToHexString(SHA512.HashData(mod)).ToLowerInvariant()
+                    },
+                    downloads = new[] { "https://cdn.modrinth.com/data/test/example.jar" },
+                    fileSize = mod.Length
+                }
+            },
+            dependencies = new Dictionary<string, string>
+            {
+                ["minecraft"] = "1.20.4",
+                [loader] = "0.15.11"
+            }
+        })!.AsObject();
+    }
+
+    private static byte[] CreatePack(string manifest)
+    {
         using var output = new MemoryStream();
         using (var archive = new ZipArchive(output, ZipArchiveMode.Create, true))
         {
-            var manifest = new
-            {
-                formatVersion = 1,
-                game = "minecraft",
-                versionId = "1.0.0",
-                name = "Example Pack",
-                files = new[]
-                {
-                    new
-                    {
-                        path = targetPath,
-                        hashes = new
-                        {
-                            sha1 = Convert.ToHexString(SHA1.HashData(mod)).ToLowerInvariant(),
-                            sha512 = Convert.ToHexString(SHA512.HashData(mod)).ToLowerInvariant()
-                        },
-                        downloads = new[] { "https://cdn.modrinth.com/data/test/example.jar" },
-                        fileSize = mod.Length
-                    }
-                },
-                dependencies = new Dictionary<string, string>
-                {
-                    ["minecraft"] = "1.20.4",
-                    [loader] = "0.15.11"
-                }
-            };
-            Write(archive, "modrinth.index.json", JsonSerializer.Serialize(manifest));
+            Write(archive, "modrinth.index.json", manifest);
             Write(archive, "overrides/config/example.cfg", "enabled=true");
         }
         return output.ToArray();

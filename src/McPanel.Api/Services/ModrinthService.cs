@@ -198,10 +198,36 @@ public sealed class ModrinthService(
         if (unknown.Length > 0)
             throw PanelProblems.Validation("A selected project is not a required dependency of this Modrinth version.");
 
+        var pending = new Queue<ModrinthDependencyDto>(
+            selected.Select(projectId => required[projectId]));
         var resolved = new List<(ModrinthVersion Version, ModrinthFile File)>();
-        foreach (var projectId in selected)
+        var visitedProjects = new HashSet<string>(StringComparer.Ordinal)
         {
-            var dependency = required[projectId];
+            parent.ProjectId
+        };
+        var visitedVersions = new HashSet<string>(StringComparer.Ordinal)
+        {
+            parent.Id
+        };
+        var versionByProject = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [parent.ProjectId] = parent.Id
+        };
+        while (pending.TryDequeue(out var dependency))
+        {
+            var projectId = dependency.ProjectId!;
+            if (visitedProjects.Contains(projectId))
+            {
+                if (!string.IsNullOrWhiteSpace(dependency.VersionId) &&
+                    versionByProject.TryGetValue(projectId, out var existingVersionId) &&
+                    !dependency.VersionId.Equals(existingVersionId, StringComparison.Ordinal))
+                    throw PanelProblems.Validation(
+                        "Required Modrinth dependencies request conflicting versions of the same project.");
+                continue;
+            }
+            if (resolved.Count >= 100)
+                throw PanelProblems.Validation("The Modrinth dependency graph is too large.");
+
             var versionId = dependency.VersionId;
             if (string.IsNullOrWhiteSpace(versionId))
             {
@@ -214,7 +240,19 @@ public sealed class ModrinthService(
             var item = plugin
                 ? await ResolvePluginAsync(serverId, projectId, versionId, cancellationToken)
                 : await ResolveModAsync(serverId, projectId, versionId, cancellationToken);
+            visitedProjects.Add(item.Version.ProjectId);
+            if (!visitedVersions.Add(item.Version.Id))
+                throw PanelProblems.Validation(
+                    "The Modrinth dependency graph contains duplicate version identifiers.");
+            versionByProject[item.Version.ProjectId] = item.Version.Id;
             resolved.Add((item.Version, item.File));
+
+            var enrichedDependency = (await EnrichRequiredDependenciesAsync(
+                [item.Version], cancellationToken)).Single();
+            foreach (var child in enrichedDependency.Dependencies.Where(
+                         child => child.Type.Equals("required", StringComparison.OrdinalIgnoreCase) &&
+                                  !string.IsNullOrWhiteSpace(child.ProjectId)))
+                pending.Enqueue(child);
         }
         return resolved;
     }

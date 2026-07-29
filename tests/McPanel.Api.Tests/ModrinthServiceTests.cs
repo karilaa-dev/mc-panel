@@ -273,6 +273,81 @@ public sealed class ModrinthServiceTests : IDisposable
         Assert.Equal("VALIDATION_FAILED", exception.Code);
     }
 
+    [Fact]
+    public async Task Selected_dependencies_include_required_transitive_dependencies()
+    {
+        var directVersion = VersionJson(
+            "direct-version", "direct-project", "direct.jar",
+            """[{"project_id":"transitive-project","version_id":"transitive-version","dependency_type":"required"}]""");
+        var transitiveVersion = VersionJson(
+            "transitive-version", "transitive-project", "transitive.jar");
+        var (service, serverId, _) = CreateService(ServerKind.Fabric, request =>
+            request.RequestUri!.AbsolutePath switch
+            {
+                "/v2/projects" => """
+                    [
+                      {"id":"direct-project","title":"Direct Dependency"},
+                      {"id":"transitive-project","title":"Transitive Dependency"}
+                    ]
+                    """,
+                "/v2/version/direct-version" => directVersion,
+                "/v2/version/transitive-version" => transitiveVersion,
+                _ => throw new InvalidOperationException(
+                    $"Unexpected Modrinth request: {request.RequestUri}")
+            });
+        var parent = new ModrinthVersion(
+            "parent-version", "parent-project", "Parent", "1.0.0", "release",
+            DateTimeOffset.Parse("2026-07-01T12:00:00Z"),
+            ["1.21.1"], ["fabric"], [],
+            [new("required", "direct-project", "direct-version", null, null, null, [])]);
+
+        var dependencies = await service.ResolveDependenciesAsync(
+            serverId, parent, ["direct-project"], false, CancellationToken.None);
+
+        Assert.Collection(dependencies,
+            dependency => Assert.Equal("direct-version", dependency.Version.Id),
+            dependency => Assert.Equal("transitive-version", dependency.Version.Id));
+    }
+
+    [Fact]
+    public async Task Selected_dependencies_stop_at_cycles_without_duplicates()
+    {
+        var firstVersion = VersionJson(
+            "first-version", "first-project", "first.jar",
+            """[{"project_id":"second-project","version_id":"second-version","dependency_type":"required"}]""");
+        var secondVersion = VersionJson(
+            "second-version", "second-project", "second.jar",
+            """[{"project_id":"first-project","version_id":"first-version","dependency_type":"required"}]""");
+        var (service, serverId, handler) = CreateService(ServerKind.Fabric, request =>
+            request.RequestUri!.AbsolutePath switch
+            {
+                "/v2/projects" => """
+                    [
+                      {"id":"first-project","title":"First Dependency"},
+                      {"id":"second-project","title":"Second Dependency"}
+                    ]
+                    """,
+                "/v2/version/first-version" => firstVersion,
+                "/v2/version/second-version" => secondVersion,
+                _ => throw new InvalidOperationException(
+                    $"Unexpected Modrinth request: {request.RequestUri}")
+            });
+        var parent = new ModrinthVersion(
+            "parent-version", "parent-project", "Parent", "1.0.0", "release",
+            DateTimeOffset.Parse("2026-07-01T12:00:00Z"),
+            ["1.21.1"], ["fabric"], [],
+            [new("required", "first-project", "first-version", null, null, null, [])]);
+
+        var dependencies = await service.ResolveDependenciesAsync(
+            serverId, parent, ["first-project"], false, CancellationToken.None);
+
+        Assert.Equal(
+            ["first-version", "second-version"],
+            dependencies.Select(dependency => dependency.Version.Id));
+        Assert.Equal(1, handler.Requests.Count(
+            request => request.AbsolutePath == "/v2/version/first-version"));
+    }
+
     private static string VersionJson(
         string versionId,
         string projectId,

@@ -348,6 +348,8 @@ public sealed class ModpackService(
                 throw PanelProblems.Validation("Only Minecraft .mrpack format version 1 is supported.");
             if (string.IsNullOrWhiteSpace(manifest.Name) || string.IsNullOrWhiteSpace(manifest.VersionId))
                 throw PanelProblems.Validation("The modpack name and version are required.");
+            if (manifest.Dependencies is null || manifest.Files is null)
+                throw PanelProblems.Validation("The modpack index is missing required metadata.");
             if (!manifest.Dependencies.TryGetValue("minecraft", out var minecraft) || string.IsNullOrWhiteSpace(minecraft))
                 throw PanelProblems.Validation("The modpack does not declare a Minecraft version.");
             if (manifest.Name.Length > 256 || manifest.VersionId.Length > 128 || minecraft.Length > 64)
@@ -372,6 +374,8 @@ public sealed class ModpackService(
             var targetPaths = new HashSet<string>(StringComparer.Ordinal);
             foreach (var file in manifest.Files)
             {
+                if (file is null || file.Hashes is null || file.Downloads is null)
+                    throw PanelProblems.Validation("The modpack file metadata is incomplete.");
                 var normalized = NormalizeTarget(file.Path);
                 if (!targetPaths.Add(normalized)) throw PanelProblems.Validation("The modpack index contains duplicate file paths.");
                 if (file.FileSize < 0 || string.IsNullOrWhiteSpace(file.Hashes.Sha1) ||
