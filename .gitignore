@@ -1,13 +1,56 @@
+# .NET build and test output
 **/bin/
 **/obj/
+**/TestResults/
+*.nupkg
+*.snupkg
+*.sln.docstates
+*.suo
+*.user
+*.userosscache
+
+# Frontend dependencies, build output, and tooling caches
 **/node_modules/
 **/dist/
+**/.vite/
+**/coverage/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Reproducible publish output
+/artifacts/
+
+# Local MC Panel state and generated static assets
+/.mcpanel-local/
+/data/
+/src/McPanel.Api/data/
+/src/McPanel.Api/wwwroot/
+
+# Logs and temporary files
+/logs/
+*.log
+*.bak
+*.orig
+*.rej
+*.sw?
+*.temp
+*.tmp
+*~
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# IDE and operating-system metadata
 .idea/
-.vscode/
-*.user
-*.suo
-data/
-src/McPanel.Api/data/
-src/McPanel.Api/wwwroot/
-!src/McPanel.Api/wwwroot/.gitkeep
-.mcpanel-local/
+.vs/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
