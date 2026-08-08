@@ -93,6 +93,7 @@ public sealed class SchedulerService(
     IDbContextFactory<StateDbContext> stateFactory,
     ProcessSupervisor supervisor,
     BackupService backups,
+    PlayerInventoryService playerInventories,
     ServerInstallerService installer,
     OperationQueue operations,
     ILogger<SchedulerService> logger) : BackgroundService
@@ -209,6 +210,9 @@ public sealed class SchedulerService(
             case "restart": await supervisor.RestartAsync(serverId, cancellationToken); break;
             case "command": await supervisor.CommandAsync(serverId, action.Command ?? throw PanelProblems.Validation("Command action needs a command."), cancellationToken); break;
             case "backup": await backups.RunScheduledAsync(serverId, cancellationToken); break;
+            case "inventorybackup":
+                await playerInventories.CreateScheduledBackupsAsync(serverId, cancellationToken);
+                break;
             case "update":
                 var job = await installer.QueueUpdateAsync(serverId, cancellationToken);
                 await WaitJobAsync(job.Id, cancellationToken); break;
@@ -265,7 +269,7 @@ public sealed class SchedulerService(
         if (actions.Count is < 1 or > 20) throw PanelProblems.Validation("A schedule needs between one and twenty actions.");
         foreach (var action in actions)
         {
-            if (!new[] { "start", "stop", "restart", "backup", "update", "command" }.Contains(action.Action, StringComparer.OrdinalIgnoreCase))
+            if (!new[] { "start", "stop", "restart", "backup", "inventorybackup", "update", "command" }.Contains(action.Action, StringComparer.OrdinalIgnoreCase))
                 throw PanelProblems.Validation($"Unknown schedule action '{action.Action}'.");
             if (action.Action.Equals("command", StringComparison.OrdinalIgnoreCase) && (string.IsNullOrWhiteSpace(action.Command) || action.Command.Length > 4096 || action.Command.Any(c => c is '\r' or '\n' or '\0')))
                 throw PanelProblems.Validation("Scheduled commands must be one line of at most 4096 characters.");

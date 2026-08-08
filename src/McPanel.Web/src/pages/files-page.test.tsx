@@ -15,12 +15,12 @@ vi.mock("@/lib/api", () => ({
 
 const mockedApi = vi.mocked(api)
 
-function server(state: ServerState): ServerSummaryDto {
+function server(state: ServerState, kind: ServerSummaryDto["kind"] = "Paper"): ServerSummaryDto {
   return {
     id: "server-1",
     name: "Test server",
-    kind: "Paper",
-    version: "1.21.8",
+    kind,
+    version: kind === "Gate" ? "0.71.1" : "1.21.8",
     state,
     port: 25565,
     memoryMb: 2048,
@@ -72,5 +72,14 @@ describe("FilesPage mutation availability", () => {
       expect(screen.getByRole("button", { name: "New folder" })).toBeEnabled()
       expect(screen.getByRole("button", { name: "New file" })).toBeEnabled()
     })
+  })
+
+  it("supports Gate instance files while keeping forwarding keys protected", async () => {
+    mockedApi.server.mockResolvedValue(server("Running", "Gate"))
+    renderPage()
+
+    expect(await screen.findByText("Manage this Gate instance’s files. Forwarding secrets remain protected.")).toBeVisible()
+    expect(screen.getByText("Gate configuration, versions, rollback data, and logs are available here. The keys directory is intentionally hidden.")).toBeVisible()
+    expect(screen.getByRole("button", { name: "New file" })).toBeEnabled()
   })
 })

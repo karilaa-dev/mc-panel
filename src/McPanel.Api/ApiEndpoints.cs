@@ -19,6 +19,11 @@ public static partial class ApiEndpoints
 
         api.MapGet("/servers", (ServerQueryService query, CancellationToken token) => query.ListAsync(token));
         api.MapGet("/servers/{id:guid}", (Guid id, ServerQueryService query, CancellationToken token) => query.GetAsync(id, token));
+        api.MapPut("/servers/{id:guid}/public-address", async (Guid id, UpdateServerPublicAddressRequest request, GateProxyService gate, ServerQueryService query, CancellationToken token) =>
+        {
+            await gate.SetAdvertisedAddressAsync(id, request, token);
+            return await query.GetAsync(id, token);
+        });
         api.MapPost("/servers", async (CreateServerRequest request, ServerInstallerService installer, CancellationToken token) =>
         {
             var (_, job) = await installer.CreateAsync(request, token);
@@ -27,6 +32,11 @@ public static partial class ApiEndpoints
         api.MapPost("/servers/modpack", async (CreateModpackServerRequest request, ServerInstallerService installer, CancellationToken token) =>
         {
             var (_, job) = await installer.CreateModpackAsync(request, token);
+            return Results.Accepted($"/api/v1/jobs/{job.Id}", job);
+        });
+        api.MapPost("/servers/gate", async (CreateGateServerRequest request, ServerInstallerService installer, CancellationToken token) =>
+        {
+            var (_, job) = await installer.CreateGateAsync(request, token);
             return Results.Accepted($"/api/v1/jobs/{job.Id}", job);
         });
         api.MapDelete("/servers/{id:guid}", DeleteServerAsync);
@@ -63,6 +73,11 @@ public static partial class ApiEndpoints
 
         api.MapGet("/servers/{id:guid}/players", (Guid id, PlayerService service, CancellationToken token) => service.ListAsync(id, token));
         api.MapPost("/servers/{id:guid}/players/{name}/{action}", (Guid id, string name, string action, PlayerService service, CancellationToken token) => service.ActionAsync(id, name, action, token));
+        api.MapGet("/servers/{id:guid}/players/{uuid}/inventory", (Guid id, string uuid, PlayerInventoryService service, CancellationToken token) => service.GetAsync(id, uuid, token));
+        api.MapPut("/servers/{id:guid}/players/{uuid}/inventory", (Guid id, string uuid, SavePlayerInventoryRequest request, PlayerInventoryService service, CancellationToken token) => service.SaveAsync(id, uuid, request, token));
+        api.MapGet("/servers/{id:guid}/players/{uuid}/inventory/backups", (Guid id, string uuid, PlayerInventoryService service, CancellationToken token) => service.ListBackupsAsync(id, uuid, token));
+        api.MapPost("/servers/{id:guid}/players/{uuid}/inventory/backups", (Guid id, string uuid, CreatePlayerInventoryBackupRequest request, PlayerInventoryService service, CancellationToken token) => service.CreateBackupAsync(id, uuid, request, token));
+        api.MapPost("/servers/{id:guid}/players/{uuid}/inventory/backups/{backupId:guid}/restore", (Guid id, string uuid, Guid backupId, RestorePlayerInventoryRequest request, PlayerInventoryService service, CancellationToken token) => service.RestoreAsync(id, uuid, backupId, request, token));
         api.MapGet("/servers/{id:guid}/mods", (Guid id, ModMetadataService service, CancellationToken token) => service.ListAsync(id, token));
         api.MapPost("/servers/{id:guid}/mods/modrinth", async (
             Guid id, InstallModrinthModRequest request, ModrinthModInstallerService service,
@@ -126,6 +141,38 @@ public static partial class ApiEndpoints
         api.MapPost("/modrinth/modpacks/imports/upload", PrepareModpackUploadAsync);
         api.MapGet("/catalog/paper/{version}/builds", (string version, bool? experimental, DistributionCatalogService catalog, CancellationToken token) => catalog.PaperBuildsAsync(version, experimental ?? false, token));
         api.MapGet("/system/status", (HostMetricsService metrics) => metrics.GetStatus());
+        api.MapGet("/servers/{id:guid}/gate", (Guid id, GateProxyService gate, CancellationToken token) => gate.GetAsync(id, token));
+        api.MapPut("/servers/{id:guid}/gate/config", (Guid id, UpdateGateConfigurationRequest request, GateProxyService gate, CancellationToken token) => gate.UpdateAsync(id, request, token));
+        api.MapPost("/servers/{id:guid}/gate/update", async (Guid id, GateActionRequest request, GateProxyService gate, CancellationToken token) =>
+        {
+            var job = await gate.QueueUpdateAsync(id, request.ConfirmDisconnectPlayers, token);
+            return Results.Accepted($"/api/v1/jobs/{job.Id}", job);
+        });
+        api.MapPost("/servers/{id:guid}/gate/secrets/{kind}/reveal", async (Guid id, string kind, HttpResponse response, GateProxyService gate, CancellationToken token) =>
+        {
+            response.Headers.CacheControl = "no-store";
+            return await gate.RevealSecretAsync(id, kind, token);
+        });
+        api.MapPost("/servers/{id:guid}/gate/secrets/{kind}/rotate", async (Guid id, string kind, HttpResponse response, GateProxyService gate, CancellationToken token) =>
+        {
+            response.Headers.CacheControl = "no-store";
+            return await gate.RotateSecretAsync(id, kind, token);
+        });
+        api.MapPost("/servers/{id:guid}/gate/secrets/{kind}/generate", async (Guid id, string kind, GenerateGateSecretRequest request, HttpResponse response, GateProxyService gate, CancellationToken token) =>
+        {
+            response.Headers.CacheControl = "no-store";
+            return await gate.GenerateSecretAsync(id, kind, request.ConfirmReplace, token);
+        });
+        api.MapGet("/system/gate", GateApiReplaced);
+        api.MapPut("/system/gate/config", GateApiReplaced);
+        api.MapPost("/system/gate/install", GateApiReplaced);
+        api.MapPost("/system/gate/update", GateApiReplaced);
+        api.MapPost("/system/gate/start", GateApiReplaced);
+        api.MapPost("/system/gate/stop", GateApiReplaced);
+        api.MapPost("/system/gate/restart", GateApiReplaced);
+        api.MapPost("/system/gate/secrets/{kind}/reveal", GateApiReplaced);
+        api.MapPost("/system/gate/secrets/{kind}/rotate", GateApiReplaced);
+        api.MapGet("/system/gate/logs", GateApiReplaced);
         api.MapGet("/system/info", (PanelPaths paths, IOptions<PanelOptions> options) =>
         {
             var total = HostMetricsService.ReadMemory().Total;
@@ -134,15 +181,24 @@ public static partial class ApiEndpoints
         api.MapGet("/system/settings", async (IDbContextFactory<StateDbContext> factory, CancellationToken token) =>
         {
             await using var db = await factory.CreateDbContextAsync(token);
-            return new PanelSettingsDto(await db.Admins.Select(x => x.KeepServersRunningOnPanelStop).SingleOrDefaultAsync(token));
+            var settings = await db.PanelSettings.AsNoTracking().SingleAsync(x => x.Id == 1, token);
+            return new PanelSettingsDto(settings.KeepServersRunningOnPanelStop, settings.GlobalServerHost, settings.Revision);
         });
-        api.MapPut("/system/settings", async (PanelSettingsDto request, IDbContextFactory<StateDbContext> factory, CancellationToken token) =>
+        api.MapPut("/system/settings", async (PanelSettingsDto request, IDbContextFactory<StateDbContext> factory, GateProxyService gate, CancellationToken token) =>
         {
             await using var db = await factory.CreateDbContextAsync(token);
-            var admin = await db.Admins.SingleOrDefaultAsync(token) ?? throw PanelProblems.NotFound("Administrator");
-            admin.KeepServersRunningOnPanelStop = request.KeepServersRunningOnPanelStop;
+            var settings = await db.PanelSettings.SingleAsync(x => x.Id == 1, token);
+            if (!string.Equals(settings.Revision, request.Revision, StringComparison.Ordinal))
+                throw new PanelException(409, "PANEL_SETTINGS_CHANGED", "Panel settings changed after they were loaded. Refresh and try again.");
+            settings.GlobalServerHost = GateConfigurationService.NormalizeHost(request.GlobalServerHost);
+            settings.KeepServersRunningOnPanelStop = request.KeepServersRunningOnPanelStop;
+            settings.Revision = Guid.NewGuid().ToString("N");
+            settings.UpdatedAt = DateTimeOffset.UtcNow;
+            var admin = await db.Admins.SingleOrDefaultAsync(token);
+            if (admin is not null) admin.KeepServersRunningOnPanelStop = settings.KeepServersRunningOnPanelStop;
+            await gate.MarkGlobalAddressChangedAsync(db, token);
             await db.SaveChangesAsync(token);
-            return request;
+            return new PanelSettingsDto(settings.KeepServersRunningOnPanelStop, settings.GlobalServerHost, settings.Revision);
         });
     }
 
@@ -181,25 +237,82 @@ public static partial class ApiEndpoints
         return Results.Accepted($"/api/v1/jobs/{job.Id}", job);
     }
 
-    private static async Task<IResult> DeleteServerAsync(Guid id, IDbContextFactory<StateDbContext> stateFactory, IDbContextFactory<ConsoleDbContext> consoleFactory, PanelPaths paths, AsyncKeyedLock keyedLock, ProcessSupervisor supervisor, ModpackService modpacks, CancellationToken token)
+    private static async Task<IResult> DeleteServerAsync(Guid id, IDbContextFactory<StateDbContext> stateFactory, IDbContextFactory<ConsoleDbContext> consoleFactory, PanelPaths paths, AsyncKeyedLock keyedLock, ProcessSupervisor supervisor, ModpackService modpacks, GateProxyService gate, ILoggerFactory loggerFactory, CancellationToken token)
     {
         using var serverLock = await keyedLock.AcquireAsync(id, token);
         await using var db = await stateFactory.CreateDbContextAsync(token);
         var server = await db.Servers.FindAsync([id], token) ?? throw PanelProblems.NotFound("Server");
         if (supervisor.IsRunning(id) || server.State is not (ServerState.Stopped or ServerState.Error or ServerState.Crashed))
             throw PanelProblems.Conflict("SERVER_NOT_STOPPED", "Stop the server before deleting it.");
-        var directory = paths.Instance(id);
-        if (Directory.Exists(directory)) Directory.Delete(directory, true);
-        await db.Schedules.Where(x => x.ServerId == id).ExecuteDeleteAsync(token);
-        await db.Players.Where(x => x.ServerId == id).ExecuteDeleteAsync(token);
-        await db.Backups.Where(x => x.ServerId == id).ExecuteDeleteAsync(token);
-        db.Servers.Remove(server); await db.SaveChangesAsync(token);
-        var backupDirectory = paths.ServerBackups(id);
-        if (Directory.Exists(backupDirectory)) Directory.Delete(backupDirectory, true);
-        modpacks.Delete(id);
-        await using var consoleDb = await consoleFactory.CreateDbContextAsync(token);
-        await consoleDb.Lines.Where(x => x.ServerId == id).ExecuteDeleteAsync(token);
+        await gate.EnsureCanDeleteAsync(id, token);
+
+        var stage = Path.Combine(paths.Staging, $"server-delete-{id:N}-{Guid.NewGuid():N}");
+        var instance = paths.Instance(id);
+        var backup = paths.ServerBackups(id);
+        var stagedInstance = Path.Combine(stage, "instance");
+        var stagedBackup = Path.Combine(stage, "backup");
+        ValidateDeletionPath(instance, paths.Instances);
+        ValidateDeletionPath(backup, paths.Backups);
+        Directory.CreateDirectory(stage);
+        var committed = false;
+        try
+        {
+            if (Directory.Exists(instance)) Directory.Move(instance, stagedInstance);
+            if (Directory.Exists(backup)) Directory.Move(backup, stagedBackup);
+            await using var transaction = await db.Database.BeginTransactionAsync(token);
+            try
+            {
+                await db.Schedules.Where(x => x.ServerId == id).ExecuteDeleteAsync(token);
+                await db.Players.Where(x => x.ServerId == id).ExecuteDeleteAsync(token);
+                await db.Backups.Where(x => x.ServerId == id).ExecuteDeleteAsync(token);
+                await gate.RemoveMembershipsForDeleteAsync(db, id, token);
+                db.Servers.Remove(server);
+                await db.SaveChangesAsync(token);
+                await transaction.CommitAsync(token);
+                committed = true;
+            }
+            catch
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                if (Directory.Exists(stagedInstance) && !Directory.Exists(instance)) Directory.Move(stagedInstance, instance);
+                if (Directory.Exists(stagedBackup) && !Directory.Exists(backup)) Directory.Move(stagedBackup, backup);
+                throw;
+            }
+        }
+        catch
+        {
+            if (!committed)
+            {
+                try { if (Directory.Exists(stagedInstance) && !Directory.Exists(instance)) Directory.Move(stagedInstance, instance); } catch { }
+                try { if (Directory.Exists(stagedBackup) && !Directory.Exists(backup)) Directory.Move(stagedBackup, backup); } catch { }
+            }
+            if (Directory.Exists(stage) && !Directory.EnumerateFileSystemEntries(stage).Any()) Directory.Delete(stage);
+            throw;
+        }
+
+        var logger = loggerFactory.CreateLogger("ServerDeletion");
+        try { if (Directory.Exists(stage)) Directory.Delete(stage, true); }
+        catch (Exception exception) { logger.LogWarning(exception, "Could not purge staged files for deleted server {ServerId}", id); }
+        try { modpacks.Delete(id); }
+        catch (Exception exception) { logger.LogWarning(exception, "Could not remove modpack state for deleted server {ServerId}", id); }
+        try
+        {
+            await using var consoleDb = await consoleFactory.CreateDbContextAsync(CancellationToken.None);
+            await consoleDb.Lines.Where(x => x.ServerId == id).ExecuteDeleteAsync(CancellationToken.None);
+        }
+        catch (Exception exception) { logger.LogWarning(exception, "Could not remove console rows for deleted server {ServerId}", id); }
         return Results.NoContent();
+    }
+
+    private static IResult GateApiReplaced() =>
+        throw new PanelException(410, "GATE_API_REPLACED", "Gate is now managed as a server. Select a Gate server to manage this instance.");
+
+    private static void ValidateDeletionPath(string target, string expectedParent)
+    {
+        var parent = Path.GetFullPath(expectedParent).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var resolved = Path.GetFullPath(target);
+        if (!resolved.StartsWith(parent, StringComparison.Ordinal) || resolved == parent.TrimEnd(Path.DirectorySeparatorChar))
+            throw new PanelException(500, "DELETE_PATH_INVALID", "The server deletion target is outside its managed directory.");
     }
 
     private static async Task<ModpackInspectionDto> PrepareModpackUploadAsync(

@@ -49,6 +49,7 @@ public sealed partial class PlayerService(
             GetOrAdd(players, new Profile(player.Name, null)).Online = player.Online;
         }
 
+        PopulateInventoryAvailability(root, players);
         return players.OrderBy(player => player.Name, StringComparer.OrdinalIgnoreCase)
             .Select(player => player.ToDto()).ToList();
     }
@@ -383,6 +384,26 @@ public sealed partial class PlayerService(
     }
 
     private static string FormatUuid(string hex) => $"{hex[..8]}-{hex[8..12]}-{hex[12..16]}-{hex[16..20]}-{hex[20..]}";
+
+    private static void PopulateInventoryAvailability(string instanceRoot, IReadOnlyList<PlayerView> players)
+    {
+        try
+        {
+            var properties = Path.Combine(instanceRoot, "server.properties");
+            var world = File.Exists(properties) ? PropertiesDocument.Parse(File.ReadAllText(properties)).Get("level-name") ?? "world" : "world";
+            if (world is "." or ".." || world.Contains(Path.DirectorySeparatorChar) || world.Contains(Path.AltDirectorySeparatorChar) || world.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return;
+            foreach (var player in players)
+            {
+                var uuid = ValidUuidOrNull(player.Uuid);
+                if (uuid is null) continue;
+                var path = PlayerInventoryService.FindSavedPlayerDataPath(instanceRoot, world, uuid);
+                if (path is null || new FileInfo(path).Length > 8 * 1024 * 1024) continue;
+                player.InventoryAvailable = true;
+                player.InventorySavedAt = File.GetLastWriteTimeUtc(path);
+            }
+        }
+        catch { }
+    }
     private static PanelException InvalidList(string fileName) => new(
         409,
         "PLAYER_LIST_INVALID",
@@ -399,7 +420,9 @@ public sealed partial class PlayerService(
         public bool Whitelisted { get; set; }
         public bool Operator { get; set; }
         public bool Banned { get; set; }
-        public PlayerDto ToDto() => new(Name, Uuid, Online, Whitelisted, Operator, Banned);
+        public bool InventoryAvailable { get; set; }
+        public DateTimeOffset? InventorySavedAt { get; set; }
+        public PlayerDto ToDto() => new(Name, Uuid, Online, Whitelisted, Operator, Banned, InventoryAvailable, InventorySavedAt);
     }
 
     [GeneratedRegex("^[A-Za-z0-9_]{1,16}$")]

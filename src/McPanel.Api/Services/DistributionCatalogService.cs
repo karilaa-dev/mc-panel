@@ -12,7 +12,7 @@ using Microsoft.Extensions.Options;
 
 namespace McPanel.Api.Services;
 
-public enum DownloadPolicy { Distribution, Modrinth, Mrpack }
+public enum DownloadPolicy { Distribution, Modrinth, Mrpack, Gate }
 public sealed record DownloadArtifact(
     Uri Url, string HashAlgorithm, string Hash, long? Size, string FileName,
     DownloadPolicy Policy = DownloadPolicy.Distribution);
@@ -23,6 +23,7 @@ public sealed record InstallPlan(
 public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
 {
     private const long MaximumArtifactBytes = 1_073_741_824;
+    private const long MaximumMetadataBytes = 8 * 1024 * 1024;
     private static readonly HashSet<string> DistributionHosts = new(StringComparer.OrdinalIgnoreCase)
     {
         "piston-meta.mojang.com", "piston-data.mojang.com", "launcher.mojang.com",
@@ -38,22 +39,29 @@ public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
         "cdn.modrinth.com", "github.com", "raw.githubusercontent.com", "gitlab.com",
         "objects.githubusercontent.com", "release-assets.githubusercontent.com"
     };
+    private static readonly HashSet<string> GateHosts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "api.github.com", "github.com", "objects.githubusercontent.com",
+        "release-assets.githubusercontent.com"
+    };
 
     public async Task<JsonDocument> JsonAsync(
         Uri uri, CancellationToken cancellationToken,
-        DownloadPolicy policy = DownloadPolicy.Distribution)
+        DownloadPolicy policy = DownloadPolicy.Distribution,
+        long maximumBytes = MaximumMetadataBytes)
     {
-        using var response = await SendAsync(uri, HttpCompletionOption.ResponseContentRead, policy, cancellationToken);
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var response = await SendAsync(uri, HttpCompletionOption.ResponseHeadersRead, policy, cancellationToken);
+        await using var stream = new MemoryStream(await ReadBoundedAsync(response.Content, maximumBytes, cancellationToken), writable: false);
         return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
     }
 
     public async Task<string> StringAsync(
         Uri uri, CancellationToken cancellationToken,
-        DownloadPolicy policy = DownloadPolicy.Distribution)
+        DownloadPolicy policy = DownloadPolicy.Distribution,
+        long maximumBytes = MaximumMetadataBytes)
     {
-        using var response = await SendAsync(uri, HttpCompletionOption.ResponseContentRead, policy, cancellationToken);
-        return await response.Content.ReadAsStringAsync(cancellationToken);
+        using var response = await SendAsync(uri, HttpCompletionOption.ResponseHeadersRead, policy, cancellationToken);
+        return System.Text.Encoding.UTF8.GetString(await ReadBoundedAsync(response.Content, maximumBytes, cancellationToken));
     }
 
     public async Task<JsonDocument> JsonPostAsync<T>(
@@ -178,12 +186,32 @@ public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
         throw new PanelException(502, "INSTALL_DOWNLOAD_REJECTED", "The upstream download redirected too many times.");
     }
 
+    private static async Task<byte[]> ReadBoundedAsync(HttpContent content, long maximumBytes, CancellationToken cancellationToken)
+    {
+        if (maximumBytes < 1 || content.Headers.ContentLength is > 0 && content.Headers.ContentLength > maximumBytes)
+            throw new PanelException(502, "INSTALL_DOWNLOAD_REJECTED", "The upstream metadata response is unexpectedly large.");
+        await using var source = await content.ReadAsStreamAsync(cancellationToken);
+        await using var target = new MemoryStream();
+        var buffer = new byte[64 * 1024];
+        long total = 0;
+        int read;
+        while ((read = await source.ReadAsync(buffer, cancellationToken)) > 0)
+        {
+            total += read;
+            if (total > maximumBytes)
+                throw new PanelException(502, "INSTALL_DOWNLOAD_REJECTED", "The upstream metadata response is unexpectedly large.");
+            await target.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+        }
+        return target.ToArray();
+    }
+
     public static void Validate(Uri uri, DownloadPolicy policy = DownloadPolicy.Distribution)
     {
         var hosts = policy switch
         {
             DownloadPolicy.Modrinth => ModrinthHosts,
             DownloadPolicy.Mrpack => MrpackHosts,
+            DownloadPolicy.Gate => GateHosts,
             _ => DistributionHosts
         };
         if (uri.Scheme != Uri.UriSchemeHttps || !hosts.Contains(uri.IdnHost) || !string.IsNullOrEmpty(uri.UserInfo) || !uri.IsDefaultPort)

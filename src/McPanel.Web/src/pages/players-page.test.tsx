@@ -3,17 +3,23 @@ import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { api } from "@/lib/api"
+import { ApiError, api } from "@/lib/api"
 import type { ServerState, ServerSummaryDto } from "@/lib/contracts"
 import { PlayersPage } from "@/pages/operations-pages"
 
-vi.mock("@/lib/api", () => ({
-  api: {
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>()
+  return { ...actual, api: {
     server: vi.fn(),
     players: vi.fn(),
     playerAction: vi.fn(),
-  },
-}))
+    playerInventory: vi.fn(),
+    playerInventoryBackups: vi.fn(),
+    createPlayerInventoryBackup: vi.fn(),
+    savePlayerInventory: vi.fn(),
+    restorePlayerInventory: vi.fn(),
+  } }
+})
 
 const mockedApi = vi.mocked(api)
 
@@ -65,6 +71,8 @@ describe("PlayersPage", () => {
       operator: false,
       banned: false,
     })
+    mockedApi.playerInventoryBackups.mockResolvedValue([])
+    mockedApi.createPlayerInventoryBackup.mockResolvedValue({ id: "backup-1", createdAt: "2026-08-08T00:00:00Z", sourceRevision: "a".repeat(64), size: 128 })
   })
 
   it("keeps list actions available while stopped", async () => {
@@ -73,6 +81,14 @@ describe("PlayersPage", () => {
 
     const manage = await screen.findByRole("button", { name: "Manage" })
     await waitFor(() => expect(manage).toBeEnabled())
+  })
+
+  it("keeps inventory access active for a known UUID while availability refreshes", async () => {
+    mockedApi.server.mockResolvedValue(server("Running"))
+    mockedApi.players.mockResolvedValue([{ name: "Alex", uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5", online: true, whitelisted: false, operator: false, banned: false, inventoryAvailable: false }])
+    renderPage()
+
+    expect(await screen.findByRole("button", { name: "Inventory" })).toBeEnabled()
   })
 
   it("enables player actions for a running server", async () => {
@@ -137,5 +153,95 @@ describe("PlayersPage", () => {
     const input = screen.getByRole("textbox", { name: "Player nickname" })
     await user.type(input, "Alex")
     expect(screen.getByRole("button", { name: "Add operator" })).toBeDisabled()
+  })
+
+  it("opens a structured inventory sheet and stages item edits", async () => {
+    mockedApi.server.mockResolvedValue(server("Stopped"))
+    mockedApi.players.mockResolvedValue([{ name: "Alex", uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5", online: false, whitelisted: false, operator: false, banned: false, inventoryAvailable: true }])
+    mockedApi.playerInventory.mockResolvedValue({ playerName: "Alex", uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5", revision: "a".repeat(64), savedAt: "2026-08-07T00:00:00Z", online: false, snapshotMayBeStale: false, writeAllowed: true, dataVersion: 3953, slots: [{ section: "hotbar", index: 0, nbtSlot: 0, item: { id: "minecraft:diamond_sword", count: 1, displayName: "Diamond Sword", metadata: ["components: compound (1)"] } }] })
+    const user = userEvent.setup(); renderPage()
+    await user.click(await screen.findByRole("button", { name: "Inventory" }))
+    expect(await screen.findByRole("heading", { name: "Alex inventory" })).toBeVisible()
+    expect(screen.getByText("Ender Chest")).toBeVisible()
+    const swordSlot = screen.getByTitle(/Diamond Sword/)
+    expect(swordSlot.querySelector("img")).toHaveAttribute("src", "/minecraft-textures/04ad0514c91883a4.png")
+    await user.click(swordSlot)
+    const count = screen.getByRole("spinbutton", { name: "Count" })
+    await user.clear(count); await user.type(count, "2")
+    await user.click(screen.getByRole("button", { name: "Stage item" }))
+    expect(screen.getByText("1 staged slot change")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Save inventory" })).toBeEnabled()
+  })
+
+  it("preserves staged edits and disables saving when the player comes online", async () => {
+    mockedApi.server.mockResolvedValue(server("Running"))
+    mockedApi.players.mockResolvedValue([{ name: "Alex", uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5", online: false, whitelisted: false, operator: false, banned: false, inventoryAvailable: true }])
+    mockedApi.playerInventory.mockResolvedValue({ playerName: "Alex", uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5", revision: "a".repeat(64), savedAt: "2026-08-07T00:00:00Z", online: false, snapshotMayBeStale: false, writeAllowed: true, dataVersion: 3953, slots: [{ section: "hotbar", index: 0, nbtSlot: 0, item: { id: "minecraft:diamond_sword", count: 1, displayName: "Diamond Sword", metadata: [] } }] })
+    mockedApi.savePlayerInventory.mockRejectedValueOnce(new ApiError("The player must be offline.", 409, "PLAYER_ONLINE"))
+    const user = userEvent.setup(); renderPage()
+    await user.click(await screen.findByRole("button", { name: "Inventory" }))
+    await user.click(await screen.findByTitle(/Diamond Sword/))
+    const count = screen.getByRole("spinbutton", { name: "Count" })
+    await user.clear(count); await user.type(count, "2")
+    await user.click(screen.getByRole("button", { name: "Stage item" }))
+    await user.click(screen.getByRole("button", { name: "Save inventory" }))
+    await user.click(screen.getByRole("button", { name: "Confirm save" }))
+
+    expect(await screen.findByText("Player came online")).toBeVisible()
+    expect(screen.getByText("1 staged slot change")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Save inventory" })).toBeDisabled()
+  })
+
+  it("shows and backs up the last saved inventory while the player is online", async () => {
+    mockedApi.server.mockResolvedValue(server("Running"))
+    mockedApi.players.mockResolvedValue([{ name: "Alex", uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5", online: true, whitelisted: false, operator: false, banned: false, inventoryAvailable: true }])
+    mockedApi.playerInventory.mockResolvedValue({ playerName: "Alex", uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5", revision: "a".repeat(64), savedAt: "2026-08-07T00:00:00Z", online: true, snapshotMayBeStale: true, writeAllowed: false, dataVersion: 3953, slots: [{ section: "hotbar", index: 0, nbtSlot: 0, item: { id: "minecraft:diamond_sword", count: 1, displayName: "Diamond Sword", metadata: [] } }] })
+    const user = userEvent.setup(); renderPage()
+
+    await user.click(await screen.findByRole("button", { name: "Inventory" }))
+    expect(await screen.findByText("Online · last saved snapshot")).toBeVisible()
+    expect(screen.getByTitle(/Diamond Sword/)).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Save inventory" })).toBeDisabled()
+    await user.click(screen.getByRole("button", { name: "Back up now" }))
+
+    await waitFor(() => expect(mockedApi.createPlayerInventoryBackup).toHaveBeenCalledWith(
+      "server-1",
+      "069a79f4-44e9-4726-a5be-fca90e38aaf5",
+      "a".repeat(64),
+    ))
+  })
+
+  it("allows editing when the refreshed inventory says offline even if the player row is stale", async () => {
+    mockedApi.server.mockResolvedValue(server("Running"))
+    mockedApi.players.mockResolvedValue([{ name: "Alex", uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5", online: true, whitelisted: false, operator: false, banned: false, inventoryAvailable: true }])
+    mockedApi.playerInventory.mockResolvedValue({ playerName: "Alex", uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5", revision: "a".repeat(64), savedAt: "2026-08-07T00:00:00Z", online: false, snapshotMayBeStale: false, writeAllowed: true, dataVersion: 3953, slots: [{ section: "hotbar", index: 0, nbtSlot: 0, item: { id: "minecraft:diamond_sword", count: 1, displayName: "Diamond Sword", metadata: [] } }] })
+    const user = userEvent.setup(); renderPage()
+
+    await user.click(await screen.findByRole("button", { name: "Inventory" }))
+    const slot = await screen.findByTitle(/Diamond Sword/)
+    expect(slot).toBeEnabled()
+    await user.click(slot)
+    expect(screen.getByRole("dialog", { name: "Edit or move item" })).toBeVisible()
+  })
+
+  it("restores an inventory backup while the player is offline", async () => {
+    mockedApi.server.mockResolvedValue(server("Stopped"))
+    mockedApi.players.mockResolvedValue([{ name: "Alex", uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5", online: false, whitelisted: false, operator: false, banned: false, inventoryAvailable: true }])
+    const inventory = { playerName: "Alex", uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5", revision: "a".repeat(64), savedAt: "2026-08-07T00:00:00Z", online: false, snapshotMayBeStale: false, writeAllowed: true, dataVersion: 3953, slots: [] }
+    mockedApi.playerInventory.mockResolvedValue(inventory)
+    mockedApi.playerInventoryBackups.mockResolvedValue([{ id: "backup-1", createdAt: "2026-08-06T00:00:00Z", sourceRevision: "b".repeat(64), size: 128 }])
+    mockedApi.restorePlayerInventory.mockResolvedValue(inventory)
+    const user = userEvent.setup(); renderPage()
+
+    await user.click(await screen.findByRole("button", { name: "Inventory" }))
+    await user.click(await screen.findByRole("button", { name: "Restore" }))
+    await user.click(screen.getByRole("button", { name: "Restore snapshot" }))
+
+    await waitFor(() => expect(mockedApi.restorePlayerInventory).toHaveBeenCalledWith(
+      "server-1",
+      "069a79f4-44e9-4726-a5be-fca90e38aaf5",
+      "backup-1",
+      "a".repeat(64),
+    ))
   })
 })

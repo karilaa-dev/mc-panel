@@ -694,8 +694,8 @@ build_for_system_command() {
   require_passwordless_sudo
   rid="$(detect_rid)"
   build_root="$(mktemp -d /tmp/mcpanel-system-build.XXXXXX)"
-  cleanup_system_build() { local rc=$?; rm -rf -- "$build_root"; trap - EXIT; exit "$rc"; }
-  trap cleanup_system_build EXIT
+  cleanup_system_build() { local rc=$? cleanup_root="$1"; rm -rf -- "$cleanup_root"; trap - EXIT; exit "$rc"; }
+  trap "cleanup_system_build '$build_root'" EXIT
   artifact="$build_root/artifact"
   publish_artifact "$rid" "$artifact"
   if [[ "$action" == "install" ]]; then

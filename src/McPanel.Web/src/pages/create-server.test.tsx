@@ -14,6 +14,7 @@ vi.mock("@/lib/api", () => ({
     systemInfo: vi.fn(),
     createServer: vi.fn(),
     createModpackServer: vi.fn(),
+    createGateServer: vi.fn(),
     modrinthSearch: vi.fn(),
     modrinthVersions: vi.fn(),
     prepareModrinthPack: vi.fn(),
@@ -58,6 +59,7 @@ describe("CreateServerPage", () => {
     mockedApi.systemInfo.mockResolvedValue({ version: "1.0.0", dataDirectory: "/var/lib/mcpanel", instancesDirectory: "/var/lib/mcpanel/instances", memoryAllocationLimitBytes: 8 * 1024 ** 3 })
     mockedApi.createServer.mockResolvedValue({ id: "job-12345678", type: "Install", state: "Queued", progress: 0, serverId: "server-1" })
     mockedApi.createModpackServer.mockResolvedValue({ id: "job-pack", type: "InstallModpack", state: "Queued", progress: 0, serverId: "pack-server" })
+    mockedApi.createGateServer.mockResolvedValue({ id: "job-gate", type: "GateInstall", state: "Queued", progress: 0, serverId: "gate-server" })
     mockedApi.modrinthSearch.mockResolvedValue({ projects: [], offset: 0, limit: 5, total: 0 })
     mockedApi.modrinthVersions.mockResolvedValue([])
     mockedApi.uploadModpack.mockResolvedValue({
@@ -66,6 +68,23 @@ describe("CreateServerPage", () => {
       loaderVersion: "0.16.14", source: "Upload",
       optionalFiles: [{ path: "mods/optional.jar", size: 123 }],
     })
+  })
+
+  it("creates Gate through the normal server flow without Minecraft-only fields", async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByRole("button", { name: "Gate Proxy" }))
+    await user.click(screen.getByRole("button", { name: /continue/i }))
+    expect(await screen.findByText("Create Gate Proxy")).toBeInTheDocument()
+    expect(screen.queryByText("Minecraft version")).not.toBeInTheDocument()
+    expect(screen.queryByText("Minecraft EULA")).not.toBeInTheDocument()
+    await user.clear(screen.getByLabelText("Real local listener port"))
+    await user.type(screen.getByLabelText("Real local listener port"), "25570")
+    await user.click(screen.getByRole("button", { name: "Create Gate server" }))
+    await waitFor(() => expect(mockedApi.createGateServer).toHaveBeenCalledWith(expect.objectContaining({
+      name: "Gate Proxy", port: 25570, startOnBoot: false, clientRequestId: expect.any(String),
+    })))
+    await waitFor(() => expect(screen.getByTestId("current-location")).toHaveTextContent("/servers/gate-server/creating/job-gate"))
   })
 
   it("uses a simple host-bounded RAM slider", async () => {
@@ -127,7 +146,7 @@ describe("CreateServerPage", () => {
       kind: "Forge", version: "1.21.8", loaderVersion: "58.1.0",
     }))
     expect(mockedApi.createServer.mock.calls.at(-1)?.[0]).not.toHaveProperty("installerVersion")
-    expect(screen.getByTestId("current-location")).toHaveTextContent("/servers/server-1/creating/job-12345678")
+    await waitFor(() => expect(screen.getByTestId("current-location")).toHaveTextContent("/servers/server-1/creating/job-12345678"))
   })
 
   it("offers a single NeoForge loader selector", async () => {

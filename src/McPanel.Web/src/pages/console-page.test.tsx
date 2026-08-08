@@ -54,12 +54,12 @@ const terminalMock = vi.hoisted(() => {
 vi.mock("@/components/terminal-view", async () => {
   const { useEffect } = await import("react")
   return {
-    TerminalView: ({ onReady }: { onReady: (handle: typeof terminalMock) => void }) => {
+    TerminalView: ({ onReady, label }: { onReady: (handle: typeof terminalMock) => void; label?: string }) => {
       useEffect(() => {
         onReady(terminalMock)
         return () => { terminalMock.clear() }
       }, [onReady])
-      return <div data-testid="terminal" />
+      return <div data-testid="terminal" role="log" aria-label={label} />
     },
   }
 })
@@ -74,12 +74,12 @@ vi.mock("@/lib/api", () => ({
 
 const mockedApi = vi.mocked(api)
 
-function server(state: ServerState, id = "server-1"): ServerSummaryDto {
+function server(state: ServerState, id = "server-1", kind: ServerSummaryDto["kind"] = "Paper"): ServerSummaryDto {
   return {
     id,
     name: `Test ${id}`,
-    kind: "Paper",
-    version: "1.21.8",
+    kind,
+    version: kind === "Gate" ? "0.71.1" : "1.21.8",
     state,
     port: 25565,
     memoryMb: 2048,
@@ -168,6 +168,16 @@ describe("ConsolePage command availability", () => {
     await user.click(screen.getByRole("button", { name: "Send command" }))
 
     await waitFor(() => expect(mockedApi.command).toHaveBeenCalledWith("server-1", "list"))
+  })
+
+  it("shows Gate logs as a read-only console without a Minecraft command field", async () => {
+    mockedApi.server.mockResolvedValue(server("Running", "server-1", "Gate"))
+    renderPage()
+
+    expect(await screen.findByText("Gate output")).toBeVisible()
+    expect(screen.getByRole("log", { name: "Gate proxy console output" })).toBeVisible()
+    expect(screen.queryByRole("textbox", { name: "Console command" })).not.toBeInTheDocument()
+    expect(screen.getByText("Live, durable Gate logs with reconnect recovery.")).toBeVisible()
   })
 
   it("fetches and displays a line emitted during the initial handshake gap exactly once", async () => {

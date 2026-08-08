@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using McPanel.Api.Configuration;
@@ -11,10 +12,15 @@ using Microsoft.Data.Sqlite;
 namespace McPanel.Api.Services;
 
 public enum RuntimeProcessState { Starting, Running, Stopping, Stopped, Crashed }
+public enum RuntimeWorkloadKind { Minecraft, Gate }
 
 public sealed record RuntimeLaunchRequest(
     Guid ServerId, string JavaExecutable, string WorkingDirectory, IReadOnlyList<string> Arguments,
-    int MemoryLimitMb, int GracefulStopSeconds);
+    int MemoryLimitMb, int GracefulStopSeconds,
+    RuntimeWorkloadKind WorkloadKind = RuntimeWorkloadKind.Minecraft,
+    int? ApiPort = null,
+    string? VelocitySecretFile = null,
+    string? BungeeGuardSecretFile = null);
 
 public sealed record RuntimeServerSnapshot(
     Guid ServerId, RuntimeProcessState State, int? ProcessId, DateTimeOffset? StartedAt,
@@ -23,6 +29,10 @@ public sealed record RuntimeServerSnapshot(
     double AnonymousMemoryMb, double FileMemoryMb, double KernelMemoryMb, double SocketMemoryMb,
     bool MemoryEnforced, long UptimeSeconds);
 public sealed record RuntimeSubscription(long Revision, IReadOnlyList<RuntimeServerSnapshot> Servers);
+public sealed record RuntimeCapabilities(
+    int ProtocolVersion,
+    IReadOnlyList<RuntimeWorkloadKind> WorkloadKinds,
+    IReadOnlyList<string>? Features = null);
 
 internal sealed record RuntimeWireRequest(int Version, Guid RequestId, string Operation, JsonElement Payload);
 internal sealed record RuntimeWireResponse(int Version, Guid RequestId, bool Success, string? Error, JsonElement Payload);
@@ -132,6 +142,12 @@ public sealed class PersistentRuntimeClient(PanelPaths paths, IHostEnvironment e
 
     public Task CommandAsync(Guid id, string command, CancellationToken cancellationToken) =>
         SendAsync<object>("command", new RuntimeCommand(id, command), cancellationToken);
+
+    public Task<RuntimeCapabilities?> CapabilitiesAsync(CancellationToken cancellationToken) =>
+        SendAsync<RuntimeCapabilities>("capabilities", null, cancellationToken);
+
+    public async Task<bool> UpgradeWhenIdleAsync(CancellationToken cancellationToken) =>
+        await SendAsync<bool>("upgradeWhenIdle", null, cancellationToken);
 
     private async Task<T?> SendAsync<T>(string operation, object? payload, CancellationToken cancellationToken)
     {
@@ -279,6 +295,10 @@ internal sealed class RuntimeSocketService(
         "stop" => RuntimeWire.Element(await engine.StopAsync(RuntimeWire.Value<Guid>(request.Payload), false, cancellationToken)),
         "kill" => RuntimeWire.Element(await engine.StopAsync(RuntimeWire.Value<Guid>(request.Payload), true, cancellationToken)),
         "command" => await CommandAsync(request.Payload, cancellationToken),
+        "capabilities" => RuntimeWire.Element(new RuntimeCapabilities(
+            RuntimeWire.Version,
+            [RuntimeWorkloadKind.Minecraft, RuntimeWorkloadKind.Gate],
+            ["typed-workloads", "gate-api-readiness", "upgrade-when-idle"])),
         "upgradeWhenIdle" => UpgradeWhenIdle(),
         _ => throw new InvalidDataException("Unknown runtime operation.")
     };
@@ -303,6 +323,7 @@ internal sealed class RuntimeSocketService(
 internal sealed class RuntimeEngine(
     PanelPaths paths, CgroupMemoryService cgroups, ILogger<RuntimeEngine> logger)
 {
+    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _gateLogLocks = new();
     private readonly ConcurrentDictionary<Guid, RuntimeProcess> _active = new();
     private readonly ConcurrentDictionary<Guid, RuntimeServerSnapshot> _status = new();
     private long _revision;
@@ -373,12 +394,21 @@ internal sealed class RuntimeEngine(
         };
         foreach (var argument in launch.Arguments) start.ArgumentList.Add(argument);
         start.Environment.Remove("JAVA_TOOL_OPTIONS"); start.Environment.Remove("_JAVA_OPTIONS"); start.Environment.Remove("JDK_JAVA_OPTIONS");
-        foreach (var key in start.Environment.Keys.Where(x => x.StartsWith("MCPANEL_", StringComparison.OrdinalIgnoreCase) || x.StartsWith("ASPNETCORE_", StringComparison.OrdinalIgnoreCase)).ToArray())
+        foreach (var key in start.Environment.Keys.Where(x =>
+                     x.StartsWith("MCPANEL_", StringComparison.OrdinalIgnoreCase) ||
+                     x.StartsWith("ASPNETCORE_", StringComparison.OrdinalIgnoreCase) ||
+                     x.Equals("GATE_VELOCITY_SECRET", StringComparison.OrdinalIgnoreCase) ||
+                     x.Equals("GATE_BUNGEEGUARD_SECRET", StringComparison.OrdinalIgnoreCase)).ToArray())
             start.Environment.Remove(key);
+        if (launch.VelocitySecretFile is not null)
+            start.Environment["GATE_VELOCITY_SECRET"] = (await File.ReadAllTextAsync(launch.VelocitySecretFile, cancellationToken)).Trim();
+        if (launch.BungeeGuardSecretFile is not null)
+            start.Environment["GATE_BUNGEEGUARD_SECRET"] = (await File.ReadAllTextAsync(launch.BungeeGuardSecretFile, cancellationToken)).Trim();
         Process process;
-        try { process = Process.Start(cgroups.Wrap(start, workload)) ?? throw new InvalidOperationException("Java could not start."); }
+        try { process = Process.Start(cgroups.Wrap(start, workload)) ?? throw new InvalidOperationException($"{launch.WorkloadKind} could not start."); }
         catch { cgroups.Remove(workload); throw; }
-        var managed = new RuntimeProcess(process, DateTimeOffset.UtcNow, launch.GracefulStopSeconds, workload, cgroups.Read(workload)?.OomKillCount ?? 0);
+        var managed = new RuntimeProcess(process, DateTimeOffset.UtcNow, launch.GracefulStopSeconds, workload,
+            cgroups.Read(workload)?.OomKillCount ?? 0, launch.WorkloadKind, launch.ApiPort);
         if (!_active.TryAdd(launch.ServerId, managed))
         {
             process.Kill(true); process.Dispose(); cgroups.Remove(workload);
@@ -387,13 +417,31 @@ internal sealed class RuntimeEngine(
         var snapshot = Measure(managed) with { ServerId = launch.ServerId, State = RuntimeProcessState.Starting };
         _status[launch.ServerId] = snapshot; await PersistAsync(snapshot, cancellationToken);
         Changed();
-        await RuntimeConsoleWriter.AppendAsync(paths.ConsoleDatabase, launch.ServerId, "system", $"Started Java process {process.Id}.", cancellationToken);
+        await RuntimeConsoleWriter.AppendAsync(paths.ConsoleDatabase, launch.ServerId, "system",
+            $"Started {launch.WorkloadKind} process {process.Id}.", cancellationToken);
         _ = PumpAsync(launch.ServerId, managed, process.StandardOutput, "stdout");
         _ = PumpAsync(launch.ServerId, managed, process.StandardError, "stderr");
         _ = MonitorAsync(launch.ServerId, managed);
-        var first = await Task.WhenAny(managed.Ready.Task, managed.Exit.Task, Task.Delay(TimeSpan.FromSeconds(90), cancellationToken));
+        if (launch.WorkloadKind == RuntimeWorkloadKind.Gate)
+        {
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(20);
+            while (DateTimeOffset.UtcNow < deadline && !process.HasExited)
+            {
+                if (launch.ApiPort is { } apiPort && await ApiReadyAsync(apiPort, cancellationToken))
+                {
+                    managed.Ready.TrySetResult();
+                    break;
+                }
+                await Task.Delay(250, cancellationToken);
+            }
+        }
+        var timeout = launch.WorkloadKind == RuntimeWorkloadKind.Gate ? TimeSpan.FromSeconds(20) : TimeSpan.FromSeconds(90);
+        var first = await Task.WhenAny(managed.Ready.Task, managed.Exit.Task, Task.Delay(timeout, cancellationToken));
         cancellationToken.ThrowIfCancellationRequested();
-        if (first == managed.Exit.Task) throw new InvalidOperationException("Java exited before Minecraft became ready.");
+        if (first == managed.Exit.Task)
+            throw new InvalidOperationException($"{launch.WorkloadKind} exited before becoming ready.");
+        if (first != managed.Ready.Task && launch.WorkloadKind == RuntimeWorkloadKind.Gate)
+            throw new InvalidOperationException("Gate did not become ready within 20 seconds.");
         if (first != managed.Ready.Task)
             await RuntimeConsoleWriter.AppendAsync(paths.ConsoleDatabase, launch.ServerId, "system", "Minecraft readiness text was not detected after 90 seconds; treating the running process as ready.", cancellationToken);
         snapshot = Measure(managed) with { ServerId = launch.ServerId, State = RuntimeProcessState.Running };
@@ -417,8 +465,27 @@ internal sealed class RuntimeEngine(
         }
         else
         {
-            await WriteAsync(managed, "stop", cancellationToken);
-            await RuntimeConsoleWriter.AppendAsync(paths.ConsoleDatabase, id, "system", "Graceful stop requested.", cancellationToken);
+            if (managed.WorkloadKind == RuntimeWorkloadKind.Gate)
+            {
+                try { NativeSignal.Terminate(managed.Process.Id); }
+                catch
+                {
+                    try { managed.Process.Kill(true); } catch { }
+                }
+            }
+            else
+            {
+                try { await WriteAsync(managed, "stop", cancellationToken); }
+                catch (Exception exception) when (exception is IOException or InvalidOperationException)
+                {
+                    // The exit monitor can win the race and dispose a short-lived
+                    // process after StopAsync found it in the active map. Waiting on
+                    // the shared exit task below still produces the authoritative state.
+                    logger.LogDebug(exception, "Minecraft input closed while stopping server {ServerId}", id);
+                }
+            }
+            await RuntimeConsoleWriter.AppendAsync(paths.ConsoleDatabase, id, "system",
+                $"Graceful {managed.WorkloadKind} stop requested.", cancellationToken);
             var completed = await Task.WhenAny(managed.Exit.Task, Task.Delay(TimeSpan.FromSeconds(managed.GracefulStopSeconds), cancellationToken));
             if (completed != managed.Exit.Task)
             {
@@ -449,9 +516,36 @@ internal sealed class RuntimeEngine(
             {
                 if (line.Contains("Done (", StringComparison.OrdinalIgnoreCase) || line.Contains("For help, type", StringComparison.OrdinalIgnoreCase)) managed.Ready.TrySetResult();
                 await RuntimeConsoleWriter.AppendAsync(paths.ConsoleDatabase, id, stream, line, CancellationToken.None);
+                if (managed.WorkloadKind == RuntimeWorkloadKind.Gate)
+                    await AppendGateLogAsync(id, stream, line);
             }
         }
         catch (Exception exception) when (exception is IOException or ObjectDisposedException) { logger.LogDebug(exception, "Runtime console stream ended for {ServerId}", id); }
+    }
+
+    private async Task AppendGateLogAsync(Guid id, string stream, string line)
+    {
+        var gateLock = _gateLogLocks.GetOrAdd(id, static _ => new SemaphoreSlim(1, 1));
+        await gateLock.WaitAsync();
+        try
+        {
+            var path = paths.GateLog(id);
+            Directory.CreateDirectory(paths.GateLogs(id));
+            if (File.Exists(path) && new FileInfo(path).Length >= 10 * 1024 * 1024)
+            {
+                for (var index = 4; index >= 1; index--)
+                {
+                    var source = $"{path}.{index}";
+                    var destination = $"{path}.{index + 1}";
+                    if (File.Exists(source)) File.Move(source, destination, true);
+                }
+                File.Move(path, $"{path}.1", true);
+            }
+            await File.AppendAllTextAsync(path, $"{DateTimeOffset.UtcNow:O} [{stream}] {line}{Environment.NewLine}");
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+        catch (Exception exception) { logger.LogDebug(exception, "Could not append Gate log for {ServerId}", id); }
+        finally { gateLock.Release(); }
     }
 
     private async Task MonitorAsync(Guid id, RuntimeProcess managed)
@@ -492,7 +586,7 @@ internal sealed class RuntimeEngine(
                 var percent = elapsed <= 0 ? managed.LastCpuPercent : Math.Clamp((cpu - managed.LastCpuTime).TotalMilliseconds / elapsed / Environment.ProcessorCount * 100, 0, 100);
                 managed.LastMetricAt = now; managed.LastCpuTime = cpu; managed.LastCpuPercent = percent;
                 var memory = cgroups.Read(managed.Cgroup);
-                return new(Guid.Empty, RuntimeProcessState.Running, managed.Process.Id, managed.StartedAt, now, null, false, percent,
+                return new(Guid.Empty, RuntimeProcessState.Running, managed.ProcessId, managed.StartedAt, now, null, false, percent,
                     (memory?.CurrentBytes ?? managed.Process.WorkingSet64) / 1024d / 1024d,
                     (memory?.PeakBytes ?? managed.Process.PeakWorkingSet64) / 1024d / 1024d,
                     (memory?.SwapBytes ?? 0) / 1024d / 1024d,
@@ -502,7 +596,7 @@ internal sealed class RuntimeEngine(
                     Math.Max(0, (long)(now - managed.StartedAt).TotalSeconds));
             }
         }
-        catch { return new(Guid.Empty, RuntimeProcessState.Running, managed.Process.Id, managed.StartedAt, DateTimeOffset.UtcNow, null, false, 0, 0, 0, 0, 0, 0, 0, 0, managed.Cgroup is not null, Math.Max(0, (long)(DateTimeOffset.UtcNow - managed.StartedAt).TotalSeconds)); }
+        catch { return new(Guid.Empty, RuntimeProcessState.Running, managed.ProcessId, managed.StartedAt, DateTimeOffset.UtcNow, null, false, 0, 0, 0, 0, 0, 0, 0, 0, managed.Cgroup is not null, Math.Max(0, (long)(DateTimeOffset.UtcNow - managed.StartedAt).TotalSeconds)); }
     }
 
     private async Task PersistAsync(RuntimeServerSnapshot snapshot, CancellationToken cancellationToken)
@@ -518,11 +612,47 @@ internal sealed class RuntimeEngine(
     private void ValidateLaunch(RuntimeLaunchRequest launch)
     {
         var work = Path.GetFullPath(launch.WorkingDirectory);
-        var instances = Path.GetFullPath(paths.Instances) + Path.DirectorySeparatorChar;
-        if (!work.StartsWith(instances, StringComparison.Ordinal) || !Directory.Exists(work)) throw new InvalidDataException("The runtime working directory is outside the instances root.");
-        if (!Path.IsPathFullyQualified(launch.JavaExecutable) || !File.Exists(launch.JavaExecutable)) throw new InvalidDataException("The Java executable is invalid.");
-        if (launch.Arguments.Count is < 3 or > 256 || launch.Arguments.Any(x => x.Length > 4096 || x.Contains('\0'))) throw new InvalidDataException("The Java argument list is invalid.");
-        if (launch.MemoryLimitMb < PanelOptions.MinimumServerTotalMemoryMb || launch.GracefulStopSeconds is < 1 or > 600) throw new InvalidDataException("The runtime resource limits are invalid.");
+        if (work != Path.GetFullPath(paths.Instance(launch.ServerId)) || !Directory.Exists(work))
+            throw new InvalidDataException("The runtime working directory is outside its managed instance.");
+        if (!Path.IsPathFullyQualified(launch.JavaExecutable) || !File.Exists(launch.JavaExecutable) || new FileInfo(launch.JavaExecutable).LinkTarget is not null)
+            throw new InvalidDataException("The workload executable is invalid.");
+        if (launch.Arguments.Count is < 2 or > 256 || launch.Arguments.Any(x => x.Length > 4096 || x.Contains('\0')))
+            throw new InvalidDataException("The workload argument list is invalid.");
+        if (launch.GracefulStopSeconds is < 1 or > 600) throw new InvalidDataException("The runtime stop timeout is invalid.");
+        if (launch.WorkloadKind == RuntimeWorkloadKind.Gate)
+        {
+            var versions = Path.GetFullPath(paths.GateVersions(launch.ServerId)) + Path.DirectorySeparatorChar;
+            if (!Path.GetFullPath(launch.JavaExecutable).StartsWith(versions, StringComparison.Ordinal) ||
+                launch.MemoryLimitMb != 256 || launch.GracefulStopSeconds != 15 || launch.ApiPort is not (>= 1024 and <= 65535))
+                throw new InvalidDataException("The Gate runtime request is invalid.");
+            ValidateSecretFile(launch.VelocitySecretFile, paths.GateVelocitySecret(launch.ServerId));
+            ValidateSecretFile(launch.BungeeGuardSecretFile, paths.GateBungeeGuardSecret(launch.ServerId));
+        }
+        else if (launch.MemoryLimitMb < PanelOptions.MinimumServerTotalMemoryMb)
+            throw new InvalidDataException("The Minecraft runtime memory limit is invalid.");
+    }
+
+    private static void ValidateSecretFile(string? supplied, string expected)
+    {
+        if (supplied is null) return;
+        if (Path.GetFullPath(supplied) != Path.GetFullPath(expected) || !File.Exists(supplied) || new FileInfo(supplied).LinkTarget is not null)
+            throw new InvalidDataException("The Gate forwarding secret path is invalid.");
+    }
+
+    private static async Task<bool> ApiReadyAsync(int port, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(1) };
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/minekube.gate.v1.GateService/ListServers")
+            {
+                Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json")
+            };
+            request.Headers.TryAddWithoutValidation("Connect-Protocol-Version", "1");
+            using var response = await client.SendAsync(request, cancellationToken);
+            return response.IsSuccessStatusCode;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException) { return false; }
     }
 
     private static async Task WriteAsync(RuntimeProcess managed, string command, CancellationToken cancellationToken)
@@ -532,14 +662,18 @@ internal sealed class RuntimeEngine(
         finally { managed.InputLock.Release(); }
     }
 
-    private sealed class RuntimeProcess(Process process, DateTimeOffset startedAt, int gracefulStopSeconds, CgroupWorkload? cgroup, long initialOomKillCount)
+    private sealed class RuntimeProcess(Process process, DateTimeOffset startedAt, int gracefulStopSeconds, CgroupWorkload? cgroup,
+        long initialOomKillCount, RuntimeWorkloadKind workloadKind, int? apiPort)
     {
         private int _stopRequested;
         public Process Process { get; } = process;
+        public int ProcessId { get; } = process.Id;
         public DateTimeOffset StartedAt { get; } = startedAt;
         public int GracefulStopSeconds { get; } = gracefulStopSeconds;
         public CgroupWorkload? Cgroup { get; } = cgroup;
         public long InitialOomKillCount { get; } = initialOomKillCount;
+        public RuntimeWorkloadKind WorkloadKind { get; } = workloadKind;
+        public int? ApiPort { get; } = apiPort;
         public bool StopRequested => Volatile.Read(ref _stopRequested) != 0;
         public void RequestStop() => Interlocked.Exchange(ref _stopRequested, 1);
         public TaskCompletionSource Ready { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -549,6 +683,16 @@ internal sealed class RuntimeEngine(
         public DateTimeOffset LastMetricAt { get; set; } = startedAt;
         public TimeSpan LastCpuTime { get; set; } = process.TotalProcessorTime;
         public double LastCpuPercent { get; set; }
+    }
+
+    private static class NativeSignal
+    {
+        [DllImport("libc", SetLastError = true)] private static extern int kill(int pid, int signal);
+        public static void Terminate(int pid)
+        {
+            if (OperatingSystem.IsWindows() || kill(pid, 15) != 0)
+                throw new InvalidOperationException("Could not signal the workload to stop.");
+        }
     }
 }
 

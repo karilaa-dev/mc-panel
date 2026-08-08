@@ -37,8 +37,10 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { Page } from "@/components/page"
+import { PlayerInventorySheet } from "@/components/player-inventory-sheet"
 import type { TerminalHandle } from "@/components/terminal-view"
 import { api } from "@/lib/api"
+import { isConsoleError } from "@/lib/terminal-format"
 import type {
   ConsoleEventDto,
   FileEntryDto,
@@ -143,7 +145,7 @@ function ConsoleSession({ serverId }: { serverId: string }) {
   const [command, setCommand] = useState("")
   const [search, setSearch] = useState("")
   const [connected, setConnected] = useState(false)
-  const [stderrOnly, setStderrOnly] = useState(false)
+  const [errorsOnly, setErrorsOnly] = useState(false)
 
   const writeEvents = useCallback((events: ConsoleEventDto[]) => {
     const fresh = events
@@ -152,11 +154,11 @@ function ConsoleSession({ serverId }: { serverId: string }) {
     for (const event of fresh) {
       if (event.sequence <= sequenceRef.current) continue
       sequenceRef.current = event.sequence
-      if (stderrOnly && event.stream !== "stderr") continue
+      if (errorsOnly && !isConsoleError(event)) continue
       if (terminalRef.current) terminalRef.current.write(event)
       else pendingRef.current.push(event)
     }
-  }, [serverId, stderrOnly])
+  }, [serverId, errorsOnly])
 
   useEffect(() => {
     let disposed = false
@@ -295,7 +297,7 @@ function ConsoleSession({ serverId }: { serverId: string }) {
   function submit(event: FormEvent) {
     event.preventDefault()
     const value = command.trim()
-    if (server.data?.state !== "Running" || !value || value.length > 4096 || /[\r\n]/.test(value)) return
+    if (server.data?.kind === "Gate" || server.data?.state !== "Running" || !value || value.length > 4096 || /[\r\n]/.test(value)) return
     sendCommand.mutate(value)
   }
 
@@ -305,7 +307,8 @@ function ConsoleSession({ serverId }: { serverId: string }) {
     setCommand(history[historyIndexRef.current] ?? "")
   }
 
-  const canSendCommand = server.data?.state === "Running"
+  const isGate = server.data?.kind === "Gate"
+  const canSendCommand = !isGate && server.data?.state === "Running"
   const commandHint = server.isLoading
     ? "Commands are unavailable while the server state loads."
     : canSendCommand
@@ -315,17 +318,17 @@ function ConsoleSession({ serverId }: { serverId: string }) {
   return (
     <Page
       title="Console"
-      description="Live, durable Minecraft output with command history and reconnect recovery."
+      description={isGate ? "Live, durable Gate logs with reconnect recovery." : "Live, durable Minecraft output with command history and reconnect recovery."}
       actions={<Badge variant={connected ? "success" : "outline"}>{connected ? "Live" : "Reconnecting"}</Badge>}
     >
       <Card className="overflow-hidden">
         <CardHeader>
-          <CardTitle>Server output</CardTitle>
-          <CardDescription>History is retained by the panel and resumes from the last received line.</CardDescription>
+          <CardTitle>{isGate ? "Gate output" : "Server output"}</CardTitle>
+          <CardDescription>History is retained by the panel and resumes from the last received line. Normal output stays neutral; warnings and errors are highlighted by severity.</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <InputGroup className="sm:max-w-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <InputGroup className="min-w-64 flex-1 sm:max-w-sm">
               <InputGroupAddon><SearchIcon /></InputGroupAddon>
               <InputGroupInput
                 aria-label="Search console"
@@ -341,20 +344,20 @@ function ConsoleSession({ serverId }: { serverId: string }) {
               </InputGroupAddon>
             </InputGroup>
             <div className="flex items-center gap-2">
-              <Switch id="stderr-only" checked={stderrOnly} onCheckedChange={(value) => {
-                setStderrOnly(value)
+              <Switch id="errors-only" checked={errorsOnly} onCheckedChange={(value) => {
+                setErrorsOnly(value)
                 terminalRef.current?.clear()
                 sequenceRef.current = 0
               }} />
-              <label htmlFor="stderr-only" className="text-sm">Errors only</label>
+              <label htmlFor="errors-only" className="text-sm">Errors only</label>
             </div>
             <Button variant="outline" onClick={() => void terminalRef.current?.copy()}><ClipboardIcon data-icon="inline-start" />Copy selection</Button>
             <Button variant="ghost" onClick={() => terminalRef.current?.clear()}>Clear view</Button>
           </div>
-          <div className="min-h-96 rounded-lg border bg-card p-3">
-            <Suspense fallback={<Skeleton className="h-80" />}><TerminalView onReady={onTerminalReady} /></Suspense>
+          <div className="h-[min(65vh,42rem)] min-h-96 rounded-lg bg-background p-4 ring-1 ring-foreground/10">
+            <Suspense fallback={<Skeleton className="h-full" />}><TerminalView onReady={onTerminalReady} label={isGate ? "Gate proxy console output" : "Minecraft server console output"} /></Suspense>
           </div>
-          <form onSubmit={submit}>
+          {!isGate && <form onSubmit={submit}>
             <InputGroup>
               <InputGroupAddon><TerminalSquareIcon /></InputGroupAddon>
               <InputGroupInput
@@ -377,7 +380,7 @@ function ConsoleSession({ serverId }: { serverId: string }) {
                 </InputGroupButton>
               </InputGroupAddon>
             </InputGroup>
-          </form>
+          </form>}
         </CardContent>
       </Card>
     </Page>
@@ -439,7 +442,7 @@ export function FilesPage() {
   return (
     <Page
       title="Files"
-      description="Manage files inside this server’s confined directory."
+      description={server.data?.kind === "Gate" ? "Manage this Gate instance’s files. Forwarding secrets remain protected." : "Manage files inside this server’s confined directory."}
       actions={<>
         <input
           ref={uploadRef}
@@ -460,7 +463,7 @@ export function FilesPage() {
       <Card>
         <CardHeader>
           <CardTitle>Server root</CardTitle>
-          <CardDescription>Archives are extracted with traversal, symlink, size, and entry-count checks.</CardDescription>
+          <CardDescription>{server.data?.kind === "Gate" ? "Gate configuration, versions, rollback data, and logs are available here. The keys directory is intentionally hidden." : "Archives are extracted with traversal, symlink, size, and entry-count checks."}</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <nav className="flex flex-wrap items-center gap-1 text-sm" aria-label="File path">
@@ -543,6 +546,7 @@ export function FilesPage() {
 export function PlayersPage() {
   const { serverId = "" } = useParams()
   const queryClient = useQueryClient()
+  const [inventoryPlayer, setInventoryPlayer] = useState<PlayerDto>()
   const server = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
   const players = useQuery({ queryKey: ["players", serverId], queryFn: () => api.players(serverId), refetchInterval: 5_000 })
   const canManage = server.data?.state === "Running" || server.data?.state === "Stopped" || server.data?.state === "Crashed"
@@ -574,18 +578,19 @@ export function PlayersPage() {
             <TableCell><div className="flex flex-col gap-1"><span className="font-medium">{player.name}</span>{player.uuid && <span className="font-mono text-xs text-muted-foreground">{player.uuid}</span>}</div></TableCell>
             <TableCell><Badge variant={player.online ? "success" : "secondary"}>{player.online ? "Online" : "Offline"}</Badge></TableCell>
             <TableCell><div className="flex flex-wrap gap-1">{player.operator && <Badge>Operator</Badge>}{player.whitelisted && <Badge variant="outline">Whitelisted</Badge>}{player.banned && <Badge variant="destructive">Banned</Badge>}</div></TableCell>
-            <TableCell className="text-right"><DropdownMenu><DropdownMenuTrigger render={<Button variant="outline" size="sm" disabled={!canManage || action.isPending} title={manageHint} />}><MoreHorizontalIcon data-icon="inline-start" />Manage</DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuGroup>
+            <TableCell className="text-right"><div className="flex justify-end gap-2"><Button variant="outline" size="sm" disabled={!player.uuid} title={player.uuid ? "View saved inventory" : "A known UUID is required"} onClick={() => setInventoryPlayer(player)}><Edit3Icon data-icon="inline-start" />Inventory</Button><DropdownMenu><DropdownMenuTrigger render={<Button variant="outline" size="sm" disabled={!canManage || action.isPending} title={manageHint} />}><MoreHorizontalIcon data-icon="inline-start" />Manage</DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuGroup>
               <DropdownMenuItem onClick={() => mutate(player.name, player.whitelisted ? "unwhitelist" : "whitelist")}>{player.whitelisted ? <UserMinusIcon /> : <UserRoundCheckIcon />}{player.whitelisted ? "Remove from whitelist" : "Whitelist"}</DropdownMenuItem>
               <DropdownMenuItem onClick={() => mutate(player.name, player.operator ? "deop" : "op")}><ShieldCheckIcon />{player.operator ? "Remove operator" : "Make operator"}</DropdownMenuItem>
               <DropdownMenuItem onClick={() => mutate(player.name, player.banned ? "pardon" : "ban")}>{player.banned ? <UserRoundCheckIcon /> : <BanIcon />}{player.banned ? "Pardon" : "Ban"}</DropdownMenuItem>
               {player.online && <DropdownMenuItem disabled={!running} onClick={() => mutate(player.name, "kick")}><UserRoundXIcon />Kick</DropdownMenuItem>}
-            </DropdownMenuGroup></DropdownMenuContent></DropdownMenu></TableCell>
+            </DropdownMenuGroup></DropdownMenuContent></DropdownMenu></div></TableCell>
           </TableRow>)}</TableBody></Table> : <PlayerEmpty title="No known players" description="Players appear after joining or being added to a server list." />}
         </CardContent></Card></TabsContent>
         <TabsContent value="whitelist"><PlayerListTab title="Whitelist" description="Players allowed to join when whitelist enforcement is enabled." players={data.filter((player) => player.whitelisted)} addLabel="Add to whitelist" removeLabel="Remove" addAction="whitelist" removeAction="unwhitelist" canManage={canManage} pending={action.isPending} hint={manageHint} onAction={mutate} /></TabsContent>
         <TabsContent value="operators"><PlayerListTab title="Operators" description="Operators added here receive permission level 4 by default." players={data.filter((player) => player.operator)} addLabel="Add operator" removeLabel="Deop" addAction="op" removeAction="deop" canManage={canManage} pending={action.isPending} hint={manageHint} onAction={mutate} /></TabsContent>
         <TabsContent value="banned"><PlayerListTab title="Banned players" description="Player bans have no expiry and use Minecraft’s default operator-ban reason." players={data.filter((player) => player.banned)} addLabel="Ban player" removeLabel="Pardon" addAction="ban" removeAction="pardon" canManage={canManage} pending={action.isPending} hint={manageHint} onAction={mutate} /></TabsContent>
       </Tabs>
+      <PlayerInventorySheet serverId={serverId} player={inventoryPlayer} open={Boolean(inventoryPlayer)} onOpenChange={(open) => !open && setInventoryPlayer(undefined)} />
     </Page>
   )
 }

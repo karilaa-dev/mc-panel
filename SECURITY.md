@@ -38,6 +38,22 @@ mitigation. Avoid including real setup tokens, cookies, worlds, or player data.
 - Data Protection keys, state, console history, worlds, and backups live below
   `/var/lib/mcpanel` by default and must remain readable only by the service
   account and trusted root operators.
+- Managed Gate executes as the same unprivileged service account in a 256 MiB
+  cgroup. Its public Minecraft listener is intentionally reachable according to
+  operator firewall/NAT policy, while its management API is random-port and
+  loopback-only. Official binaries are SHA-256 checked and version-probed before
+  activation; the preceding binary is retained for rollback.
+- Velocity and BungeeGuard secrets are mode `0600` files in each Gate server's
+  instance-local `keys` directory. Secret reveal responses forbid caching, but anyone with service
+  account or root access can still read them. Rotate a value after suspected
+  disclosure and reconfigure every affected backend before restarting Gate.
+- Player inventory writes never expose general raw NBT. They require an offline
+  player, compare the compressed playerdata revision, snapshot only inventory
+  tags, verify a same-directory temporary file, and atomically replace the save.
+  Read-only manual and scheduled inventory snapshots are permitted while a
+  player is online and capture only Minecraft's potentially stale on-disk save.
+  Inventory snapshots and playerdata remain sensitive gameplay data and are not
+  a substitute for full world backups.
 
 ## Plugins, mods, and instance isolation
 

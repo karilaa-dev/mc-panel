@@ -220,6 +220,55 @@ public sealed class FileManagerServiceTests : IDisposable
         Assert.True(File.Exists(Path.Combine(paths.Instance(serverId), "created.txt")));
     }
 
+    [Fact]
+    public async Task Gate_servers_expose_regular_files_but_keep_forwarding_secrets_hidden()
+    {
+        var (paths, options) = CreatePaths();
+        var serverId = Guid.NewGuid();
+        var instance = paths.Instance(serverId);
+        Directory.CreateDirectory(Path.Combine(instance, "keys"));
+        await File.WriteAllTextAsync(Path.Combine(instance, "config.json"), "{\"mode\":\"lite\"}");
+        await File.WriteAllTextAsync(Path.Combine(instance, "keys", "velocity.secret"), "do-not-expose");
+        var service = CreateService(paths, options, serverId, ServerState.Stopped, false, ServerKind.Gate);
+
+        var entries = service.List(serverId, "");
+        var config = await service.ReadTextAsync(serverId, "config.json", CancellationToken.None);
+        await service.WriteTextAsync(serverId, "config.json", "{\"mode\":\"classic\"}", CancellationToken.None);
+
+        Assert.Contains(entries, item => item.Name == "config.json");
+        Assert.DoesNotContain(entries, item => item.Name == "keys");
+        Assert.Equal("{\"mode\":\"lite\"}", config);
+        Assert.Equal("{\"mode\":\"classic\"}", await File.ReadAllTextAsync(Path.Combine(instance, "config.json")));
+        var readSecret = await Assert.ThrowsAsync<PanelException>(() =>
+            service.ReadTextAsync(serverId, "keys/velocity.secret", CancellationToken.None));
+        var writeSecret = await Assert.ThrowsAsync<PanelException>(() =>
+            service.WriteTextAsync(serverId, "keys/velocity.secret", "replacement", CancellationToken.None));
+        Assert.Equal(404, readSecret.StatusCode);
+        Assert.Equal(404, writeSecret.StatusCode);
+        Assert.Equal("do-not-expose", await File.ReadAllTextAsync(Path.Combine(instance, "keys", "velocity.secret")));
+    }
+
+    [Fact]
+    public async Task Gate_archive_extraction_cannot_create_or_replace_forwarding_keys()
+    {
+        var (paths, options) = CreatePaths();
+        var serverId = Guid.NewGuid();
+        var instance = paths.Instance(serverId);
+        Directory.CreateDirectory(Path.Combine(instance, "keys"));
+        await File.WriteAllTextAsync(Path.Combine(instance, "keys", "velocity.secret"), "original-secret");
+        CreateArchive(Path.Combine(instance, "payload.zip"),
+            ("readme.txt", "safe"),
+            ("keys/velocity.secret", "replacement-secret"));
+        var service = CreateService(paths, options, serverId, ServerState.Stopped, false, ServerKind.Gate);
+
+        var exception = await Assert.ThrowsAsync<PanelException>(() =>
+            service.ExtractAsync(serverId, "payload.zip", "", CancellationToken.None));
+
+        Assert.Equal(404, exception.StatusCode);
+        Assert.False(File.Exists(Path.Combine(instance, "readme.txt")));
+        Assert.Equal("original-secret", await File.ReadAllTextAsync(Path.Combine(instance, "keys", "velocity.secret")));
+    }
+
     [Theory]
     [InlineData(ServerState.Stopped, true)]
     [InlineData(ServerState.Running, false)]
@@ -278,7 +327,7 @@ public sealed class FileManagerServiceTests : IDisposable
         }
     }
 
-    private FileManagerService CreateService(PanelPaths paths, PanelOptions options, Guid serverId, ServerState state, bool processRunning)
+    private FileManagerService CreateService(PanelPaths paths, PanelOptions options, Guid serverId, ServerState state, bool processRunning, ServerKind kind = ServerKind.Vanilla)
     {
         var factory = CreateStateFactory(options);
         using (var db = factory.CreateDbContext())
@@ -288,10 +337,10 @@ public sealed class FileManagerServiceTests : IDisposable
             {
                 Id = serverId,
                 Name = "File test",
-                Kind = ServerKind.Vanilla,
-                Version = "1.20.4",
+                Kind = kind,
+                Version = kind == ServerKind.Gate ? "0.71.1" : "1.20.4",
                 State = state,
-                JavaRuntimeId = "test-java",
+                JavaRuntimeId = kind == ServerKind.Gate ? "gate" : "test-java",
                 EulaAcceptedAt = DateTimeOffset.UtcNow
             });
             db.SaveChanges();

@@ -21,28 +21,62 @@ public sealed class OperationQueue(
         FullMode = BoundedChannelFullMode.Wait, SingleReader = false, SingleWriter = false
     });
 
-    public async Task<JobDto> EnqueueAsync(string type, Guid? serverId, Func<IServiceProvider, Guid, CancellationToken, Task> action, CancellationToken cancellationToken)
+    public static JobEntity CreatePending(string type, Guid? serverId, string? clientRequestId = null) => new()
     {
-        var job = new JobEntity { Id = Guid.NewGuid(), Type = type, ServerId = serverId, Message = "Waiting to run" };
+        Id = Guid.NewGuid(), Type = type, ServerId = serverId, Message = "Waiting to run",
+        ClientRequestId = string.IsNullOrWhiteSpace(clientRequestId) ? null : clientRequestId.Trim()
+    };
+
+    public async Task<JobDto> HandoffCommittedAsync(JobEntity job,
+        Func<IServiceProvider, Guid, CancellationToken, Task> action, CancellationToken cancellationToken)
+    {
+        try
+        {
+            // The database row is authoritative. Cancellation of the HTTP request after commit
+            // must not make a successfully-created server look like it never existed.
+            await _channel.Writer.WriteAsync(new QueuedOperation(job.Id, action), lifetime.ApplicationStopping);
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Committed job {JobId} could not be handed to the operation queue", job.Id);
+            job.State = JobState.Failed;
+            job.Progress = 100;
+            job.Message = "Queue handoff failed";
+            job.Error = "The server was created, but its installation could not be queued. Retry from this committed server record.";
+            job.UpdatedAt = DateTimeOffset.UtcNow;
+            try
+            {
+                await SetStateAsync(job.Id, job.State, job.Progress, job.Message, job.Error, CancellationToken.None);
+                return await GetAsync(job.Id, CancellationToken.None) ?? Map(job);
+            }
+            catch (Exception persistenceException)
+            {
+                logger.LogError(persistenceException, "Could not persist failed queue handoff for committed job {JobId}", job.Id);
+                return Map(job);
+            }
+        }
+        var dto = Map(job);
+        try { await audience.PublishAsync(group => hub.Clients.Group(group).SendAsync("JobUpdated", dto, cancellationToken), cancellationToken); }
+        catch (Exception exception) { logger.LogDebug(exception, "Could not broadcast job {JobId}", job.Id); }
+        return dto;
+    }
+
+    public async Task<JobDto> EnqueueAsync(string type, Guid? serverId, Func<IServiceProvider, Guid, CancellationToken, Task> action,
+        CancellationToken cancellationToken, string? clientRequestId = null)
+    {
+        if (!string.IsNullOrWhiteSpace(clientRequestId))
+        {
+            await using var lookup = await stateFactory.CreateDbContextAsync(cancellationToken);
+            var existing = await lookup.Jobs.AsNoTracking().SingleOrDefaultAsync(x => x.ClientRequestId == clientRequestId, cancellationToken);
+            if (existing is not null) return Map(existing);
+        }
+        var job = CreatePending(type, serverId, clientRequestId);
         await using (var db = await stateFactory.CreateDbContextAsync(cancellationToken))
         {
             db.Jobs.Add(job);
             await db.SaveChangesAsync(cancellationToken);
         }
-        try
-        {
-            // Once the durable job row exists, request cancellation must not strand it outside
-            // the in-memory queue. Application shutdown remains the only handoff cancellation.
-            await _channel.Writer.WriteAsync(new QueuedOperation(job.Id, action), lifetime.ApplicationStopping);
-        }
-        catch (Exception exception) when (exception is OperationCanceledException or ChannelClosedException)
-        {
-            await SetStateAsync(job.Id, JobState.Failed, 100, "Interrupted", "The panel stopped before this operation could be queued.", CancellationToken.None);
-            throw new PanelException(503, "OPERATION_FAILED", "The panel is stopping and cannot queue the operation.");
-        }
-        var dto = Map(job);
-        try { await audience.PublishAsync(group => hub.Clients.Group(group).SendAsync("JobUpdated", dto, cancellationToken), cancellationToken); } catch (Exception exception) { logger.LogDebug(exception, "Could not broadcast job {JobId}", job.Id); }
-        return dto;
+        return await HandoffCommittedAsync(job, action, cancellationToken);
     }
 
     public async Task ProgressAsync(Guid jobId, int progress, string message, CancellationToken cancellationToken)

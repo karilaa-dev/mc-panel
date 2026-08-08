@@ -85,4 +85,12 @@ describe("ServerOverviewPage lifecycle controls", () => {
     expect(screen.queryByRole("button", { name: "Delete server" }) !== null).toBe(remove)
     if (!["Start"].includes(primary)) expect(screen.queryByRole("button", { name: "Start" })).not.toBeInTheDocument()
   })
+
+  it("shows the compact advertised-address editor on Overview", async () => {
+    renderPage("Stopped")
+
+    expect(await screen.findByText("Runtime details")).toBeVisible()
+    expect(screen.getByRole("textbox", { name: "Advertised connection address" })).toBeVisible()
+    expect(screen.getByText("Connection")).toBeVisible()
+  })
 })

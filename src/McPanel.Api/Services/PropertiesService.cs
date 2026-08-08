@@ -93,7 +93,8 @@ public sealed class PropertiesService(
     IDbContextFactory<StateDbContext> stateFactory,
     IOptions<PanelOptions> options,
     AsyncKeyedLock keyedLock,
-    IServerProcessStatus processStatus)
+    IServerProcessStatus processStatus,
+    GateProxyService gate)
 {
     private const int MaxMotdLength = 512;
     private const int MaxWorldNameLength = 128;
@@ -104,6 +105,7 @@ public sealed class PropertiesService(
     {
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var server = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw PanelProblems.NotFound("Server");
+        EnsureMinecraft(server);
         var file = Path.Combine(paths.Instance(id), "server.properties");
         var bytes = File.Exists(file) ? await File.ReadAllBytesAsync(file, cancellationToken) : [];
         var text = DecodeUtf8(bytes);
@@ -117,6 +119,7 @@ public sealed class PropertiesService(
         using var serverLock = await keyedLock.AcquireAsync(id, cancellationToken);
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var server = await db.Servers.SingleOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw PanelProblems.NotFound("Server");
+        EnsureMinecraft(server);
         EnsureStableState(server, processStatus.IsRunning(id));
 
         var file = Path.Combine(paths.Instance(id), "server.properties");
@@ -165,6 +168,7 @@ public sealed class PropertiesService(
         var changed = !fileExists || !string.Equals(originalText, updatedText, StringComparison.Ordinal);
         server.RestartRequired |= server.State == ServerState.Running && (changed || portChanged);
         server.UpdatedAt = DateTimeOffset.UtcNow;
+        if (portChanged) await gate.MarkBackendChangedAsync(db, id, cancellationToken);
         if (changed) await SaveWithAtomicPropertiesAsync(db, file, updatedText, fileExists, cancellationToken);
         else await db.SaveChangesAsync(cancellationToken);
         var updatedBytes = new UTF8Encoding(false).GetBytes(updatedText);
@@ -175,6 +179,7 @@ public sealed class PropertiesService(
     {
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var server = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw PanelProblems.NotFound("Server");
+        EnsureMinecraft(server);
         return RuntimeDto(server);
     }
 
@@ -185,6 +190,7 @@ public sealed class PropertiesService(
         using var serverLock = await keyedLock.AcquireAsync(id, cancellationToken);
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var server = await db.Servers.SingleOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw PanelProblems.NotFound("Server");
+        EnsureMinecraft(server);
         EnsureStableState(server, processStatus.IsRunning(id));
         if (!await db.JavaRuntimes.AnyAsync(x => x.Id == dto.JavaRuntimeId, cancellationToken))
             throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
@@ -213,8 +219,11 @@ public sealed class PropertiesService(
     {
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var server = await db.Servers.SingleOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw PanelProblems.NotFound("Server");
+        EnsureMinecraft(server);
         var file = Path.Combine(paths.Instance(id), "server.properties");
         var document = File.Exists(file) ? PropertiesDocument.Parse(await File.ReadAllTextAsync(file, cancellationToken)) : PropertiesDocument.Empty();
+        var settings = await db.PanelSettings.AsNoTracking().SingleOrDefaultAsync(x => x.Id == 1, cancellationToken) ?? new PanelSettingsEntity();
+        var connection = GateConfigurationService.ResolveAddress(server, settings.GlobalServerHost);
         return new(
             document.Get("motd") ?? "A Minecraft Server",
             Integer(document, "max-players", 20), document.Get("gamemode") ?? "survival", document.Get("difficulty") ?? "easy",
@@ -222,7 +231,9 @@ public sealed class PropertiesService(
             Boolean(document, "enable-command-block", false), Boolean(document, "allow-flight", false),
             Integer(document, "spawn-protection", 16), Integer(document, "view-distance", 10), Integer(document, "simulation-distance", 10),
             document.Get("level-name") ?? "world", Integer(document, "server-port", server.Port), server.MemoryMb,
-            server.JavaRuntimeId, server.JvmArguments, server.StartOnBoot, server.CrashRecovery);
+            server.JavaRuntimeId, server.JvmArguments, server.StartOnBoot, server.CrashRecovery,
+            server.PublicHost is null ? null : GateConfigurationService.FormatAddress(server.PublicHost, server.PublicPort ?? 25565),
+            connection.Address, connection.Source, connection.Kind, connection.Note, server.AddressRevision);
     }
 
     public async Task<ServerConfigurationDto> SaveAsync(Guid id, ServerConfigurationDto dto, CancellationToken cancellationToken)
@@ -232,6 +243,7 @@ public sealed class PropertiesService(
         using var serverLock = await keyedLock.AcquireAsync(id, cancellationToken);
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var server = await db.Servers.SingleOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw PanelProblems.NotFound("Server");
+        EnsureMinecraft(server);
         var processRunning = processStatus.IsRunning(id);
         var stateIsConsistent = server.State switch
         {
@@ -263,11 +275,13 @@ public sealed class PropertiesService(
         document.Set("level-name", dto.WorldName); document.Set("server-port", dto.Port.ToString());
         var updatedText = document.ToString();
         var changedProperties = !fileExists || !string.Equals(originalText, updatedText, StringComparison.Ordinal);
+        var portChanged = server.Port != dto.Port;
         var changedRuntime = server.MemoryLimitMb != totalLimitMb || server.MemoryMb != dto.MemoryMb || server.InitialMemoryMb != dto.MemoryMb || server.JavaRuntimeId != dto.JavaRuntimeId || server.JvmArguments != dto.JvmArguments || server.Port != dto.Port;
         server.Port = dto.Port; server.MemoryLimitMb = totalLimitMb; server.MemoryMb = dto.MemoryMb; server.InitialMemoryMb = dto.MemoryMb; server.JavaRuntimeId = dto.JavaRuntimeId;
         server.JvmArguments = dto.JvmArguments; server.StartOnBoot = dto.StartOnBoot; server.CrashRecovery = dto.CrashRecovery;
         server.RestartRequired |= server.State == ServerState.Running && (changedProperties || changedRuntime);
         server.UpdatedAt = DateTimeOffset.UtcNow;
+        if (portChanged) await gate.MarkBackendChangedAsync(db, id, cancellationToken);
         if (changedProperties) await SaveWithAtomicPropertiesAsync(db, file, updatedText, fileExists, cancellationToken);
         else await db.SaveChangesAsync(cancellationToken);
         return dto;
@@ -379,6 +393,12 @@ public sealed class PropertiesService(
             _ => false
         };
         if (!consistent) throw PanelProblems.Conflict("SERVER_BUSY", "The server configuration cannot be changed in its current state.");
+    }
+
+    private static void EnsureMinecraft(ServerEntity server)
+    {
+        if (server.Kind == ServerKind.Gate)
+            throw new PanelException(404, "GATE_PAGE_UNAVAILABLE", "This Minecraft-only configuration is not available for Gate servers.");
     }
 
     private static void ValidateRuntime(RuntimeConfigurationDto dto)

@@ -6,11 +6,12 @@ import { Link, useNavigate, useParams } from "react-router-dom"
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts"
 import { z } from "zod"
 import {
-  AlertTriangleIcon, ArrowRightIcon, CheckIcon, CircleGaugeIcon, EyeIcon, EyeOffIcon,
+  AlertTriangleIcon, ArrowRightIcon, CheckIcon, CircleGaugeIcon, ClipboardIcon, EyeIcon, EyeOffIcon,
   CpuIcon, HardDriveIcon, MemoryStickIcon, PlusIcon, RotateCwIcon, ServerIcon,
   SearchIcon, SquareIcon, Trash2Icon, UsersIcon,
 } from "lucide-react"
-import { api } from "@/lib/api"
+import { ApiError, api } from "@/lib/api"
+import { createClientRequestId } from "@/lib/client-request-id"
 import { recommendedJavaMajor } from "@/lib/java-version"
 import {
   clampMemoryMb,
@@ -25,6 +26,7 @@ import type { ModpackInspectionDto, RuntimeConfigurationDto, ServerConfiguration
 import { Page } from "@/components/page"
 import { ModpackPicker } from "@/components/modpack-picker"
 import { ServerAvatar, ServerIconEditor } from "@/components/server-icon"
+import { PublicHostEditor } from "@/components/public-host-editor"
 import { StatusBadge } from "@/components/status-badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
@@ -77,8 +79,8 @@ export function DashboardPage() {
   const serversSection = <section aria-labelledby="servers-heading" className="flex flex-col gap-4">
     <h2 id="servers-heading" className="text-lg font-semibold">Servers</h2>
     {serversLoading ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-48" />)}</div> : servers?.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{servers.map((server) => <Card key={server.id}>
-      <CardHeader><div className="flex items-center gap-3"><ServerAvatar server={server} className="size-10" /><div className="min-w-0"><CardTitle className="truncate">{server.name}</CardTitle><CardDescription>{server.kind} · Minecraft {server.version}</CardDescription></div></div><CardAction><StatusBadge state={server.state} /></CardAction></CardHeader>
-      <CardContent className="grid grid-cols-2 gap-4"><div><p className="text-xs text-muted-foreground">Players</p><p className="font-medium">{server.playerCount} / {server.maxPlayers}</p></div><div><p className="text-xs text-muted-foreground">Memory</p><p className="font-medium">{server.memoryUsedMb.toFixed(0)} / {server.memoryMb} MiB</p></div><div><p className="text-xs text-muted-foreground">Address</p><p className="font-medium">:{server.port}</p></div><div><p className="text-xs text-muted-foreground">Uptime</p><p className="font-medium">{duration(server.uptimeSeconds)}</p></div></CardContent>
+      <CardHeader><div className="flex items-center gap-3"><ServerAvatar server={server} className="size-10" /><div className="min-w-0"><CardTitle className="truncate">{server.name}</CardTitle><CardDescription>{server.kind === "Gate" ? `Gate Proxy · ${server.version}` : `${server.kind} · Minecraft ${server.version}`}</CardDescription></div></div><CardAction><StatusBadge state={server.state} /></CardAction></CardHeader>
+      <CardContent className="grid grid-cols-2 gap-4"><div><p className="text-xs text-muted-foreground">{server.kind === "Gate" ? "Connections" : "Players"}</p><p className="font-medium">{server.kind === "Gate" ? server.playerCount : `${server.playerCount} / ${server.maxPlayers}`}</p></div><div><p className="text-xs text-muted-foreground">Memory</p><p className="font-medium">{server.memoryUsedMb.toFixed(0)} / {server.memoryMb} MiB</p></div><div><p className="text-xs text-muted-foreground">Address</p><p className="truncate font-mono text-sm font-medium" title={server.resolvedConnectionAddress ?? undefined}>{server.resolvedConnectionAddress ?? "Unavailable"}</p></div><div><p className="text-xs text-muted-foreground">Uptime</p><p className="font-medium">{duration(server.uptimeSeconds)}</p></div></CardContent>
       <CardFooter><Button variant="ghost" render={<Link to={`/servers/${server.id}`} />}>Manage<ArrowRightIcon data-icon="inline-end" /></Button></CardFooter>
     </Card>)}</div> : <Empty className="border"><EmptyHeader><EmptyMedia variant="icon"><ServerIcon /></EmptyMedia><EmptyTitle>No servers yet</EmptyTitle><EmptyDescription>Create Vanilla, Paper, Fabric, Forge, or NeoForge without leaving the panel.</EmptyDescription></EmptyHeader><EmptyContent><Button render={<Link to="/create" />}><PlusIcon />Create your first server</Button></EmptyContent></Empty>}
   </section>
@@ -125,6 +127,11 @@ export function CreateServerPage() {
   const [selectedInstaller, setSelectedInstaller] = useState("")
   const [memoryMb, setMemoryMb] = useState(4096)
   const [showExperimental, setShowExperimental] = useState(false)
+  const [gateName, setGateName] = useState("Gate Proxy")
+  const [gatePort, setGatePort] = useState(25565)
+  const [gateStartOnBoot, setGateStartOnBoot] = useState(false)
+  const [gateSubmitting, setGateSubmitting] = useState(false)
+  const [clientRequestId] = useState(createClientRequestId)
   const { data: catalog, isLoading: catalogLoading } = useQuery({
     queryKey: ["catalog", showExperimental],
     queryFn: () => api.catalog(showExperimental),
@@ -134,7 +141,7 @@ export function CreateServerPage() {
   const serverKind = source === "Modpack" ? (packInspection?.kind ?? "Vanilla") : kind
   const versions = useMemo(
     () => {
-      if (!catalog) return []
+      if (!catalog || serverKind === "Gate") return []
       if (serverKind === "NeoForge") return catalog.neoForge
       return catalog[serverKind.toLowerCase() as "vanilla" | "paper" | "fabric" | "forge"]
     },
@@ -179,6 +186,8 @@ export function CreateServerPage() {
   const memoryCapacityAvailable = supportedMemoryLimitMb >= MEMORY_MIN_MB
   const { register, handleSubmit, control, setValue, formState: { errors, isSubmitting } } = useForm<CreateFields>({ resolver: zodResolver(createSchema), defaultValues: { name: "My server", port: 25565, eulaAccepted: false } })
   const eula = useWatch({ control, name: "eulaAccepted" })
+  const isGate = source === "Software" && kind === "Gate"
+  const totalSteps = isGate ? 2 : 4
   const distributionReady = source === "Modpack" ? Boolean(packInspection)
     : serverKind === "Fabric"
     ? Boolean(loaderVersion && installerVersion)
@@ -195,6 +204,7 @@ export function CreateServerPage() {
           javaRuntimeId: javaId,
           memoryMb: effectiveMemoryMb,
           selectedOptionalFiles,
+          clientRequestId,
         })
         : await api.createServer({
           ...values,
@@ -203,6 +213,7 @@ export function CreateServerPage() {
           version,
           javaRuntimeId: javaId,
           memoryMb: effectiveMemoryMb,
+          clientRequestId,
           includeExperimental: showExperimental,
           ...(serverKind === "Paper" && build ? { build } : {}),
           ...(serverKind === "Fabric" ? { loaderVersion, installerVersion } : {}),
@@ -215,13 +226,38 @@ export function CreateServerPage() {
     }
   }
 
-  return <Page title="Create server" description="Install verified server software or a Modrinth modpack in four simple steps.">
+  async function submitGate() {
+    if (gateName.trim().length < 2 || gateName.trim().length > 48 || gatePort < 1024 || gatePort > 65535) {
+      toast.error("Enter a 2–48 character name and a listener port between 1024 and 65535.")
+      return
+    }
+    setGateSubmitting(true)
+    try {
+      const job = await api.createGateServer({ name: gateName.trim(), port: gatePort, startOnBoot: gateStartOnBoot, clientRequestId })
+      if (!job.serverId) throw new Error("Gate was queued, but its installation page could not be opened.")
+      navigate(`/servers/${job.serverId}/creating/${job.id}`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not create Gate Proxy.")
+    } finally { setGateSubmitting(false) }
+  }
+
+  if (isGate && step === 2) return <Page title="Create Gate Proxy" description="Install the latest complete stable Gate release as an independently managed server.">
     <Card className="mx-auto w-full max-w-3xl">
-      <CardHeader><CardTitle>Step {step} of 4</CardTitle><CardDescription>{["Choose a server type", "Select a Minecraft version", "Assign Java and memory", "Name and confirm"][step - 1]}</CardDescription></CardHeader>
-      <CardContent><Progress value={step * 25}><ProgressLabel>Setup progress</ProgressLabel><ProgressValue /></Progress></CardContent>
+      <CardHeader><CardTitle>Step 2 of 2</CardTitle><CardDescription>Name and install Gate</CardDescription></CardHeader>
+      <CardContent><Progress value={100}><ProgressLabel>Setup progress</ProgressLabel><ProgressValue /></Progress></CardContent>
+      <CardContent><FieldGroup><Field><FieldLabel htmlFor="gate-name">Server name</FieldLabel><Input id="gate-name" value={gateName} onChange={(event) => setGateName(event.target.value)} /></Field><Field><FieldLabel htmlFor="gate-port">Real local listener port</FieldLabel><Input id="gate-port" type="number" min={1024} max={65535} value={gatePort} onChange={(event) => setGatePort(Number(event.target.value))} /><FieldDescription>This locally bound port is conflict-checked. The advertised external address can use a different NAT, SRV, or forwarded port.</FieldDescription></Field><Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="gate-start-on-boot">Start on boot</FieldLabel><FieldDescription>Start this Gate instance whenever the managed runtime starts.</FieldDescription></FieldContent><Switch id="gate-start-on-boot" checked={gateStartOnBoot} onCheckedChange={setGateStartOnBoot} /></Field></FieldGroup></CardContent>
+      <CardFooter className="justify-between"><Button variant="outline" disabled={gateSubmitting} onClick={() => setStep(1)}>Back</Button><Button disabled={gateSubmitting} onClick={() => void submitGate()}>{gateSubmitting && <Spinner data-icon="inline-start" />}Create Gate server</Button></CardFooter>
+    </Card>
+  </Page>
+
+  return <Page title="Create server" description={isGate ? "Install a verified Minekube Gate proxy as a normal managed server." : "Install verified server software or a Modrinth modpack in four simple steps."}>
+    <Card className="mx-auto w-full max-w-3xl">
+      <CardHeader><CardTitle>Step {step} of {totalSteps}</CardTitle><CardDescription>{isGate ? ["Choose a server type", "Name and install Gate"][step - 1] : ["Choose a server type", "Select a Minecraft version", "Assign Java and memory", "Name and confirm"][step - 1]}</CardDescription></CardHeader>
+      <CardContent><Progress value={step / totalSteps * 100}><ProgressLabel>Setup progress</ProgressLabel><ProgressValue /></Progress></CardContent>
       <CardContent>
         <form id="create-form" onSubmit={handleSubmit(submit)}>
-          {step === 1 && <FieldGroup><Field><FieldLabel>Creation source</FieldLabel><ToggleGroup value={[source]} onValueChange={(values) => values[0] && setSource(values[0] as "Software" | "Modpack")} variant="outline" spacing={0}><ToggleGroupItem value="Software">Server software</ToggleGroupItem><ToggleGroupItem value="Modpack">Modrinth modpack</ToggleGroupItem></ToggleGroup><FieldDescription>Choose a distribution directly, or let a Modrinth pack define Minecraft and its loader.</FieldDescription></Field>{source === "Software" && <Field><FieldLabel>Server type</FieldLabel><ToggleGroup value={[kind]} onValueChange={(values) => values[0] && setKind(values[0] as ServerKind)} variant="outline" spacing={0}><ToggleGroupItem value="Vanilla">Vanilla</ToggleGroupItem><ToggleGroupItem value="Paper">Paper</ToggleGroupItem><ToggleGroupItem value="Fabric">Fabric</ToggleGroupItem><ToggleGroupItem value="Forge">Forge</ToggleGroupItem><ToggleGroupItem value="NeoForge">NeoForge</ToggleGroupItem></ToggleGroup><FieldDescription>Paper supports plugins. Fabric, Forge, and NeoForge support their respective mod ecosystems.</FieldDescription></Field>}</FieldGroup>}
+          {step === 1 && <FieldGroup><Field><FieldLabel>Creation source</FieldLabel><ToggleGroup value={[source]} onValueChange={(values) => values[0] && setSource(values[0] as "Software" | "Modpack")} variant="outline" spacing={0}><ToggleGroupItem value="Software">Server software</ToggleGroupItem><ToggleGroupItem value="Modpack">Modrinth modpack</ToggleGroupItem></ToggleGroup><FieldDescription>Choose a distribution directly, install Gate Proxy, or let a Modrinth pack define Minecraft and its loader.</FieldDescription></Field>{source === "Software" && <Field><FieldLabel>Server type</FieldLabel><ToggleGroup value={[kind]} onValueChange={(values) => values[0] && setKind(values[0] as ServerKind)} variant="outline" spacing={0}><ToggleGroupItem value="Vanilla">Vanilla</ToggleGroupItem><ToggleGroupItem value="Paper">Paper</ToggleGroupItem><ToggleGroupItem value="Fabric">Fabric</ToggleGroupItem><ToggleGroupItem value="Forge">Forge</ToggleGroupItem><ToggleGroupItem value="NeoForge">NeoForge</ToggleGroupItem><ToggleGroupItem value="Gate">Gate Proxy</ToggleGroupItem></ToggleGroup><FieldDescription>Gate is a fixed 256 MiB proxy workload. It does not need Java, a Minecraft version, RAM selection, or EULA acceptance.</FieldDescription></Field>}</FieldGroup>}
+          {step === 2 && isGate && <FieldGroup><Field><FieldLabel htmlFor="gate-name">Server name</FieldLabel><Input id="gate-name" value={gateName} onChange={(event) => setGateName(event.target.value)} /></Field><Field><FieldLabel htmlFor="gate-port">Real local listener port</FieldLabel><Input id="gate-port" type="number" min={1024} max={65535} value={gatePort} onChange={(event) => setGatePort(Number(event.target.value))} /><FieldDescription>This locally bound port is conflict-checked. The advertised external address can use a different NAT, SRV, or forwarded port.</FieldDescription></Field><Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="gate-start-on-boot">Start on boot</FieldLabel><FieldDescription>Start this Gate instance whenever the managed runtime starts.</FieldDescription></FieldContent><Switch id="gate-start-on-boot" checked={gateStartOnBoot} onCheckedChange={setGateStartOnBoot} /></Field></FieldGroup>}
           {step === 2 && source === "Modpack" && <ModpackPicker inspection={packInspection} selectedOptionalFiles={selectedOptionalFiles} onChange={(value, optional) => { setPackInspection(value); setSelectedOptionalFiles(optional) }} />}
           {step === 2 && source === "Software" && <FieldGroup><Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="experimental">Show experimental versions</FieldLabel><FieldDescription>Includes snapshots, unstable loader tools, and non-recommended builds.</FieldDescription></FieldContent><Switch id="experimental" checked={showExperimental} onCheckedChange={setShowExperimental} /></Field>{showExperimental && <Alert><AlertTriangleIcon /><AlertTitle>Experimental software</AlertTitle><AlertDescription>Snapshots and unstable builds can corrupt worlds or break plugins. Back up important data before using them.</AlertDescription></Alert>}<Field><FieldLabel>Minecraft version</FieldLabel>{catalogLoading ? <Skeleton className="h-9 w-full" /> : versions.length ? <Select items={versions.map((item) => ({ value: item, label: item }))} value={version} onValueChange={(value) => value && setSelectedVersion(value)}><SelectTrigger className="w-full" aria-label="Minecraft version"><SelectValue placeholder="Choose a stable release" /></SelectTrigger><SelectContent><SelectGroup>{versions.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectGroup></SelectContent></Select> : <Alert variant="destructive"><AlertTitle>Catalog unavailable</AlertTitle><AlertDescription>Check the panel’s network connection and retry.</AlertDescription></Alert>}</Field>{serverKind === "Paper" && visibleBuilds.length > 0 && <Field><FieldLabel>Paper build</FieldLabel><Select items={visibleBuilds.map((item) => ({ value: item.id, label: `${item.id} · ${item.channel}` }))} value={build} onValueChange={(value) => value && setSelectedBuild(value)}><SelectTrigger className="w-full" aria-label="Paper build"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{visibleBuilds.map((item) => <SelectItem key={item.id} value={item.id}>{item.id} · {item.channel}{item.experimental ? " (experimental)" : ""}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>}{serverKind === "Fabric" && <><Field><FieldLabel>Fabric loader</FieldLabel><Select items={fabricLoaders.map((item) => ({ value: item.version, label: item.version }))} value={loaderVersion} onValueChange={(value) => value && setSelectedLoader(value)}><SelectTrigger className="w-full" aria-label="Fabric loader"><SelectValue placeholder="Choose loader" /></SelectTrigger><SelectContent><SelectGroup>{fabricLoaders.map((item) => <SelectItem key={item.version} value={item.version}>{item.version}{item.stable ? "" : " (unstable)"}</SelectItem>)}</SelectGroup></SelectContent></Select></Field><Field><FieldLabel>Fabric installer</FieldLabel><Select items={installers.map((item) => ({ value: item.version, label: item.version }))} value={installerVersion} onValueChange={(value) => value && setSelectedInstaller(value)}><SelectTrigger className="w-full" aria-label="Fabric installer"><SelectValue placeholder="Choose installer" /></SelectTrigger><SelectContent><SelectGroup>{installers.map((item) => <SelectItem key={item.version} value={item.version}>{item.version}{item.stable ? "" : " (unstable)"}</SelectItem>)}</SelectGroup></SelectContent></Select></Field></>}{(serverKind === "Forge" || serverKind === "NeoForge") && <Field><FieldLabel>{serverKind} version</FieldLabel><Select items={visibleLoaderBuilds.map((item) => ({ value: item.version, label: `${item.version} · ${item.channel}` }))} value={loaderVersion} onValueChange={(value) => value && setSelectedLoader(value)}><SelectTrigger className="w-full" aria-label={`${serverKind} version`}><SelectValue placeholder={`Choose ${serverKind} version`} /></SelectTrigger><SelectContent><SelectGroup>{visibleLoaderBuilds.map((item) => <SelectItem key={item.version} value={item.version}>{item.version} · {item.channel}{item.experimental ? " (experimental)" : ""}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>}</FieldGroup>}
           {step === 3 && <FieldGroup><Field><FieldLabel>Java runtime</FieldLabel>{compatibleJava.length ? <Select items={compatibleJava.map((item) => ({ value: item.id, label: `Java ${item.major} · ${item.vendor}` }))} value={javaId} onValueChange={(value) => value && setSelectedJavaId(value)}><SelectTrigger className="w-full" aria-label="Java runtime"><SelectValue placeholder="Choose Java" /></SelectTrigger><SelectContent><SelectGroup>{compatibleJava.map((item) => <SelectItem key={item.id} value={item.id}>Java {item.major} · {item.vendor}</SelectItem>)}</SelectGroup></SelectContent></Select> : <Alert variant="destructive"><AlertTitle>Java {requiredJava}+ is required</AlertTitle><AlertDescription>Install a compatible Java runtime on the host, then rescan from the Java page.</AlertDescription></Alert>} {selectedRuntime && <Alert><CheckIcon /><AlertTitle>Compatible runtime found</AlertTitle><AlertDescription>{selectedRuntime.path} · Java {selectedRuntime.major}</AlertDescription></Alert>}</Field>{memoryCapacityAvailable ? <Field><FieldLabel>RAM: {(effectiveMemoryMb / 1024).toFixed(1)} GiB</FieldLabel>{supportedMemoryLimitMb > MEMORY_MIN_MB ? <Slider aria-label="RAM" min={MEMORY_MIN_MB} max={supportedMemoryLimitMb} step={MEMORY_STEP_MB} value={[effectiveMemoryMb]} onValueChange={(value) => setMemoryMb(clampMemoryMb(Array.isArray(value) ? value[0] : value, supportedMemoryLimitMb, MEMORY_MIN_MB))} /> : <Input aria-label="RAM" value={`${(effectiveMemoryMb / 1024).toFixed(1)} GiB`} disabled readOnly />}<FieldDescription>Sets both Xms and Xmx to this exact value. MC Panel privately reserves JVM overhead. Maximum selectable RAM: {(supportedMemoryLimitMb / 1024).toFixed(1)} GiB.</FieldDescription></Field> : <Alert variant="destructive"><AlertTitle>Not enough allocatable host RAM</AlertTitle><AlertDescription>A server needs room for a 0.5 GiB heap plus JVM overhead, but the host allocation ceiling is {(hostTotalMemoryLimitMb / 1024).toFixed(1)} GiB.</AlertDescription></Alert>}</FieldGroup>}
@@ -269,7 +305,7 @@ export function ServerCreationPage() {
     <Card className="mx-auto w-full max-w-3xl">
       <CardHeader>
         <CardTitle>{failed ? "Installation stopped" : "Server installation in progress"}</CardTitle>
-        <CardDescription>{server.data ? `${server.data.kind} · Minecraft ${server.data.version} · Port ${server.data.port}` : `Installation job ${jobId.slice(0, 8)}`}</CardDescription>
+        <CardDescription>{server.data ? `${server.data.kind === "Gate" ? "Gate Proxy" : `${server.data.kind} · Minecraft`} ${server.data.version} · Port ${server.data.port}` : `Installation job ${jobId.slice(0, 8)}`}</CardDescription>
         <CardAction>{failed
           ? <Badge variant="destructive"><AlertTriangleIcon data-icon="inline-start" />Failed</Badge>
           : <Badge variant="outline"><Spinner data-icon="inline-start" />{job.data?.state === "Queued" ? "Queued" : "Installing"}</Badge>}
@@ -305,10 +341,23 @@ export function ServerCreationPage() {
 export function ServerOverviewPage() {
   const { serverId = "" } = useParams()
   const queryClient = useQueryClient()
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleteError, setDeleteError] = useState<string>()
   const { data: server, isLoading } = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
   const lifecycle = useMutation({ mutationFn: (action: "start" | "stop" | "restart" | "update") => api.lifecycle(serverId, action), onSuccess: (job) => { toast.success("Operation started", { description: job.message ?? `Operation ${job.id.slice(0, 8)}` }); void queryClient.invalidateQueries({ queryKey: ["server", serverId] }) }, onError: (error) => toast.error(error.message) })
   const kill = useMutation({ mutationFn: () => api.kill(serverId), onSuccess: () => { toast.success("Force-kill requested"); void queryClient.invalidateQueries({ queryKey: ["server", serverId] }) }, onError: (error) => toast.error(error.message) })
-  const remove = useMutation({ mutationFn: () => api.deleteServer(serverId), onSuccess: () => window.location.assign("/"), onError: (error) => toast.error(error.message) })
+  const remove = useMutation({
+    mutationFn: () => api.deleteServer(serverId),
+    onMutate: () => setDeleteError(undefined),
+    onSuccess: () => window.location.assign("/"),
+    onError: async (error) => {
+      try { await api.server(serverId) }
+      catch (checkError) {
+        if (checkError instanceof ApiError && checkError.status === 404) { window.location.assign("/"); return }
+      }
+      setDeleteError(error.message)
+    },
+  })
   if (isLoading || !server) return <Page title="Server overview"><Skeleton className="h-72" /></Page>
   const stopped = server.state === "Stopped"
   const running = server.state === "Running"
@@ -317,11 +366,12 @@ export function ServerOverviewPage() {
   const canDelete = server.state === "Stopped" || server.state === "Error" || server.state === "Crashed"
   const lifecycleAction = running ? "stop" : canStart ? "start" : undefined
   const lifecycleBusy = server.state === "Installing" || server.state === "Starting" || server.state === "Stopping" || server.state === "BackingUp" || server.state === "Updating"
-  return <Page title={<span className="flex items-center gap-3"><ServerAvatar server={server} className="size-10" /><span>{server.name}</span></span>} description={`${server.kind} · Minecraft ${server.version}`} actions={<><Button variant="ghost" disabled={lifecycle.isPending || !stopped} title={stopped ? undefined : "Updates require a stopped server."} onClick={() => lifecycle.mutate("update")}>Update</Button><Button variant="outline" disabled={lifecycle.isPending || !running} title={running ? undefined : "Restart is available while the server is running."} onClick={() => lifecycle.mutate("restart")}><RotateCwIcon data-icon="inline-start" />Restart</Button><Button aria-label={lifecycleStateLabels[server.state]} variant={running ? "outline" : "default"} disabled={lifecycle.isPending || !lifecycleAction} title={lifecycleAction ? undefined : `No lifecycle action is available while the server is ${server.state.toLowerCase()}.`} onClick={() => lifecycleAction && lifecycle.mutate(lifecycleAction)}>{lifecycle.isPending || lifecycleBusy ? <Spinner data-icon="inline-start" /> : running ? <SquareIcon data-icon="inline-start" /> : canStart ? <CheckIcon data-icon="inline-start" /> : null}{lifecycleStateLabels[server.state]}</Button></>}>
+  return <Page title={<span className="flex items-center gap-3"><ServerAvatar server={server} className="size-10" /><span>{server.name}</span></span>} description={server.kind === "Gate" ? `Gate Proxy · ${server.version}` : `${server.kind} · Minecraft ${server.version}`} actions={<>{server.kind === "Gate" ? <Button variant="ghost" nativeButton={false} render={<Link to={`/servers/${server.id}/gate`} />}>Gate settings</Button> : <Button variant="ghost" disabled={lifecycle.isPending || !stopped} title={stopped ? undefined : "Updates require a stopped server."} onClick={() => lifecycle.mutate("update")}>Update</Button>}<Button variant="outline" disabled={lifecycle.isPending || !running} title={running ? undefined : "Restart is available while the server is running."} onClick={() => lifecycle.mutate("restart")}><RotateCwIcon data-icon="inline-start" />Restart</Button><Button aria-label={lifecycleStateLabels[server.state]} variant={running ? "outline" : "default"} disabled={lifecycle.isPending || !lifecycleAction} title={lifecycleAction ? undefined : `No lifecycle action is available while the server is ${server.state.toLowerCase()}.`} onClick={() => lifecycleAction && lifecycle.mutate(lifecycleAction)}>{lifecycle.isPending || lifecycleBusy ? <Spinner data-icon="inline-start" /> : running ? <SquareIcon data-icon="inline-start" /> : canStart ? <CheckIcon data-icon="inline-start" /> : null}{lifecycleStateLabels[server.state]}</Button></>}>
     {server.restartRequired && <Alert><AlertTriangleIcon /><AlertTitle>Restart required</AlertTitle><AlertDescription>Saved settings will take effect after the next graceful restart.</AlertDescription></Alert>}
-    <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><MetricCard label="State" value={server.state} icon={CircleGaugeIcon} /><MetricCard label="Players" value={`${server.playerCount} / ${server.maxPlayers}`} icon={UsersIcon} /><MetricCard label="CPU" value={`${server.cpuPercent.toFixed(0)}%`} icon={CpuIcon} progress={server.cpuPercent} /><MetricCard label="Memory" value={`${server.memoryUsedMb.toFixed(0)} / ${server.memoryMb} MiB`} icon={MemoryStickIcon} progress={server.memoryUsedMb / server.memoryMb * 100} /></section>
-    <Card><CardHeader><CardTitle>Connection and runtime</CardTitle><CardAction><StatusBadge state={server.state} /></CardAction></CardHeader><CardContent className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4"><div><p className="text-xs text-muted-foreground">Connection</p><p className="font-medium">Host address:{server.port}</p></div><div><p className="text-xs text-muted-foreground">Uptime</p><p className="font-medium">{duration(server.uptimeSeconds)}</p></div><div><p className="text-xs text-muted-foreground">Server build</p><p className="font-medium">{server.kind} {server.version}</p></div><div><p className="text-xs text-muted-foreground">Maximum RAM</p><p className="font-medium">{(server.memoryMb / 1024).toFixed(1)} GiB</p></div></CardContent></Card>
-    {(canKill || canDelete) && <Card><CardHeader><CardTitle>Danger zone</CardTitle><CardDescription>Force-kill is only for an unresponsive process. Deletion permanently removes the managed server files and backups.</CardDescription></CardHeader><CardContent className="flex flex-wrap gap-2">{canKill && <AlertDialog><AlertDialogTrigger render={<Button variant="destructive" />}>Force-kill process</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Force-kill {server.name}?</AlertDialogTitle><AlertDialogDescription>This skips Minecraft’s graceful save and shutdown path. Unsaved world data may be lost or corrupted.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => kill.mutate()}>Force-kill</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}{canDelete && <AlertDialog><AlertDialogTrigger render={<Button variant="destructive" />}><Trash2Icon data-icon="inline-start" />Delete server</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete {server.name}?</AlertDialogTitle><AlertDialogDescription>The server must not be running. Its panel-managed server files and backups will both be permanently removed.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => remove.mutate()}>Delete server</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}</CardContent></Card>}
+    <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><MetricCard label="State" value={server.state} icon={CircleGaugeIcon} /><MetricCard label={server.kind === "Gate" ? "Connections" : "Players"} value={server.kind === "Gate" ? String(server.playerCount) : `${server.playerCount} / ${server.maxPlayers}`} icon={UsersIcon} /><MetricCard label="CPU" value={`${server.cpuPercent.toFixed(0)}%`} icon={CpuIcon} progress={server.cpuPercent} /><MetricCard label="Memory" value={`${server.memoryUsedMb.toFixed(0)} / ${server.memoryMb} MiB`} icon={MemoryStickIcon} progress={server.memoryUsedMb / server.memoryMb * 100} /></section>
+    <Card size="sm"><CardHeader><CardTitle>Connection</CardTitle><CardDescription>{server.resolvedConnectionAddress ?? "No connection address is available until a global or custom address is set."}</CardDescription><CardAction><div className="flex items-center gap-2"><Badge variant="outline">{server.connectionAddressSource ?? "Unavailable"}</Badge>{server.resolvedConnectionAddress && <Button size="icon-sm" variant="ghost" onClick={() => { void navigator.clipboard.writeText(server.resolvedConnectionAddress!); toast.success("Connection address copied") }}><ClipboardIcon /><span className="sr-only">Copy connection address</span></Button>}</div></CardAction></CardHeader><CardContent><PublicHostEditor serverId={server.id} value={server.advertisedAddressOverride} addressRevision={server.addressRevision ?? ""} inheritedPreview={server.connectionAddressSource === "Global" ? server.resolvedConnectionAddress : undefined} compact /></CardContent></Card>
+    <Card><CardHeader><CardTitle>Runtime details</CardTitle><CardAction><StatusBadge state={server.state} /></CardAction></CardHeader><CardContent className="grid gap-5 sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Uptime</p><p className="font-medium">{duration(server.uptimeSeconds)}</p></div><div><p className="text-xs text-muted-foreground">Server build</p><p className="font-medium">{server.kind} {server.version}</p></div><div><p className="text-xs text-muted-foreground">Memory limit</p><p className="font-medium">{server.kind === "Gate" ? "256 MiB fixed" : `${(server.memoryMb / 1024).toFixed(1)} GiB`}</p></div></CardContent></Card>
+    {(canKill || canDelete) && <Card><CardHeader><CardTitle>Danger zone</CardTitle><CardDescription>Force-kill is only for an unresponsive process. Deletion permanently removes this managed workload, its files, backups, and instance-local secrets.</CardDescription></CardHeader><CardContent className="flex flex-wrap gap-2">{canKill && <AlertDialog><AlertDialogTrigger render={<Button variant="destructive" />}>Force-kill process</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Force-kill {server.name}?</AlertDialogTitle><AlertDialogDescription>This skips the workload’s graceful shutdown path. Unsaved data may be lost or corrupted.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => kill.mutate()}>Force-kill</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}{canDelete && <AlertDialog open={deleteOpen} onOpenChange={(open) => { if (!remove.isPending) { setDeleteOpen(open); if (!open) setDeleteError(undefined) } }}><AlertDialogTrigger render={<Button variant="destructive" />}><Trash2Icon data-icon="inline-start" />Delete server</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete {server.name}?</AlertDialogTitle><AlertDialogDescription>The server must not be running. Its panel-managed files and backups will be permanently removed. Gate instances also lose their private forwarding secrets.</AlertDialogDescription></AlertDialogHeader>{deleteError && <Alert variant="destructive"><AlertTriangleIcon /><AlertTitle>Deletion was blocked</AlertTitle><AlertDescription>{deleteError}</AlertDescription></Alert>}<AlertDialogFooter><AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={remove.isPending} onClick={(event) => { event.preventDefault(); remove.mutate() }}>{remove.isPending && <Spinner data-icon="inline-start" />}{remove.isPending ? "Deleting…" : "Delete server"}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}</CardContent></Card>}
   </Page>
 }
 

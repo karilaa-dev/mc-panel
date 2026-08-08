@@ -1,6 +1,10 @@
+using System.Text.Json;
+using McPanel.Api.Configuration;
 using McPanel.Api.Data;
+using McPanel.Api.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace McPanel.Api.Tests;
 
@@ -8,6 +12,7 @@ public sealed class DatabaseIntegrationTests : IDisposable
 {
     private readonly string _file = Path.Combine(Path.GetTempPath(), "mcpanel-state-" + Guid.NewGuid().ToString("N") + ".db");
     private readonly string _consoleFile = Path.Combine(Path.GetTempPath(), "mcpanel-console-" + Guid.NewGuid().ToString("N") + ".db");
+    private readonly string _dataRoot = Path.Combine(Path.GetTempPath(), "mcpanel-data-" + Guid.NewGuid().ToString("N"));
 
     [Fact]
     public async Task Sqlite_persists_enum_state_and_single_player_identity()
@@ -106,7 +111,7 @@ public sealed class DatabaseIntegrationTests : IDisposable
         await using var verify = new SqliteConnection($"Data Source={_file}");
         await verify.OpenAsync();
         await using var select = verify.CreateCommand();
-        select.CommandText = "SELECT \"InitialMemoryMb\", \"UseAikarFlags\", \"MemoryLimitMb\", \"LoaderVersion\", \"InstallerVersion\", \"LaunchMode\", \"LaunchTarget\" FROM \"Servers\" LIMIT 1;";
+        select.CommandText = "SELECT \"InitialMemoryMb\", \"UseAikarFlags\", \"MemoryLimitMb\", \"LoaderVersion\", \"InstallerVersion\", \"LaunchMode\", \"LaunchTarget\", \"PublicHost\" FROM \"Servers\" LIMIT 1;";
         await using var reader = await select.ExecuteReaderAsync();
         Assert.True(await reader.ReadAsync());
         Assert.Equal(6144, reader.GetInt32(0));
@@ -116,6 +121,20 @@ public sealed class DatabaseIntegrationTests : IDisposable
         Assert.Equal("1.0.3", reader.GetString(4));
         Assert.Equal("Jar", reader.GetString(5));
         Assert.Equal("fabric-server-launch.jar", reader.GetString(6));
+        Assert.True(reader.IsDBNull(7));
+        await reader.DisposeAsync();
+        select.CommandText = "SELECT \"Mode\", \"PublicPort\", \"ClassicForwardingMode\", length(\"Revision\") FROM \"ProxySettings\" WHERE \"Id\" = 1;";
+        await using var proxy = await select.ExecuteReaderAsync();
+        Assert.True(await proxy.ReadAsync());
+        Assert.Equal("Lite", proxy.GetString(0));
+        Assert.Equal(25565, proxy.GetInt32(1));
+        Assert.Equal("Velocity", proxy.GetString(2));
+        Assert.Equal(32, proxy.GetInt32(3));
+        await proxy.DisposeAsync();
+        select.CommandText = "SELECT COUNT(*) FROM pragma_table_info('GateSettings') WHERE name = 'DefaultExternalBackendId';";
+        Assert.Equal(1L, (long)(await select.ExecuteScalarAsync())!);
+        select.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'GateExternalBackends';";
+        Assert.Equal(1L, (long)(await select.ExecuteScalarAsync())!);
     }
 
     [Fact]
@@ -166,10 +185,92 @@ public sealed class DatabaseIntegrationTests : IDisposable
             Assert.Single(await db.Lines.Where(x => x.ServerId == id).ToListAsync());
     }
 
+    [Fact]
+    public async Task Legacy_advertised_hosts_preserve_the_singleton_effective_port()
+    {
+        await using (var connection = new SqliteConnection($"Data Source={_file}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE "Admins" ("Id" INTEGER NOT NULL PRIMARY KEY, "Username" TEXT NOT NULL, "PasswordHash" TEXT NOT NULL, "CreatedAt" INTEGER NOT NULL);
+                CREATE TABLE "Servers" ("Id" TEXT NOT NULL PRIMARY KEY, "MemoryMb" INTEGER NOT NULL, "PublicHost" TEXT NULL);
+                CREATE TABLE "ProxySettings" (
+                    "Id" INTEGER NOT NULL PRIMARY KEY, "Mode" TEXT NOT NULL, "GlobalPublicHost" TEXT NULL,
+                    "PublicPort" INTEGER NOT NULL, "DefaultServerId" TEXT NULL, "ClassicForwardingMode" TEXT NOT NULL,
+                    "BackendSetupAcknowledgementHash" TEXT NULL, "ApiPort" INTEGER NOT NULL, "Revision" TEXT NOT NULL, "UpdatedAt" INTEGER NOT NULL);
+                INSERT INTO "Servers" ("Id", "MemoryMb", "PublicHost") VALUES ('00000000-0000-0000-0000-000000000001', 2048, 'PLAY.EXAMPLE.COM');
+                INSERT INTO "ProxySettings" VALUES (1, 'Lite', 'network.example.com', 25570, NULL, 'Velocity', NULL, 18080, 'revision', 0);
+                """;
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var options = new DbContextOptionsBuilder<StateDbContext>().UseSqlite($"Data Source={_file}").Options;
+        await using var db = new StateDbContext(options);
+        await db.EnsureCompatibleSchemaAsync();
+        await using var verify = new SqliteConnection($"Data Source={_file}");
+        await verify.OpenAsync();
+        await using var select = verify.CreateCommand();
+        select.CommandText = "SELECT \"PublicHost\", \"PublicPort\" FROM \"Servers\" LIMIT 1;";
+        await using var reader = await select.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("PLAY.EXAMPLE.COM", reader.GetString(0));
+        Assert.Equal(25570, reader.GetInt32(1));
+        Assert.Equal("network.example.com", (await db.PanelSettings.AsNoTracking().SingleAsync()).GlobalServerHost);
+    }
+
+    [Fact]
+    public async Task Complete_legacy_Gate_installation_becomes_one_real_server_and_default_state_does_not()
+    {
+        var paths = new PanelPaths(new PanelOptions { DataDirectory = _dataRoot, ConfigDirectory = Path.Combine(_dataRoot, "config") });
+        paths.EnsureCreated();
+        var options = new DbContextOptionsBuilder<StateDbContext>().UseSqlite($"Data Source={_file}").Options;
+        await using var db = new StateDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+        await db.EnsureCompatibleSchemaAsync();
+        var backendId = Guid.NewGuid();
+        db.Servers.Add(new ServerEntity { Id = backendId, Name = "Lobby", Kind = ServerKind.Paper, Version = "1.21.8", JavaRuntimeId = "java", State = ServerState.Stopped });
+        var proxy = await db.ProxySettings.SingleAsync();
+        proxy.GlobalPublicHost = "play.example.com";
+        proxy.PublicPort = 25570;
+        proxy.DefaultServerId = backendId;
+        proxy.ApiPort = 18080;
+        await db.SaveChangesAsync();
+
+        var migration = new LegacyGateMigrationService(paths, NullLogger<LegacyGateMigrationService>.Instance);
+        await migration.MigrateAsync(db, CancellationToken.None);
+        Assert.Empty(await db.Servers.Where(x => x.Kind == ServerKind.Gate).ToListAsync());
+
+        var versionDirectory = Path.Combine(paths.LegacyGateVersions, "0.65.0");
+        Directory.CreateDirectory(versionDirectory);
+        var executable = Path.Combine(versionDirectory, "gate");
+        await File.WriteAllTextAsync(executable, "verified legacy binary");
+        await File.WriteAllTextAsync(paths.LegacyGateConfig, "{}");
+        await File.WriteAllTextAsync(paths.LegacyGateInstallManifest, JsonSerializer.Serialize(
+            new GateInstallManifest("0.65.0", executable, new string('a', 64), null, DateTimeOffset.UtcNow), GateReleaseService.JsonOptions));
+        await File.WriteAllTextAsync(paths.LegacyGateVelocitySecret, "secret");
+        await File.WriteAllTextAsync(paths.GateDesiredState, "{\"desiredRunning\":true}");
+
+        await migration.MigrateAsync(db, CancellationToken.None);
+        var gate = await db.Servers.SingleAsync(x => x.Kind == ServerKind.Gate);
+        Assert.Equal(25570, gate.Port);
+        Assert.Equal(256, gate.MemoryLimitMb);
+        Assert.True(gate.StartOnBoot);
+        var settings = await db.GateSettings.SingleAsync(x => x.ServerId == gate.Id);
+        Assert.Equal(backendId, settings.DefaultBackendServerId);
+        Assert.Equal(18080, settings.ApiPort);
+        Assert.Contains(await db.GateBackends.ToListAsync(), x => x.GateServerId == gate.Id && x.BackendServerId == backendId);
+        Assert.True(File.Exists(paths.GateInstallManifest(gate.Id)));
+        Assert.True(File.Exists(paths.GateVelocitySecret(gate.Id)));
+        Assert.False(File.Exists(paths.LegacyGateInstallManifest));
+        Assert.False(File.Exists(paths.LegacyGateVelocitySecret));
+    }
+
     public void Dispose()
     {
         SqliteConnection.ClearAllPools();
         if (File.Exists(_file)) File.Delete(_file);
         if (File.Exists(_consoleFile)) File.Delete(_consoleFile);
+        if (Directory.Exists(_dataRoot)) Directory.Delete(_dataRoot, true);
     }
 }

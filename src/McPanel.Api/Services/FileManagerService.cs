@@ -19,10 +19,14 @@ public sealed class FileManagerService(
 {
     public IReadOnlyList<FileEntryDto> List(Guid serverId, string relativePath)
     {
-        var root = RequireRoot(serverId);
+        var access = RequireAccess(serverId);
+        var root = access.Root;
         var directory = resolver.Resolve(root, relativePath ?? "", false);
+        RejectProtectedGatePath(access, directory);
         if (!Directory.Exists(directory)) throw PanelProblems.NotFound("Directory");
-        return Directory.EnumerateFileSystemEntries(directory).Select(path =>
+        return Directory.EnumerateFileSystemEntries(directory)
+            .Where(path => !access.IsGate || !IsProtectedGatePath(root, path))
+            .Select(path =>
         {
             var info = new FileInfo(path);
             var isDirectory = (info.Attributes & FileAttributes.Directory) != 0;
@@ -34,7 +38,9 @@ public sealed class FileManagerService(
     public async Task<string> ReadTextAsync(Guid serverId, string relativePath, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(relativePath)) throw PanelProblems.Validation("A file path is required.");
-        var path = resolver.Resolve(RequireRoot(serverId), relativePath, false);
+        var access = RequireAccess(serverId);
+        var path = resolver.Resolve(access.Root, relativePath, false);
+        RejectProtectedGatePath(access, path);
         var info = new FileInfo(path);
         if (!info.Exists) throw PanelProblems.NotFound("File");
         if (info.Length > options.Value.MaxTextFileBytes) throw new PanelException(413, "FILE_TOO_LARGE", "The file is too large for the text editor.");
@@ -50,6 +56,7 @@ public sealed class FileManagerService(
         if (Encoding.UTF8.GetByteCount(content) > options.Value.MaxTextFileBytes) throw new PanelException(413, "FILE_TOO_LARGE", "The text is too large.");
         using var mutation = await AcquireMutationAsync(serverId, cancellationToken);
         var target = resolver.Resolve(mutation.Root, relativePath);
+        RejectProtectedGatePath(mutation, target);
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
         var temporary = target + $".mcpanel-{Guid.NewGuid():N}.tmp";
         try
@@ -65,6 +72,7 @@ public sealed class FileManagerService(
         if (string.IsNullOrWhiteSpace(relativePath)) throw PanelProblems.Validation("A path is required.");
         using var mutation = await AcquireMutationAsync(serverId, cancellationToken);
         var path = resolver.Resolve(mutation.Root, relativePath);
+        RejectProtectedGatePath(mutation, path);
         if (File.Exists(path) || Directory.Exists(path)) throw PanelProblems.Conflict("VALIDATION_FAILED", "The path already exists.");
         if (directory) Directory.CreateDirectory(path);
         else { Directory.CreateDirectory(Path.GetDirectoryName(path)!); using var _ = new FileStream(path, FileMode.CreateNew); }
@@ -78,8 +86,10 @@ public sealed class FileManagerService(
             throw PanelProblems.Validation("The upload file name is invalid.");
         using var mutation = await AcquireMutationAsync(serverId, cancellationToken);
         var directory = resolver.Resolve(mutation.Root, relativeDirectory ?? "", false);
+        RejectProtectedGatePath(mutation, directory);
         if (!Directory.Exists(directory)) throw PanelProblems.NotFound("Directory");
         var target = resolver.Resolve(directory, fileName);
+        RejectProtectedGatePath(mutation, target);
         var temporary = target + $".mcpanel-{Guid.NewGuid():N}.upload";
         try
         {
@@ -102,7 +112,9 @@ public sealed class FileManagerService(
 
     public (string Path, string Name) Download(Guid serverId, string relativePath)
     {
-        var path = resolver.Resolve(RequireRoot(serverId), relativePath, false);
+        var access = RequireAccess(serverId);
+        var path = resolver.Resolve(access.Root, relativePath, false);
+        RejectProtectedGatePath(access, path);
         if (!File.Exists(path)) throw PanelProblems.NotFound("File");
         return (path, Path.GetFileName(path));
     }
@@ -113,10 +125,12 @@ public sealed class FileManagerService(
         using var mutation = await AcquireMutationAsync(serverId, cancellationToken);
         var root = mutation.Root;
         var source = resolver.Resolve(root, sourceRelative, false);
+        RejectProtectedGatePath(mutation, source);
         var sourceIsFile = File.Exists(source);
         var sourceIsDirectory = Directory.Exists(source);
         if (!sourceIsFile && !sourceIsDirectory) throw PanelProblems.NotFound("Path");
         var destination = resolver.Resolve(root, destinationRelative);
+        RejectProtectedGatePath(mutation, destination);
         if (File.Exists(destination) || Directory.Exists(destination)) throw PanelProblems.Conflict("VALIDATION_FAILED", "The destination already exists.");
         if (sourceIsDirectory && IsDescendant(destination, source))
             throw PanelProblems.Validation("A directory cannot be moved inside itself.");
@@ -130,6 +144,7 @@ public sealed class FileManagerService(
         if (string.IsNullOrWhiteSpace(relativePath)) throw PanelProblems.Validation("The server root cannot be deleted through the file manager.");
         using var mutation = await AcquireMutationAsync(serverId, cancellationToken);
         var path = resolver.Resolve(mutation.Root, relativePath, false);
+        RejectProtectedGatePath(mutation, path);
         if (File.Exists(path)) File.Delete(path);
         else if (Directory.Exists(path)) Directory.Delete(path, true);
         else throw PanelProblems.NotFound("Path");
@@ -141,7 +156,9 @@ public sealed class FileManagerService(
         using var mutation = await AcquireMutationAsync(serverId, cancellationToken);
         var root = mutation.Root;
         var archivePath = resolver.Resolve(root, archiveRelative, false);
+        RejectProtectedGatePath(mutation, archivePath);
         var destination = resolver.Resolve(root, destinationRelative);
+        RejectProtectedGatePath(mutation, destination);
         if (!File.Exists(archivePath)) throw PanelProblems.NotFound("Archive");
         var stage = Path.Combine(paths.Staging, $"extract-{serverId:N}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(stage);
@@ -170,6 +187,7 @@ public sealed class FileManagerService(
                 await using var target = new FileStream(output, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024, true);
                 actual = await CopyWithLimitAsync(source, target, actual, options.Value.MaxExtractedBytes, cancellationToken);
             }
+            if (mutation.IsGate) ValidateGateActivation(stage, destination, root);
             ValidateActivation(stage, destination);
             if (!Directory.Exists(destination)) Directory.Move(stage, destination);
             else ActivateDirectory(stage, destination);
@@ -266,11 +284,16 @@ public sealed class FileManagerService(
         return candidate.StartsWith(prefix, comparison);
     }
 
-    private string RequireRoot(Guid serverId)
+    private ServerFileAccess RequireAccess(Guid serverId)
     {
-        var root = paths.Instance(serverId);
-        if (!Directory.Exists(root)) throw PanelProblems.NotFound("Server directory");
-        return root;
+        using (var db = stateFactory.CreateDbContext())
+        {
+            var server = db.Servers.AsNoTracking().SingleOrDefault(x => x.Id == serverId)
+                ?? throw PanelProblems.NotFound("Server");
+            var root = paths.Instance(serverId);
+            if (!Directory.Exists(root)) throw PanelProblems.NotFound("Server directory");
+            return new ServerFileAccess(root, server.Kind == ServerKind.Gate);
+        }
     }
 
     private async Task<MutationLease> AcquireMutationAsync(Guid serverId, CancellationToken cancellationToken)
@@ -293,7 +316,7 @@ public sealed class FileManagerService(
 
             var root = paths.Instance(serverId);
             if (!Directory.Exists(root)) throw PanelProblems.NotFound("Server directory");
-            return new MutationLease(root, serverLock);
+            return new MutationLease(root, server.Kind == ServerKind.Gate, serverLock);
         }
         catch
         {
@@ -302,9 +325,41 @@ public sealed class FileManagerService(
         }
     }
 
-    private sealed class MutationLease(string root, IDisposable serverLock) : IDisposable
+    private static void ValidateGateActivation(string source, string destination, string root)
+    {
+        foreach (var entry in Directory.EnumerateFileSystemEntries(source, "*", SearchOption.AllDirectories))
+        {
+            var relative = Path.GetRelativePath(source, entry);
+            var target = Path.GetFullPath(Path.Combine(destination, relative));
+            if (IsProtectedGatePath(root, target)) throw PanelProblems.NotFound("Path");
+        }
+    }
+
+    private static void RejectProtectedGatePath(ServerFileAccess access, string path)
+    {
+        if (access.IsGate && IsProtectedGatePath(access.Root, path)) throw PanelProblems.NotFound("Path");
+    }
+
+    private static void RejectProtectedGatePath(MutationLease mutation, string path)
+    {
+        if (mutation.IsGate && IsProtectedGatePath(mutation.Root, path)) throw PanelProblems.NotFound("Path");
+    }
+
+    private static bool IsProtectedGatePath(string root, string path)
+    {
+        var protectedRoot = Path.GetFullPath(Path.Combine(root, "keys"));
+        var candidate = Path.GetFullPath(path);
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return candidate.Equals(protectedRoot, comparison)
+            || candidate.StartsWith(protectedRoot + Path.DirectorySeparatorChar, comparison);
+    }
+
+    private record ServerFileAccess(string Root, bool IsGate);
+
+    private sealed class MutationLease(string root, bool isGate, IDisposable serverLock) : IDisposable
     {
         public string Root { get; } = root;
+        public bool IsGate { get; } = isGate;
         public void Dispose() => serverLock.Dispose();
     }
 }

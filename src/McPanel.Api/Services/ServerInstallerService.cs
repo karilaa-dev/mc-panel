@@ -21,12 +21,17 @@ public sealed partial class ServerInstallerService(
     ConsoleService console,
     AsyncKeyedLock keyedLock,
     IOptions<PanelOptions> options,
+    GateProxyService gate,
     ILogger<ServerInstallerService> logger)
 {
     public async Task<(ServerEntity Server, JobDto Job)> CreateAsync(CreateServerRequest request, CancellationToken cancellationToken)
     {
         Validate(request);
+        var clientRequestId = NormalizeClientRequestId(request.ClientRequestId);
+        using var creationLock = clientRequestId is null
+            ? null : await keyedLock.AcquireAsync(Guid.ParseExact(clientRequestId, "N"), cancellationToken);
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+        if (await ExistingCreateAsync(db, clientRequestId, cancellationToken) is { } existing) return existing;
         var runtime = await db.JavaRuntimes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == request.JavaRuntimeId, cancellationToken)
             ?? throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
         if (await db.Servers.AnyAsync(x => x.Port == request.Port, cancellationToken))
@@ -49,37 +54,32 @@ public sealed partial class ServerInstallerService(
             Port = request.Port, StartOnBoot = request.StartOnBoot,
             State = ServerState.Installing, EulaAcceptedAt = DateTimeOffset.UtcNow
         };
+        var pending = OperationQueue.CreatePending("Install", entity.Id, clientRequestId);
         db.Servers.Add(entity);
-        await db.SaveChangesAsync(cancellationToken);
-        try
+        db.Jobs.Add(pending);
+        await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
         {
-            var job = await operations.EnqueueAsync("Install", entity.Id,
-                (_, jobId, token) => InstallAsync(entity.Id, jobId, request.IncludeExperimental, token), cancellationToken);
-            return (entity, job);
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
         }
-        catch
-        {
-            // The server row reserves its name and port before the install is queued. If that
-            // handoff fails, leave a visible, deletable Error entry instead of a stuck install.
-            try
-            {
-                entity.State = ServerState.Error;
-                entity.UpdatedAt = DateTimeOffset.UtcNow;
-                await db.SaveChangesAsync(CancellationToken.None);
-            }
-            catch (Exception exception) { logger.LogError(exception, "Could not mark unqueued install {ServerId} as failed", entity.Id); }
-            throw;
-        }
+        var job = await operations.HandoffCommittedAsync(pending,
+            (_, jobId, token) => InstallAsync(entity.Id, jobId, request.IncludeExperimental, token), cancellationToken);
+        if (job.State == JobState.Failed) await MarkHandoffFailureAsync(entity.Id);
+        return (entity, job);
     }
 
     public async Task<(ServerEntity Server, JobDto Job)> CreateModpackAsync(
         CreateModpackServerRequest request, CancellationToken cancellationToken)
     {
         if (request is null) throw PanelProblems.Validation("A modpack server request is required.");
+        var clientRequestId = NormalizeClientRequestId(request.ClientRequestId);
+        using var creationLock = clientRequestId is null
+            ? null : await keyedLock.AcquireAsync(Guid.ParseExact(clientRequestId, "N"), cancellationToken);
+        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+        if (await ExistingCreateAsync(db, clientRequestId, cancellationToken) is { } existing) return existing;
         var inspection = await modpacks.InspectAsync(request.ImportToken, cancellationToken);
         ValidateCommon(request.Name, inspection.MinecraftVersion, request.JavaRuntimeId,
             request.MemoryMb, request.Port, request.EulaAccepted);
-        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var runtime = await db.JavaRuntimes.AsNoTracking().SingleOrDefaultAsync(
             x => x.Id == request.JavaRuntimeId, cancellationToken)
             ?? throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
@@ -104,31 +104,146 @@ public sealed partial class ServerInstallerService(
             ModrinthProjectId = inspection.ProjectId, ModrinthVersionId = inspection.ModrinthVersionId,
             ModpackSource = inspection.Source
         };
+        var pending = OperationQueue.CreatePending("InstallModpack", entity.Id, clientRequestId);
         db.Servers.Add(entity);
+        db.Jobs.Add(pending);
         try
         {
-            await db.SaveChangesAsync(cancellationToken);
-            var job = await operations.EnqueueAsync("InstallModpack", entity.Id,
-                (_, jobId, token) => InstallModpackAsync(
-                    entity.Id, jobId, claim, request.SelectedOptionalFiles, token), cancellationToken);
+            await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
+            {
+                await db.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+            }
+            var job = await operations.HandoffCommittedAsync(pending,
+                (_, jobId, token) => InstallModpackAsync(entity.Id, jobId, claim, request.SelectedOptionalFiles, token), cancellationToken);
+            if (job.State == JobState.Failed)
+            {
+                claim.Dispose();
+                await MarkHandoffFailureAsync(entity.Id);
+            }
             return (entity, job);
         }
         catch
         {
             claim.Dispose();
-            try
-            {
-                entity.State = ServerState.Error;
-                entity.UpdatedAt = DateTimeOffset.UtcNow;
-                await db.SaveChangesAsync(CancellationToken.None);
-            }
-            catch (Exception exception) { logger.LogError(exception, "Could not mark unqueued modpack install {ServerId} as failed", entity.Id); }
             throw;
         }
     }
 
-    public Task<JobDto> QueueUpdateAsync(Guid id, CancellationToken cancellationToken) =>
-        operations.EnqueueAsync("Update", id, (_, jobId, token) => UpdateAsync(id, jobId, token), cancellationToken);
+    public async Task<JobDto> QueueUpdateAsync(Guid id, CancellationToken cancellationToken)
+    {
+        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+        var kind = await db.Servers.Where(x => x.Id == id).Select(x => (ServerKind?)x.Kind).SingleOrDefaultAsync(cancellationToken)
+            ?? throw PanelProblems.NotFound("Server");
+        return kind == ServerKind.Gate
+            ? await gate.QueueUpdateAsync(id, false, cancellationToken)
+            : await operations.EnqueueAsync("Update", id, (_, jobId, token) => UpdateAsync(id, jobId, token), cancellationToken);
+    }
+
+    public async Task<(ServerEntity Server, JobDto Job)> CreateGateAsync(
+        CreateGateServerRequest request, CancellationToken cancellationToken)
+    {
+        if (request is null || string.IsNullOrWhiteSpace(request.Name) || !NameRegex().IsMatch(request.Name.Trim()))
+            throw PanelProblems.Validation("Gate server names must contain 2 to 48 letters, numbers, spaces, '-' or '_'.");
+        if (request.Port is < 1024 or > 65535) throw PanelProblems.Validation("Gate listener ports must be between 1024 and 65535.");
+        var clientRequestId = NormalizeClientRequestId(request.ClientRequestId);
+        using var creationLock = clientRequestId is null
+            ? null : await keyedLock.AcquireAsync(Guid.ParseExact(clientRequestId, "N"), cancellationToken);
+        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+        if (await ExistingCreateAsync(db, clientRequestId, cancellationToken) is { } existing) return existing;
+        if (await db.Servers.AnyAsync(x => x.Port == request.Port, cancellationToken))
+            throw PanelProblems.Conflict("PORT_IN_USE", "The selected real listener port is already assigned to another server.");
+        try { ProcessSupervisor.EnsurePortAvailable(request.Port); }
+        catch (PanelException exception) when (exception.Code == "PORT_IN_USE")
+        { throw new PanelException(409, "GATE_PORT_IN_USE", $"Real listener port {request.Port} is already in use on this host."); }
+        var name = request.Name.Trim();
+        if (await db.Servers.AnyAsync(x => x.Name.ToLower() == name.ToLower(), cancellationToken))
+            throw PanelProblems.Conflict("VALIDATION_FAILED", "A server with that name already exists.");
+        var entity = new ServerEntity
+        {
+            Id = Guid.NewGuid(), Name = name, Kind = ServerKind.Gate, Version = "Latest",
+            JavaRuntimeId = string.Empty, Port = request.Port, MemoryMb = 256, InitialMemoryMb = 256,
+            MemoryLimitMb = 256, StartOnBoot = request.StartOnBoot, CrashRecovery = true,
+            State = ServerState.Installing, EulaAcceptedAt = DateTimeOffset.UtcNow, LaunchTarget = "gate"
+        };
+        var pending = OperationQueue.CreatePending("GateInstall", entity.Id, clientRequestId);
+        db.Servers.Add(entity);
+        db.GateSettings.Add(new GateSettingsEntity { ServerId = entity.Id });
+        db.Jobs.Add(pending);
+        await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        var job = await operations.HandoffCommittedAsync(pending,
+            (_, jobId, token) => InstallGateAsync(entity.Id, jobId, token), cancellationToken);
+        if (job.State == JobState.Failed) await MarkHandoffFailureAsync(entity.Id);
+        return (entity, job);
+    }
+
+    private async Task MarkHandoffFailureAsync(Guid serverId)
+    {
+        try
+        {
+            await using var db = await stateFactory.CreateDbContextAsync(CancellationToken.None);
+            var server = await db.Servers.FindAsync([serverId], CancellationToken.None);
+            if (server is null) return;
+            server.State = ServerState.Error;
+            server.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(CancellationToken.None);
+        }
+        catch (Exception exception) { logger.LogError(exception, "Could not mark unqueued install {ServerId} as failed", serverId); }
+    }
+
+    private async Task InstallGateAsync(Guid id, Guid jobId, CancellationToken cancellationToken)
+    {
+        using var serverLock = await keyedLock.AcquireAsync(id, cancellationToken);
+        try
+        {
+            Directory.CreateDirectory(paths.Instance(id));
+            await operations.ProgressAsync(jobId, 15, "Resolving the latest stable Gate release", cancellationToken);
+            var manifest = await gate.InstallLatestAsync(id, cancellationToken);
+            await operations.ProgressAsync(jobId, 85, "Activating the verified Gate binary", cancellationToken);
+            await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+            var server = await db.Servers.FindAsync([id], cancellationToken) ?? throw PanelProblems.NotFound("Server");
+            server.Version = manifest.Version;
+            server.LaunchTarget = Path.GetRelativePath(paths.Instance(id), manifest.Executable);
+            server.State = ServerState.Stopped;
+            server.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(cancellationToken);
+            await console.AppendAsync(id, "system", $"Installed Minekube Gate {manifest.Version} from a verified official binary.", cancellationToken);
+            await operations.ProgressAsync(jobId, 95, "Gate installation complete", cancellationToken);
+        }
+        catch
+        {
+            try
+            {
+                await using var db = await stateFactory.CreateDbContextAsync(CancellationToken.None);
+                var server = await db.Servers.FindAsync([id], CancellationToken.None);
+                if (server is not null) { server.State = ServerState.Error; server.UpdatedAt = DateTimeOffset.UtcNow; await db.SaveChangesAsync(); }
+            }
+            catch (Exception exception) { logger.LogWarning(exception, "Could not record Gate installation failure"); }
+            throw;
+        }
+    }
+
+    private async Task<(ServerEntity Server, JobDto Job)?> ExistingCreateAsync(
+        StateDbContext db, string? clientRequestId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(clientRequestId)) return null;
+        var job = await db.Jobs.AsNoTracking().SingleOrDefaultAsync(x => x.ClientRequestId == clientRequestId, cancellationToken);
+        if (job?.ServerId is not { } serverId) return null;
+        var server = await db.Servers.SingleOrDefaultAsync(x => x.Id == serverId, cancellationToken);
+        var dto = await operations.GetAsync(job.Id, cancellationToken);
+        return server is not null && dto is not null ? (server, dto) : null;
+    }
+
+    private static string? NormalizeClientRequestId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (!Guid.TryParse(value, out _)) throw PanelProblems.Validation("The create request identifier must be a UUID.");
+        return Guid.Parse(value).ToString("N");
+    }
 
     private async Task InstallAsync(Guid id, Guid jobId, bool includeExperimental, CancellationToken cancellationToken)
     {
@@ -434,6 +549,8 @@ public sealed partial class ServerInstallerService(
     private static void Validate(CreateServerRequest request)
     {
         if (request is null) throw PanelProblems.Validation("A server request is required.");
+        if (request.Kind == ServerKind.Gate)
+            throw PanelProblems.Validation("Create Gate through the Gate Proxy server type workflow.");
         ValidateCommon(request.Name, request.Version, request.JavaRuntimeId, request.MemoryMb,
             request.Port, request.EulaAccepted);
         if (request.Version.Length > 64 || request.Build?.Length > 64 || request.LoaderVersion?.Length > 64 || request.InstallerVersion?.Length > 64)

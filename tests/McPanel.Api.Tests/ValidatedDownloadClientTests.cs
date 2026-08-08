@@ -137,6 +137,19 @@ public sealed class ValidatedDownloadClientTests : IDisposable
     }
 
     [Fact]
+    public async Task Metadata_reads_enforce_the_caller_size_limit_while_streaming()
+    {
+        var content = new StreamContent(new NonSeekableReadStream(new byte[1025]));
+        var client = Client(new StubHandler(_ => Response(content)));
+
+        var exception = await Assert.ThrowsAsync<PanelException>(() => client.StringAsync(
+            new Uri("https://api.github.com/repos/minekube/gate/releases"), CancellationToken.None,
+            DownloadPolicy.Gate, 1024));
+
+        Assert.Equal("INSTALL_DOWNLOAD_REJECTED", exception.Code);
+    }
+
+    [Fact]
     public async Task Preexisting_destination_is_preserved_when_create_new_fails()
     {
         var payload = "verified artifact"u8.ToArray();
@@ -167,6 +180,9 @@ public sealed class ValidatedDownloadClientTests : IDisposable
     [InlineData("https://cdn.modrinth.com/data/test/file.jar", DownloadPolicy.Modrinth)]
     [InlineData("https://github.com/example/project/releases/file.jar", DownloadPolicy.Mrpack)]
     [InlineData("https://release-assets.githubusercontent.com/file.jar", DownloadPolicy.Mrpack)]
+    [InlineData("https://api.github.com/repos/minekube/gate/releases", DownloadPolicy.Gate)]
+    [InlineData("https://github.com/minekube/gate/releases/download/v1/gate", DownloadPolicy.Gate)]
+    [InlineData("https://release-assets.githubusercontent.com/file", DownloadPolicy.Gate)]
     public void Modrinth_policy_allows_only_scoped_hosts(string url, DownloadPolicy policy) =>
         ValidatedDownloadClient.Validate(new Uri(url), policy);
 

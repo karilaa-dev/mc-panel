@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   ArchiveIcon, BlocksIcon, BoxIcon, ChevronDownIcon, ChevronUpIcon, CircleGaugeIcon, PlusIcon,
   Clock3Icon, CommandIcon, FileIcon, GaugeIcon, ImageIcon, LogOutIcon, MonitorCogIcon, MoonIcon,
-  PackageIcon, PanelsTopLeftIcon, PlugIcon, Settings2Icon, SunIcon, TerminalSquareIcon, UsersIcon,
+  NetworkIcon, PackageIcon, PanelsTopLeftIcon, PlugIcon, RouteIcon, Settings2Icon, SunIcon, TerminalSquareIcon, UsersIcon,
 } from "lucide-react"
 import { api } from "@/lib/api"
 import { useTheme } from "@/components/theme-provider"
@@ -33,15 +33,17 @@ const dashboardItem = { label: "Dashboard", path: "/", icon: PanelsTopLeftIcon }
 const serverItems = [
   { label: "Overview", path: "", icon: CircleGaugeIcon },
   { label: "Console", path: "/console", icon: TerminalSquareIcon },
-  { label: "Server properties", path: "/properties", icon: Settings2Icon },
-  { label: "Server icon", path: "/icon", icon: ImageIcon },
-  { label: "Runtime", path: "/runtime", icon: GaugeIcon },
-  { label: "Mods", path: "/mods", icon: PackageIcon, moddedOnly: true },
-  { label: "Plugins", path: "/plugins", icon: PlugIcon, paperOnly: true },
+  { label: "Backends", path: "/backends", icon: RouteIcon, gateOnly: true },
+  { label: "Gate settings", path: "/gate", icon: NetworkIcon, gateOnly: true },
+  { label: "Server properties", path: "/properties", icon: Settings2Icon, minecraftOnly: true },
+  { label: "Server icon", path: "/icon", icon: ImageIcon, minecraftOnly: true },
+  { label: "Runtime", path: "/runtime", icon: GaugeIcon, minecraftOnly: true },
+  { label: "Mods", path: "/mods", icon: PackageIcon, moddedOnly: true, minecraftOnly: true },
+  { label: "Plugins", path: "/plugins", icon: PlugIcon, paperOnly: true, minecraftOnly: true },
   { label: "Files", path: "/files", icon: FileIcon },
-  { label: "Players", path: "/players", icon: UsersIcon },
-  { label: "Backups", path: "/backups", icon: ArchiveIcon },
-  { label: "Schedules", path: "/schedules", icon: Clock3Icon },
+  { label: "Players", path: "/players", icon: UsersIcon, minecraftOnly: true },
+  { label: "Backups", path: "/backups", icon: ArchiveIcon, minecraftOnly: true },
+  { label: "Schedules", path: "/schedules", icon: Clock3Icon, minecraftOnly: true },
 ]
 const systemItems = [
   { label: "Java", path: "/java", icon: BlocksIcon },
@@ -94,6 +96,8 @@ export function AppShell() {
   })
   const currentServer = servers.find((server) => server.id === serverId)
   const visibleServerItems = serverItems.filter((item) =>
+    (!item.gateOnly || currentServer?.kind === "Gate") &&
+    (!item.minecraftOnly || currentServer?.kind !== "Gate") &&
     (!item.moddedOnly || currentServer && (["Fabric", "Forge", "NeoForge"].includes(currentServer.kind) || Boolean(currentServer.modpack))) &&
     (!item.paperOnly || currentServer?.kind === "Paper"))
   const serverSection = serverItems.find((item) =>

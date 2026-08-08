@@ -25,6 +25,8 @@ const BackupsPage = lazy(() => import("@/pages/operations-pages").then((module) 
 const SchedulesPage = lazy(() => import("@/pages/management-pages").then((module) => ({ default: module.SchedulesPage })))
 const JavaPage = lazy(() => import("@/pages/management-pages").then((module) => ({ default: module.JavaPage })))
 const PanelSettingsPage = lazy(() => import("@/pages/management-pages").then((module) => ({ default: module.PanelSettingsPage })))
+const GateProxyPage = lazy(() => import("@/pages/gate-proxy-page").then((module) => ({ default: module.GateProxyPage })))
+const GateBackendsPage = lazy(() => import("@/pages/gate-backends-page").then((module) => ({ default: module.GateBackendsPage })))
 
 function LoadingScreen() {
   return (
@@ -81,6 +83,8 @@ function AppRoutes() {
         <Route path="servers/:serverId/creating/:jobId" element={<ServerCreationPage />} />
         <Route path="servers/:serverId" element={<ServerOverviewPage />} />
         <Route path="servers/:serverId/console" element={<ConsolePage />} />
+        <Route path="servers/:serverId/backends" element={<GateBackendsPage />} />
+        <Route path="servers/:serverId/gate" element={<GateProxyPage />} />
         <Route path="servers/:serverId/properties" element={<ServerPropertiesPage />} />
         <Route path="servers/:serverId/icon" element={<ServerIconPage />} />
         <Route path="servers/:serverId/runtime" element={<RuntimeSettingsPage />} />

@@ -29,6 +29,7 @@ lerna-debug.log*
 /data/
 /src/McPanel.Api/data/
 /src/McPanel.Api/wwwroot/
+/src/McPanel.Web/public/minecraft-textures/
 
 # Logs and temporary files
 /logs/

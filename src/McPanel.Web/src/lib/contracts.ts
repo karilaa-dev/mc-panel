@@ -1,4 +1,4 @@
-export type ServerKind = "Vanilla" | "Paper" | "Fabric" | "Forge" | "NeoForge"
+export type ServerKind = "Vanilla" | "Paper" | "Fabric" | "Forge" | "NeoForge" | "Gate"
 
 export type ServerState =
   | "Installing"
@@ -56,6 +56,12 @@ export interface ServerSummaryDto {
   startOnBoot: boolean
   iconRevision?: string | null
   modpack?: ModpackSummaryDto | null
+  advertisedAddressOverride?: string | null
+  resolvedConnectionAddress?: string | null
+  connectionAddressSource?: string | null
+  connectionRouteKind?: "Direct" | "GateDefault" | "GateHost" | "Unavailable"
+  connectionNote?: string | null
+  addressRevision?: string
 }
 
 export interface IconLibraryItemDto {
@@ -82,6 +88,8 @@ export interface SystemInfoDto {
 
 export interface PanelSettingsDto {
   keepServersRunningOnPanelStop: boolean
+  globalServerHost?: string | null
+  revision?: string
 }
 
 export interface ServerConfigurationDto {
@@ -104,6 +112,12 @@ export interface ServerConfigurationDto {
   jvmArguments: string
   startOnBoot: boolean
   crashRecovery: boolean
+  advertisedAddressOverride?: string | null
+  resolvedConnectionAddress?: string | null
+  connectionAddressSource?: string | null
+  connectionRouteKind?: "Direct" | "GateDefault" | "GateHost" | "Unavailable"
+  connectionNote?: string | null
+  addressRevision?: string
 }
 
 export interface ServerPropertyDto {
@@ -164,7 +178,91 @@ export interface PlayerDto {
   whitelisted: boolean
   operator: boolean
   banned: boolean
+  inventoryAvailable?: boolean
+  inventorySavedAt?: string | null
 }
+
+export type GateMode = "Lite" | "Classic"
+export type GateForwardingMode = "Velocity" | "BungeeGuard" | "Legacy" | "None"
+export interface GateConfigurationDto {
+  mode: GateMode
+  defaultServerId?: string | null
+  backendServerIds: string[]
+  classicForwardingMode: GateForwardingMode
+  hasVelocitySecret: boolean
+  hasBungeeGuardSecret: boolean
+  revision: string
+  configurationDirty: boolean
+  lastApplyError?: string | null
+  listenerPort: number
+  startOnBoot: boolean
+  crashRecovery: boolean
+  defaultExternalBackendId?: string | null
+  externalBackends: GateExternalBackendDto[]
+}
+export interface GateExternalBackendDto { id: string; name: string; address: string }
+export interface GateRouteDto {
+  serverId: string
+  serverName: string
+  backendAddress: string
+  publicHost?: string | null
+  connectionAddress?: string | null
+  routeKind: "Direct" | "GateDefault" | "GateHost" | "GateNetwork" | "Unavailable"
+  note?: string | null
+  backendKind?: "Managed" | "External"
+}
+export interface GateStatusDto {
+  serverId: string
+  installation: { installed: boolean; version?: string | null; latestVersion?: string | null; updateAvailable: boolean }
+  runtime: {
+    state: "Starting" | "Running" | "Stopping" | "Stopped" | "Crashed"
+    desiredRunning: boolean
+    processId?: number | null
+    startedAt?: string | null
+    activeConnections: number
+    onlinePlayers: number
+    lastError?: string | null
+  }
+  configuration: GateConfigurationDto
+  routes: GateRouteDto[]
+  warnings: string[]
+}
+export interface GateConfigurationWriteDto {
+  expectedRevision: string
+  mode: GateMode
+  defaultServerId?: string | null
+  backendServerIds: string[]
+  classicForwardingMode: GateForwardingMode
+  listenerPort?: number
+  startOnBoot?: boolean
+  crashRecovery?: boolean
+  defaultExternalBackendId?: string | null
+  externalBackends: GateExternalBackendDto[]
+}
+
+export interface InventoryItemDto { id: string; count: number; displayName: string; metadata: string[] }
+export interface InventorySlotDto { section: string; index: number; nbtSlot: number; item?: InventoryItemDto | null }
+export interface PlayerInventoryDto {
+  playerName: string
+  uuid: string
+  revision: string
+  savedAt: string
+  online: boolean
+  snapshotMayBeStale: boolean
+  writeAllowed: boolean
+  dataVersion?: number | null
+  slots: InventorySlotDto[]
+}
+export interface InventoryItemUpdateDto {
+  section: string
+  index: number
+  sourceSection?: string | null
+  sourceIndex?: number | null
+  id: string
+  count: number
+  clearMetadata?: boolean
+}
+export interface PlayerInventoryBackupDto { id: string; createdAt: string; sourceRevision: string; size: number }
 
 export interface BackupDto {
   id: string
@@ -176,7 +274,7 @@ export interface BackupDto {
 }
 
 export type ScheduleFrequency = "Once" | "Interval" | "Daily" | "Weekly" | "Cron"
-export type ScheduleActionType = "Start" | "Stop" | "Restart" | "Backup" | "Update" | "Command"
+export type ScheduleActionType = "Start" | "Stop" | "Restart" | "Backup" | "InventoryBackup" | "Update" | "Command"
 
 export interface ScheduleActionDto {
   action: ScheduleActionType
@@ -358,6 +456,7 @@ export interface CreateModpackServerRequest {
   eulaAccepted: true
   startOnBoot?: boolean
   selectedOptionalFiles?: string[]
+  clientRequestId?: string
 }
 
 export type ModpackChangeStatus = "Added" | "Modified" | "Removed"
@@ -390,4 +489,12 @@ export interface CreateServerRequest {
   build?: string
   loaderVersion?: string
   installerVersion?: string
+  clientRequestId?: string
+}
+
+export interface CreateGateServerRequest {
+  name: string
+  port: number
+  startOnBoot?: boolean
+  clientRequestId?: string
 }

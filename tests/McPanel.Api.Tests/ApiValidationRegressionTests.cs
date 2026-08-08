@@ -41,21 +41,65 @@ public sealed class ApiValidationRegressionTests : IAsyncLifetime
     [Fact]
     public async Task Panel_shutdown_policy_defaults_to_preserve_and_is_persisted()
     {
+        string revision;
         using (var initial = await _client!.GetAsync("/api/v1/system/settings"))
         {
             initial.EnsureSuccessStatusCode();
             using var document = JsonDocument.Parse(await initial.Content.ReadAsStringAsync());
             Assert.True(document.RootElement.GetProperty("keepServersRunningOnPanelStop").GetBoolean());
+            revision = document.RootElement.GetProperty("revision").GetString()!;
         }
-        using (var changed = await SendJsonAsync(HttpMethod.Put, "/api/v1/system/settings", "{\"keepServersRunningOnPanelStop\":false}"))
+        using (var changed = await SendJsonAsync(HttpMethod.Put, "/api/v1/system/settings", $$"""{"keepServersRunningOnPanelStop":false,"revision":"{{revision}}"}"""))
             Assert.Equal(HttpStatusCode.OK, changed.StatusCode);
         using (var saved = await _client.GetAsync("/api/v1/system/settings"))
         {
             using var document = JsonDocument.Parse(await saved.Content.ReadAsStringAsync());
             Assert.False(document.RootElement.GetProperty("keepServersRunningOnPanelStop").GetBoolean());
+            revision = document.RootElement.GetProperty("revision").GetString()!;
         }
-        using var restored = await SendJsonAsync(HttpMethod.Put, "/api/v1/system/settings", "{\"keepServersRunningOnPanelStop\":true}");
+        using var restored = await SendJsonAsync(HttpMethod.Put, "/api/v1/system/settings", $$"""{"keepServersRunningOnPanelStop":true,"revision":"{{revision}}"}""");
         Assert.Equal(HttpStatusCode.OK, restored.StatusCode);
+    }
+
+    [Fact]
+    public async Task Repeated_create_key_returns_the_committed_server_and_job()
+    {
+        var requestId = Guid.NewGuid().ToString();
+        var json = JsonSerializer.Serialize(new
+        {
+            name = "Idempotent server",
+            kind = "Vanilla",
+            version = "1.20.4",
+            javaRuntimeId = JavaId,
+            memoryMb = PanelOptions.MinimumServerMemoryMb,
+            port = 32124,
+            eulaAccepted = true,
+            clientRequestId = requestId
+        });
+        using var first = await SendJsonAsync(HttpMethod.Post, "/api/v1/servers", json);
+        using var second = await SendJsonAsync(HttpMethod.Post, "/api/v1/servers",
+            json.Replace(requestId, requestId.ToUpperInvariant(), StringComparison.Ordinal));
+        Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, second.StatusCode);
+        using var firstDocument = JsonDocument.Parse(await first.Content.ReadAsStringAsync());
+        using var secondDocument = JsonDocument.Parse(await second.Content.ReadAsStringAsync());
+        Assert.Equal(firstDocument.RootElement.GetProperty("id").GetGuid(), secondDocument.RootElement.GetProperty("id").GetGuid());
+        Assert.Equal(firstDocument.RootElement.GetProperty("serverId").GetGuid(), secondDocument.RootElement.GetProperty("serverId").GetGuid());
+    }
+
+    [Fact]
+    public async Task Committed_delete_returns_success_and_removes_staged_server_files()
+    {
+        var backup = _paths!.ServerBackups(_serverId);
+        Directory.CreateDirectory(backup);
+        await File.WriteAllTextAsync(Path.Combine(backup, "keep-until-commit.txt"), "backup");
+
+        using var deleted = await SendJsonAsync(HttpMethod.Delete, $"/api/v1/servers/{_serverId}", "{}");
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+        using var missing = await _client!.GetAsync($"/api/v1/servers/{_serverId}");
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+        Assert.False(Directory.Exists(_paths.Instance(_serverId)));
+        Assert.False(Directory.Exists(backup));
     }
 
     public async Task InitializeAsync()
@@ -347,6 +391,22 @@ done
         using var oversized = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/schedules",
             Schedule("Irrelevant oversized days", daysOfWeek: [0, 1, 2, 3, 4, 5, 6, 0]));
         await AssertProblemAsync(oversized, HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+    }
+
+    [Fact]
+    public async Task Inventory_backup_schedule_targets_all_saved_players_without_a_uuid()
+    {
+        var valid = JsonSerializer.Serialize(new
+        {
+            name = "Player inventory",
+            frequency = "Interval",
+            timeZone = "UTC",
+            enabled = false,
+            intervalMinutes = 30,
+            actions = new[] { new { action = "InventoryBackup" } }
+        });
+        using (var accepted = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/schedules", valid))
+            Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
     }
 
     [Theory]

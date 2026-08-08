@@ -90,6 +90,11 @@ builder.Services.AddSingleton<CgroupMemoryService>();
 builder.Services.AddSingleton<ValidatedDownloadClient>(); builder.Services.AddSingleton<DistributionCatalogService>();
 builder.Services.AddSingleton<JavaDiscoveryService>(); builder.Services.AddSingleton<ConsoleService>();
 builder.Services.AddSingleton<PersistentRuntimeClient>();
+builder.Services.AddSingleton<GateReleaseService>(); builder.Services.AddSingleton<GateConfigurationService>();
+builder.Services.AddSingleton<GateApiClient>(); builder.Services.AddSingleton<GateProxyService>();
+builder.Services.AddSingleton<LegacyGateMigrationService>();
+builder.Services.AddSingleton<RuntimeCompatibilityService>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<RuntimeCompatibilityService>());
+builder.Services.AddHostedService<GateConfigurationReconciler>();
 builder.Services.AddSingleton<OperationQueue>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<OperationQueue>());
 builder.Services.AddSingleton<ProcessSupervisor>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<ProcessSupervisor>());
 builder.Services.AddSingleton<IServerProcessStatus>(sp => sp.GetRequiredService<ProcessSupervisor>());
@@ -97,7 +102,7 @@ builder.Services.AddSingleton<HostMetricsService>(); builder.Services.AddHostedS
 builder.Services.AddSingleton<SchedulerService>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<SchedulerService>());
 builder.Services.AddSingleton<ModrinthService>(); builder.Services.AddSingleton<ModpackService>(); builder.Services.AddSingleton<ModrinthModInstallerService>();
 builder.Services.AddSingleton<ServerInstallerService>(); builder.Services.AddSingleton<PropertiesService>(); builder.Services.AddSingleton<ServerIconService>(); builder.Services.AddSingleton<FileManagerService>(); builder.Services.AddSingleton<ModMetadataService>();
-builder.Services.AddSingleton<BackupService>(); builder.Services.AddSingleton<PlayerService>(); builder.Services.AddSingleton<ServerQueryService>(); builder.Services.AddSingleton<AdminAuthService>();
+builder.Services.AddSingleton<BackupService>(); builder.Services.AddSingleton<PlayerService>(); builder.Services.AddSingleton<PlayerInventoryService>(); builder.Services.AddSingleton<ServerQueryService>(); builder.Services.AddSingleton<AdminAuthService>();
 builder.Services.AddSingleton<IPasswordHasher<AdminEntity>, PasswordHasher<AdminEntity>>();
 
 var app = builder.Build();
@@ -160,6 +165,7 @@ static async Task InitializeAsync(IServiceProvider services)
     {
         await state.Database.EnsureCreatedAsync();
         await state.EnsureCompatibleSchemaAsync();
+        await scope.ServiceProvider.GetRequiredService<LegacyGateMigrationService>().MigrateAsync(state, CancellationToken.None);
         await state.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
         var staleJobs = await state.Jobs.Where(x => x.State == JobState.Running || x.State == JobState.Queued).ToListAsync();
         foreach (var job in staleJobs) { job.State = JobState.Failed; job.Progress = 100; job.Message = "Interrupted"; job.Error = "The panel restarted before this operation completed."; }

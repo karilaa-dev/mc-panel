@@ -37,6 +37,8 @@ public sealed class PanelPaths
         Icons = Path.Combine(Data, "icons");
         Modpacks = Path.Combine(Data, "modpacks");
         ModpackImports = Path.Combine(Data, "modpack-imports");
+        Gate = Path.Combine(Data, "gate");
+        LegacyGateVersions = Path.Combine(Gate, "versions");
         StateDatabase = Path.Combine(Data, "state.db");
         ConsoleDatabase = Path.Combine(Data, "console.db");
         SetupTokenFile = options.SetupTokenFile is { Length: > 0 }
@@ -57,17 +59,37 @@ public sealed class PanelPaths
     public string Icons { get; }
     public string Modpacks { get; }
     public string ModpackImports { get; }
+    public string Gate { get; }
+    public string LegacyGateVersions { get; }
+    public string LegacyGateConfig => Path.Combine(Gate, "config.json");
+    public string LegacyGateInstallManifest => Path.Combine(Gate, "install.json");
+    public string LegacyGateVelocitySecret => Path.Combine(Keys, "gate-velocity.secret");
+    public string LegacyGateBungeeGuardSecret => Path.Combine(Keys, "gate-bungeeguard.secret");
+    public string GateDesiredState => Path.Combine(Gate, "desired-state.json");
+    public string GateRuntimeState => Path.Combine(Gate, "runtime-state.json");
+    public string LegacyGateLog => Path.Combine(Logs, "gate.log");
     public string StateDatabase { get; }
     public string ConsoleDatabase { get; }
     public string SetupTokenFile { get; }
 
     public void EnsureCreated()
     {
-        foreach (var directory in new[] { Data, Config, Instances, Staging, Backups, Logs, Runtime, RuntimeState, Keys, Icons, Modpacks, ModpackImports })
+        foreach (var directory in new[] { Data, Config, Instances, Staging, Backups, Logs, Runtime, RuntimeState, Keys, Icons, Modpacks, ModpackImports, Gate, LegacyGateVersions })
             Directory.CreateDirectory(directory);
     }
 
     public string Instance(Guid id) => Path.Combine(Instances, id.ToString("N"));
+    public string GateVersions(Guid id) => Path.Combine(Instance(id), "versions");
+    public string GateConfig(Guid id) => Path.Combine(Instance(id), "config.json");
+    public string GateInstallManifest(Guid id) => Path.Combine(Instance(id), "install.json");
+    public string GateRollback(Guid id) => Path.Combine(Instance(id), "rollback");
+    public string GateKeys(Guid id) => Path.Combine(Instance(id), "keys");
+    public string GateVelocitySecret(Guid id) => Path.Combine(GateKeys(id), "velocity.secret");
+    public string GateBungeeGuardSecret(Guid id) => Path.Combine(GateKeys(id), "bungeeguard.secret");
+    public string GateLogs(Guid id) => Path.Combine(Instance(id), "logs");
+    public string GateLog(Guid id) => Path.Combine(GateLogs(id), "gate.log");
     public string ServerBackups(Guid id) => Path.Combine(Backups, id.ToString("N"));
     public string ServerModpack(Guid id) => Path.Combine(Modpacks, id.ToString("N"));
+    public string PlayerInventoryBackups(Guid serverId, string uuid) =>
+        Path.Combine(ServerBackups(serverId), "player-inventory", uuid.ToLowerInvariant());
 }

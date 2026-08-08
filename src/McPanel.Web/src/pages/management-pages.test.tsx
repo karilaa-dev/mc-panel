@@ -16,6 +16,7 @@ vi.mock("@/lib/api", () => ({
     updateSchedule: vi.fn(),
     toggleSchedule: vi.fn(),
     deleteSchedule: vi.fn(),
+    players: vi.fn(),
     authStatus: vi.fn(),
     systemInfo: vi.fn(),
     panelSettings: vi.fn(),
@@ -44,6 +45,7 @@ function renderSchedules(client = newClient()) {
 describe("schedule defaults", () => {
   beforeEach(() => {
     mockedApi.schedules.mockResolvedValue([])
+    mockedApi.players.mockResolvedValue([{ name: "Alex", uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5", online: false, whitelisted: false, operator: false, banned: false, inventoryAvailable: true }])
     mockedApi.createSchedule.mockImplementation(async (_id, schedule) => ({
       id: "schedule-1",
       ...schedule,
@@ -84,6 +86,25 @@ describe("schedule defaults", () => {
     expect(withFrequencyDefaults(base, "Weekly").timeOfDay).toBe("04:00")
     expect(withFrequencyDefaults(base, "Interval").intervalMinutes).toBe(60)
   })
+
+  it("schedules inventory-only backups for every saved player", async () => {
+    const user = userEvent.setup()
+    renderSchedules()
+    await user.click(await screen.findByRole("button", { name: "New schedule" }))
+    const dialog = screen.getByRole("dialog", { name: "New schedule" })
+
+    await user.click(within(dialog).getByRole("combobox", { name: "Action for step 1" }))
+    await user.click(await screen.findByRole("option", { name: "All player inventories" }))
+    expect(within(dialog).queryByRole("combobox", { name: /Player for step/ })).not.toBeInTheDocument()
+    await user.click(within(dialog).getByRole("button", { name: "Save schedule" }))
+
+    await waitFor(() => expect(mockedApi.createSchedule).toHaveBeenCalledWith(
+      "server-1",
+      expect.objectContaining({
+        actions: [{ action: "InventoryBackup", command: undefined }],
+      }),
+    ))
+  })
 })
 
 describe("panel shutdown settings", () => {
@@ -99,6 +120,7 @@ describe("panel shutdown settings", () => {
     const continuity = await screen.findByRole("switch", { name: "Keep servers running when the panel stops" })
     expect(continuity).toBeChecked()
     await user.click(continuity)
-    await waitFor(() => expect(mockedApi.savePanelSettings.mock.calls[0]?.[0]).toEqual({ keepServersRunningOnPanelStop: false }))
+    await user.click(screen.getByRole("button", { name: "Save system settings" }))
+    await waitFor(() => expect(mockedApi.savePanelSettings.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ keepServersRunningOnPanelStop: false })))
   })
 })

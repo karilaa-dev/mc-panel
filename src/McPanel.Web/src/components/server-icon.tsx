@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react"
 import Cropper, { type Area } from "react-easy-crop"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ImageIcon, ServerIcon as ServerGlyphIcon, Trash2Icon, UploadIcon } from "lucide-react"
+import { ImageIcon, NetworkIcon, ServerIcon as ServerGlyphIcon, Trash2Icon, UploadIcon } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
 import type { ServerSummaryDto } from "@/lib/contracts"
@@ -22,11 +22,11 @@ import { cn } from "@/lib/utils"
 
 const acceptedTypes = new Set(["image/png", "image/jpeg", "image/webp"])
 
-export function ServerAvatar({ server, className, compact = false }: { server: Pick<ServerSummaryDto, "id" | "name" | "iconRevision">; className?: string; compact?: boolean }) {
+export function ServerAvatar({ server, className, compact = false }: { server: Pick<ServerSummaryDto, "id" | "name" | "iconRevision"> & { kind?: ServerSummaryDto["kind"] }; className?: string; compact?: boolean }) {
   const radius = compact ? "rounded-sm" : "rounded-lg"
   return <Avatar className={cn("overflow-hidden", radius, compact ? "after:rounded-sm" : "after:rounded-lg", className)}>
     {server.iconRevision && <AvatarImage className={radius} src={api.serverIconUrl(server.id, server.iconRevision)} alt={`${server.name} icon`} />}
-    <AvatarFallback className={radius}><ServerGlyphIcon aria-hidden="true" /></AvatarFallback>
+    <AvatarFallback className={radius}>{server.kind === "Gate" ? <NetworkIcon aria-hidden="true" /> : <ServerGlyphIcon aria-hidden="true" />}</AvatarFallback>
   </Avatar>
 }
 

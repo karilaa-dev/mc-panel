@@ -95,25 +95,51 @@ public sealed class HostMetricsService(PanelPaths paths, IHubContext<PanelHub> h
 public sealed class ServerQueryService(
     IDbContextFactory<StateDbContext> stateFactory,
     ProcessSupervisor supervisor,
-    PanelPaths paths)
+    PanelPaths paths,
+    GateApiClient gateApi)
 {
     public async Task<IReadOnlyList<ServerSummaryDto>> ListAsync(CancellationToken cancellationToken)
     {
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var servers = await db.Servers.AsNoTracking().OrderBy(x => x.Name).ToListAsync(cancellationToken);
+        var settings = await db.PanelSettings.AsNoTracking().SingleOrDefaultAsync(x => x.Id == 1, cancellationToken) ?? new PanelSettingsEntity();
         var online = await db.Players.Where(x => x.Online).GroupBy(x => x.ServerId).Select(x => new { Id = x.Key, Count = x.Count() }).ToDictionaryAsync(x => x.Id, x => x.Count, cancellationToken);
-        return servers.Select(x => Map(x, online.GetValueOrDefault(x.Id))).ToList();
+        var routed = (await db.GateBackends.AsNoTracking().Select(x => x.BackendServerId).Distinct().ToListAsync(cancellationToken)).ToHashSet();
+        var apiPorts = await db.GateSettings.AsNoTracking().ToDictionaryAsync(x => x.ServerId, x => x.ApiPort, cancellationToken);
+        var gateConnections = await GateConnectionsAsync(servers, apiPorts, cancellationToken);
+        return servers.Select(x => Map(x,
+            x.Kind == ServerKind.Gate ? gateConnections.GetValueOrDefault(x.Id) : online.GetValueOrDefault(x.Id),
+            settings, routed.Contains(x.Id))).ToList();
     }
 
     public async Task<ServerSummaryDto> GetAsync(Guid id, CancellationToken cancellationToken)
     {
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var server = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw Infrastructure.PanelProblems.NotFound("Server");
-        var online = await db.Players.CountAsync(x => x.ServerId == id && x.Online, cancellationToken);
-        return Map(server, online);
+        var settings = await db.PanelSettings.AsNoTracking().SingleOrDefaultAsync(x => x.Id == 1, cancellationToken) ?? new PanelSettingsEntity();
+        var routed = await db.GateBackends.AsNoTracking().AnyAsync(x => x.BackendServerId == id, cancellationToken);
+        var online = server.Kind == ServerKind.Gate
+            ? await GateConnectionAsync(server, await db.GateSettings.AsNoTracking().Where(x => x.ServerId == id).Select(x => (int?)x.ApiPort).SingleOrDefaultAsync(cancellationToken), cancellationToken)
+            : await db.Players.CountAsync(x => x.ServerId == id && x.Online, cancellationToken);
+        return Map(server, online, settings, routed);
     }
 
-    private ServerSummaryDto Map(ServerEntity server, int playerCount)
+    private async Task<Dictionary<Guid, int>> GateConnectionsAsync(
+        IReadOnlyList<ServerEntity> servers, IReadOnlyDictionary<Guid, int> apiPorts, CancellationToken cancellationToken)
+    {
+        var tasks = servers.Where(x => x.Kind == ServerKind.Gate).Select(async server =>
+            (server.Id, Count: await GateConnectionAsync(server, apiPorts.GetValueOrDefault(server.Id), cancellationToken)));
+        return (await Task.WhenAll(tasks)).ToDictionary(x => x.Id, x => x.Count);
+    }
+
+    private async Task<int> GateConnectionAsync(ServerEntity server, int? apiPort, CancellationToken cancellationToken)
+    {
+        if (server.State != ServerState.Running || apiPort is not (>= 1024 and <= 65535)) return 0;
+        try { return (await gateApi.StatusAsync(apiPort.Value, cancellationToken)).ActiveConnections; }
+        catch { return 0; }
+    }
+
+    private ServerSummaryDto Map(ServerEntity server, int playerCount, PanelSettingsEntity settings, bool hasGateHostnameRoute)
     {
         var runtime = supervisor.GetMetrics(server.Id);
         var maxPlayers = 20;
@@ -127,6 +153,7 @@ public sealed class ServerQueryService(
             }
         }
         catch { }
+        var connection = GateConfigurationService.ResolveAddress(server, settings.GlobalServerHost, hasGateHostnameRoute);
         return new(server.Id, server.Name, server.Kind, server.Version, server.State, server.Port, server.MemoryMb,
             server.MemoryMb, playerCount, maxPlayers, runtime.CpuPercent, runtime.MemoryUsedMb, runtime.MemoryPeakMb,
             runtime.SwapUsedMb, runtime.AnonymousMemoryMb, runtime.FileMemoryMb, runtime.KernelMemoryMb, runtime.SocketMemoryMb,
@@ -134,6 +161,8 @@ public sealed class ServerQueryService(
             server.IconRevision,
             server.ModpackName is null || server.ModpackVersion is null ? null : new ModpackSummaryDto(
                 server.ModpackName, server.ModpackVersion, server.ModrinthProjectId, server.ModrinthVersionId,
-                server.ModpackSource ?? "Upload"));
+                server.ModpackSource ?? "Upload"),
+            server.PublicHost is null ? null : GateConfigurationService.FormatAddress(server.PublicHost, server.PublicPort ?? 25565),
+            connection.Address, connection.Source, connection.Kind, connection.Note, server.AddressRevision);
     }
 }

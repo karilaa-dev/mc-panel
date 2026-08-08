@@ -115,7 +115,10 @@ describe("AppShell", () => {
     expect(dashboard.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(overview.compareDocumentPosition(serverLink) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(serverLink.compareDocumentPosition(java) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByRole("link", { name: "Gate Proxy" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("link", { name: /server links/i })).not.toBeInTheDocument()
     expect(screen.getByRole("link", { name: "Server properties" })).toBeVisible()
+    expect(screen.queryByRole("link", { name: "Connection" })).not.toBeInTheDocument()
     expect(screen.getByRole("link", { name: "Server icon" })).toBeVisible()
     expect(screen.getByRole("link", { name: "Runtime" })).toBeVisible()
     expect(screen.queryByRole("link", { name: "Mods" })).not.toBeInTheDocument()
@@ -135,5 +138,22 @@ describe("AppShell", () => {
 
     expect(await screen.findByRole("link", { name: "Mods" })).toHaveAttribute("href", "/servers/server-1/mods")
     expect(screen.queryByRole("link", { name: "Plugins" })).not.toBeInTheDocument()
+  })
+
+  it("shows Backends and Files for Gate without Minecraft-only pages", async () => {
+    mockedApi.servers.mockResolvedValue([{
+      id: "gate-1", name: "Edge Gate", kind: "Gate", version: "0.71.1", state: "Stopped", port: 25565,
+      memoryMb: 256, playerCount: 0, maxPlayers: 0, cpuPercent: 0, memoryUsedMb: 0, uptimeSeconds: 0,
+      restartRequired: false, startOnBoot: false,
+    }])
+    renderShell("/servers/gate-1")
+
+    await screen.findAllByText("Edge Gate")
+    expect(screen.queryByRole("link", { name: "Connection" })).not.toBeInTheDocument()
+    expect(screen.getByRole("link", { name: "Backends" })).toHaveAttribute("href", "/servers/gate-1/backends")
+    expect(screen.getByRole("link", { name: "Files" })).toHaveAttribute("href", "/servers/gate-1/files")
+    expect(screen.getByRole("link", { name: "Gate settings" })).toHaveAttribute("href", "/servers/gate-1/gate")
+    expect(screen.queryByRole("link", { name: "Server properties" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("link", { name: "Players" })).not.toBeInTheDocument()
   })
 })

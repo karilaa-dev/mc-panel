@@ -4,7 +4,7 @@ import { SearchAddon } from "@xterm/addon-search"
 import { Terminal } from "@xterm/xterm"
 import "@xterm/xterm/css/xterm.css"
 import type { ConsoleEventDto } from "@/lib/contracts"
-import { formatTerminalEvent } from "@/lib/terminal-format"
+import { formatTerminalEventWithAnsi } from "@/lib/terminal-format"
 
 export interface TerminalHandle {
   write: (event: ConsoleEventDto) => void
@@ -13,7 +13,7 @@ export interface TerminalHandle {
   copy: () => Promise<void>
 }
 
-export function TerminalView({ onReady }: { onReady: (handle: TerminalHandle) => void }) {
+export function TerminalView({ onReady, label = "Server console output" }: { onReady: (handle: TerminalHandle) => void; label?: string }) {
   const container = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!container.current) return
@@ -24,17 +24,21 @@ export function TerminalView({ onReady }: { onReady: (handle: TerminalHandle) =>
       cursorBlink: false,
       disableStdin: true,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-      fontSize: 13,
+      fontSize: 14,
+      lineHeight: 1.35,
+      minimumContrastRatio: 4.5,
       scrollback: 10_000,
       screenReaderMode: true,
       theme: {
-        background: color("--card"),
-        foreground: color("--card-foreground"),
+        background: color("--background"),
+        foreground: color("--foreground"),
         cursor: color("--primary"),
         selectionBackground: color("--accent"),
         red: color("--destructive"),
         green: color("--success"),
         yellow: color("--warning"),
+        cyan: color("--primary"),
+        brightBlack: color("--muted-foreground"),
       },
     })
     const fit = new FitAddon()
@@ -47,8 +51,7 @@ export function TerminalView({ onReady }: { onReady: (handle: TerminalHandle) =>
     observer.observe(container.current)
     onReady({
       write: (event) => {
-        const line = formatTerminalEvent(event)
-        terminal.writeln(event.stream === "stderr" ? `\x1b[31m${line}\x1b[0m` : line)
+        terminal.writeln(formatTerminalEventWithAnsi(event))
       },
       clear: () => terminal.clear(),
       search: (term) => search.findNext(term, { caseSensitive: false, incremental: true }),
@@ -56,5 +59,5 @@ export function TerminalView({ onReady }: { onReady: (handle: TerminalHandle) =>
     })
     return () => { observer.disconnect(); terminal.dispose() }
   }, [onReady])
-  return <div ref={container} className="h-full min-h-80 w-full overflow-hidden" role="log" aria-label="Minecraft server console output" />
+  return <div ref={container} className="h-full min-h-80 w-full overflow-hidden" role="log" aria-label={label} />
 }

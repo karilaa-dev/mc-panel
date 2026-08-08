@@ -2,8 +2,11 @@ using System.Reflection;
 using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
+using McPanel.Api.Configuration;
+using McPanel.Api.Data;
 using McPanel.Api.Infrastructure;
 using McPanel.Api.Services;
+using Microsoft.EntityFrameworkCore;
 
 namespace McPanel.Api.Tests;
 
@@ -96,6 +99,42 @@ public sealed class PlayerServiceTests
         Assert.Equal("UPSTREAM_UNAVAILABLE", exception.Code);
     }
 
+    [Fact]
+    public async Task Minecraft_26_player_data_marks_inventory_available()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "mcpanel-player-tests-" + Guid.NewGuid().ToString("N"));
+        var paths = new PanelPaths(new PanelOptions { DataDirectory = Path.Combine(root, "data"), ConfigDirectory = Path.Combine(root, "config") });
+        paths.EnsureCreated();
+        var serverId = Guid.NewGuid();
+        var options = new DbContextOptionsBuilder<StateDbContext>().UseSqlite($"Data Source={Path.Combine(root, "state.db")}").Options;
+        try
+        {
+            await using (var db = new StateDbContext(options))
+            {
+                await db.Database.EnsureCreatedAsync();
+                db.Servers.Add(new ServerEntity { Id = serverId, Name = "Test", Kind = ServerKind.Paper, Version = "26.1.2", JavaRuntimeId = "java", EulaAcceptedAt = DateTimeOffset.UtcNow, State = ServerState.Stopped });
+                db.Players.Add(new PlayerEntity { ServerId = serverId, Name = "Notch", Uuid = PlayerUuid, Online = false });
+                await db.SaveChangesAsync();
+            }
+            var instance = paths.Instance(serverId);
+            var playerData = Path.Combine(instance, "world", "players", "data");
+            Directory.CreateDirectory(playerData);
+            await File.WriteAllTextAsync(Path.Combine(instance, "server.properties"), "level-name=world\n");
+            await File.WriteAllBytesAsync(Path.Combine(playerData, PlayerUuid + ".dat"), [0x1f, 0x8b]);
+            var service = new PlayerService(paths, new Factory(options), null!, null!, null!);
+
+            var player = Assert.Single(await service.ListAsync(serverId, CancellationToken.None));
+
+            Assert.True(player.InventoryAvailable);
+            Assert.NotNull(player.InventorySavedAt);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     private static MethodInfo UpdateList() =>
         typeof(PlayerService).GetMethod("UpdateList", BindingFlags.NonPublic | BindingFlags.Static)!;
 
@@ -133,5 +172,11 @@ public sealed class PlayerServiceTests
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
             Task.FromResult(response);
+    }
+
+    private sealed class Factory(DbContextOptions<StateDbContext> options) : IDbContextFactory<StateDbContext>
+    {
+        public StateDbContext CreateDbContext() => new(options);
+        public Task<StateDbContext> CreateDbContextAsync(CancellationToken cancellationToken = default) => Task.FromResult(new StateDbContext(options));
     }
 }

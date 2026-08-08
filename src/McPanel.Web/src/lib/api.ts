@@ -5,6 +5,7 @@ import type {
   CatalogDto,
   ConsoleEventDto,
   CreateServerRequest,
+  CreateGateServerRequest,
   FileEntryDto,
   HostStatusDto,
   IconLibraryItemDto,
@@ -25,6 +26,11 @@ import type {
   ServerSummaryDto,
   SystemInfoDto,
   PanelSettingsDto,
+  GateConfigurationWriteDto,
+  GateStatusDto,
+  InventoryItemUpdateDto,
+  PlayerInventoryBackupDto,
+  PlayerInventoryDto,
 } from "@/lib/contracts"
 
 const API_BASE = "/api/v1"
@@ -130,6 +136,8 @@ export const api = {
     request<JobDto>("/servers", { method: "POST", body: JSON.stringify(body) }),
   createModpackServer: (body: CreateModpackServerRequest) =>
     request<JobDto>("/servers/modpack", { method: "POST", body: JSON.stringify(body) }),
+  createGateServer: (body: CreateGateServerRequest) =>
+    request<JobDto>("/servers/gate", { method: "POST", body: JSON.stringify(body) }),
   lifecycle: (id: string, action: "start" | "stop" | "restart" | "update") =>
     request<JobDto>(`${serverPath(id)}/actions/${action}`, { method: "POST" }),
   kill: (id: string) => request<JobDto>(`${serverPath(id)}/actions/kill`, {
@@ -189,6 +197,20 @@ export const api = {
     method: "PUT",
     body: JSON.stringify(body),
   }),
+  gate: (id: string) => request<GateStatusDto>(`${serverPath(id)}/gate`),
+  saveGate: (id: string, body: GateConfigurationWriteDto) => request<GateStatusDto>(`${serverPath(id)}/gate/config`, {
+    method: "PUT", body: JSON.stringify(body),
+  }),
+  updateGate: (id: string, confirmDisconnectPlayers = false) => request<JobDto>(`${serverPath(id)}/gate/update`, {
+    method: "POST", body: JSON.stringify({ confirmDisconnectPlayers }),
+  }),
+  revealGateSecret: (id: string, kind: "velocity" | "bungeeguard") => request<{ secret: string; generatedAt: string }>(`${serverPath(id)}/gate/secrets/${kind}/reveal`, { method: "POST" }),
+  rotateGateSecret: (id: string, kind: "velocity" | "bungeeguard") => request<{ secret: string; generatedAt: string }>(`${serverPath(id)}/gate/secrets/${kind}/rotate`, { method: "POST" }),
+  generateGateSecret: (id: string, kind: "velocity" | "bungeeguard", confirmReplace: boolean) => request<{ secret: string; generatedAt: string }>(`${serverPath(id)}/gate/secrets/${kind}/generate`, { method: "POST", body: JSON.stringify({ confirmReplace }) }),
+  setServerPublicAddress: (id: string, address: string | null, expectedRevision: string) =>
+    request<ServerSummaryDto>(`${serverPath(id)}/public-address`, {
+      method: "PUT", body: JSON.stringify({ address, expectedRevision }),
+    }),
   java: () => request<JavaRuntimeDto[]>("/java"),
   rescanJava: () => request<JavaRuntimeDto[]>("/java/rescan", { method: "POST" }),
   addJava: (path: string) => request<JavaRuntimeDto>("/java/custom", {
@@ -280,6 +302,20 @@ export const api = {
     `${API_BASE}${serverPath(id)}/files/download?path=${encodeURIComponent(path)}`,
 
   players: (id: string) => request<PlayerDto[]>(`${serverPath(id)}/players`),
+  playerInventory: (id: string, uuid: string) => request<PlayerInventoryDto>(`${serverPath(id)}/players/${encodeURIComponent(uuid)}/inventory`),
+  savePlayerInventory: (id: string, uuid: string, expectedRevision: string, items: InventoryItemUpdateDto[]) =>
+    request<PlayerInventoryDto>(`${serverPath(id)}/players/${encodeURIComponent(uuid)}/inventory`, {
+      method: "PUT", body: JSON.stringify({ expectedRevision, items }),
+    }),
+  playerInventoryBackups: (id: string, uuid: string) => request<PlayerInventoryBackupDto[]>(`${serverPath(id)}/players/${encodeURIComponent(uuid)}/inventory/backups`),
+  createPlayerInventoryBackup: (id: string, uuid: string, expectedRevision: string) =>
+    request<PlayerInventoryBackupDto>(`${serverPath(id)}/players/${encodeURIComponent(uuid)}/inventory/backups`, {
+      method: "POST", body: JSON.stringify({ expectedRevision }),
+    }),
+  restorePlayerInventory: (id: string, uuid: string, backupId: string, expectedRevision: string) =>
+    request<PlayerInventoryDto>(`${serverPath(id)}/players/${encodeURIComponent(uuid)}/inventory/backups/${encodeURIComponent(backupId)}/restore`, {
+      method: "POST", body: JSON.stringify({ expectedRevision }),
+    }),
   mods: (id: string) => request<ModFileDto[]>(`${serverPath(id)}/mods`),
   plugins: (id: string) => request<ModFileDto[]>(`${serverPath(id)}/plugins`),
   installModrinthMod: (

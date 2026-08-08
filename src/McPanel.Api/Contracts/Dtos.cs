@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using McPanel.Api.Configuration;
 using McPanel.Api.Data;
+using McPanel.Api.Services;
 
 namespace McPanel.Api.Contracts;
 
@@ -18,7 +19,10 @@ public sealed record ServerSummaryDto(
     int MaximumHeapMemoryMb, int PlayerCount, int MaxPlayers, double CpuPercent, double MemoryUsedMb,
     double MemoryPeakMb, double SwapUsedMb, double AnonymousMemoryMb, double FileMemoryMb,
     double KernelMemoryMb, double SocketMemoryMb, bool MemoryEnforced, long UptimeSeconds,
-    bool RestartRequired, bool StartOnBoot, string? IconRevision, ModpackSummaryDto? Modpack);
+    bool RestartRequired, bool StartOnBoot, string? IconRevision, ModpackSummaryDto? Modpack,
+    string? AdvertisedAddressOverride = null, string? ResolvedConnectionAddress = null,
+    string? ConnectionAddressSource = null, string ConnectionRouteKind = "Unavailable",
+    string? ConnectionNote = null, string AddressRevision = "");
 
 public sealed record CreateServerRequest(
     [property: Required, StringLength(48, MinimumLength = 2)] string Name,
@@ -32,13 +36,23 @@ public sealed record CreateServerRequest(
     string? Build = null,
     string? LoaderVersion = null,
     string? InstallerVersion = null,
-    bool IncludeExperimental = false);
+    bool IncludeExperimental = false,
+    string? ClientRequestId = null);
+
+public sealed record CreateGateServerRequest(
+    [property: Required, StringLength(48, MinimumLength = 2)] string Name,
+    [property: Range(1024, 65535)] int Port,
+    bool StartOnBoot = false,
+    string? ClientRequestId = null);
 
 public sealed record ServerConfigurationDto(
     string Motd, int MaxPlayers, string GameMode, string Difficulty, bool Whitelist, bool OnlineMode,
     bool Pvp, bool CommandBlocks, bool AllowFlight, int SpawnProtection, int ViewDistance,
     int SimulationDistance, string WorldName, int Port, int MemoryMb, string JavaRuntimeId,
-    string JvmArguments, bool StartOnBoot, bool CrashRecovery);
+    string JvmArguments, bool StartOnBoot, bool CrashRecovery,
+    string? AdvertisedAddressOverride = null, string? ResolvedConnectionAddress = null,
+    string? ConnectionAddressSource = null, string ConnectionRouteKind = "Unavailable",
+    string? ConnectionNote = null, string AddressRevision = "");
 
 public enum PropertyCompatibility { Supported, IntroducedLater, RemovedBefore, UnknownVersion }
 public sealed record PropertyVersionRangeDto(string From, string? To);
@@ -68,7 +82,9 @@ public sealed record CreateFileRequest(string Path, bool Directory);
 public sealed record MoveFileRequest(string Source, string Destination);
 public sealed record ExtractFileRequest(string Path, string Destination);
 
-public sealed record PlayerDto(string Name, string? Uuid, bool Online, bool Whitelisted, bool Operator, bool Banned);
+public sealed record PlayerDto(
+    string Name, string? Uuid, bool Online, bool Whitelisted, bool Operator, bool Banned,
+    bool InventoryAvailable = false, DateTimeOffset? InventorySavedAt = null);
 public sealed record BackupDto(Guid Id, string FileName, long Size, DateTimeOffset CreatedAt, string Reason, string State);
 public sealed record JobDto(
     Guid Id, string Type, JobState State, int Progress, string? Message, string? Error,
@@ -80,7 +96,61 @@ public sealed record ConfirmKillRequest(bool Confirm);
 public sealed record HostSampleDto(DateTimeOffset Time, double Cpu, double Memory);
 public sealed record HostStatusDto(double CpuPercent, long MemoryUsedBytes, long MemoryTotalBytes, long DiskUsedBytes, long DiskTotalBytes, DateTimeOffset SampleTime, IReadOnlyList<HostSampleDto> Samples);
 public sealed record SystemInfoDto(string Version, string DataDirectory, string InstancesDirectory, long MemoryAllocationLimitBytes);
-public sealed record PanelSettingsDto(bool KeepServersRunningOnPanelStop);
+public sealed record PanelSettingsDto(
+    bool KeepServersRunningOnPanelStop,
+    string? GlobalServerHost = null,
+    string Revision = "");
+
+public sealed record UpdateServerPublicAddressRequest(string? Address, string ExpectedRevision);
+public sealed record GateConfigurationDto(
+    GateMode Mode, Guid? DefaultServerId, IReadOnlyList<Guid> BackendServerIds,
+    GateForwardingMode ClassicForwardingMode, bool HasVelocitySecret,
+    bool HasBungeeGuardSecret, string Revision,
+    bool ConfigurationDirty = false, string? LastApplyError = null,
+    int ListenerPort = 25565, bool StartOnBoot = false, bool CrashRecovery = true,
+    Guid? DefaultExternalBackendId = null,
+    IReadOnlyList<GateExternalBackendDto>? ExternalBackends = null);
+public sealed record GateExternalBackendDto(Guid Id, string Name, string Address);
+public sealed record GateExternalBackendWriteDto(Guid Id, string? Name, string Address);
+public sealed record UpdateGateConfigurationRequest(
+    string ExpectedRevision, GateMode Mode, Guid? DefaultServerId,
+    IReadOnlyList<Guid> BackendServerIds, GateForwardingMode ClassicForwardingMode,
+    int? ListenerPort = null,
+    bool? StartOnBoot = null, bool? CrashRecovery = null,
+    Guid? DefaultExternalBackendId = null,
+    IReadOnlyList<GateExternalBackendWriteDto>? ExternalBackends = null);
+public sealed record GateInstallationDto(bool Installed, string? Version, string? LatestVersion, bool UpdateAvailable);
+public sealed record GateRuntimeDto(
+    RuntimeProcessState State, bool DesiredRunning, int? ProcessId, DateTimeOffset? StartedAt,
+    int ActiveConnections, int OnlinePlayers, string? LastError);
+public sealed record GateRouteDto(
+    Guid ServerId, string ServerName, string BackendAddress, string? PublicHost,
+    string? ConnectionAddress, string RouteKind, string? Note, string BackendKind = "Managed");
+public sealed record GateStatusDto(
+    Guid ServerId, GateInstallationDto Installation, GateRuntimeDto Runtime, GateConfigurationDto Configuration,
+    IReadOnlyList<GateRouteDto> Routes, IReadOnlyList<string> Warnings);
+public sealed record GateActionRequest(bool ConfirmDisconnectPlayers = false);
+public sealed record GateSecretDto(string Secret, DateTimeOffset GeneratedAt);
+public sealed record GenerateGateSecretRequest(bool ConfirmReplace = false);
+public sealed record GateLogDto(IReadOnlyList<string> Lines);
+
+public sealed record InventoryItemDto(
+    string Id, int Count, string DisplayName, IReadOnlyList<string> Metadata);
+public sealed record InventorySlotDto(
+    string Section, int Index, int NbtSlot, InventoryItemDto? Item);
+public sealed record PlayerInventoryDto(
+    string PlayerName, string Uuid, string Revision, DateTimeOffset SavedAt,
+    bool Online, bool SnapshotMayBeStale, bool WriteAllowed, int? DataVersion,
+    IReadOnlyList<InventorySlotDto> Slots);
+public sealed record InventoryItemUpdateDto(
+    string Section, int Index, string? SourceSection, int? SourceIndex,
+    string Id, int Count, bool ClearMetadata = false);
+public sealed record SavePlayerInventoryRequest(
+    string ExpectedRevision, IReadOnlyList<InventoryItemUpdateDto> Items);
+public sealed record PlayerInventoryBackupDto(
+    Guid Id, DateTimeOffset CreatedAt, string SourceRevision, long Size);
+public sealed record CreatePlayerInventoryBackupRequest(string ExpectedRevision);
+public sealed record RestorePlayerInventoryRequest(string ExpectedRevision);
 
 public sealed record PaperBuildDto(string Id, string Channel, bool Experimental, string? DownloadName = null);
 public sealed record FabricChoiceDto(string Version, bool Stable);
@@ -140,7 +210,8 @@ public sealed record CreateModpackServerRequest(
     [property: Range(1024, 65535)] int Port,
     bool EulaAccepted,
     bool StartOnBoot = false,
-    IReadOnlyCollection<string>? SelectedOptionalFiles = null);
+    IReadOnlyCollection<string>? SelectedOptionalFiles = null,
+    string? ClientRequestId = null);
 public sealed record InstallModrinthModRequest(
     string ProjectId,
     string VersionId,

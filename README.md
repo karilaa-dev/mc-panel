@@ -21,8 +21,16 @@ administration, or a dense operator interface.
   start-on-boot behavior.
 - Persistent live console with reconnect cursors, search, command history, and
   separate stdout/stderr display.
+- Multiple Minekube Gate proxies as normal managed servers, each with an
+  isolated verified binary, lifecycle, configuration, managed or arbitrary
+  address backends, secrets, logs, routes, and rollback state.
+- A Panel Settings global server host plus an optional advertised connection
+  address per Minecraft or Gate server, with copy-ready IPv4/IPv6 formatting.
 - One server RAM control that sets Xms and Xmx equally, version-aware sectioned `server.properties`,
   cropped server icons, player actions, and a confined file manager.
+- Structured player inventory and Ender Chest viewing, online-safe manual or
+  scheduled snapshots, offline-only atomic editing/restoring, and optimistic
+  concurrency.
 - Read-only Fabric, Forge, and NeoForge mod inventories with metadata details
   parsed directly from each instance's top-level mod JARs.
 - Paper plugin inventory and verified Modrinth plugin installation.
@@ -55,7 +63,7 @@ enforces its total RAM limit; `-Xmx` independently caps only the Java heap.
 | --- | --- |
 | `/opt/mcpanel` | Root-owned, read-only published application |
 | `/etc/mcpanel` | Root-owned service configuration and first-run secret |
-| `/var/lib/mcpanel` | `mcpanel`-owned databases, keys, instances, staging, backups, and logs |
+| `/var/lib/mcpanel` | `mcpanel`-owned databases, keys, instances, staging, backups, logs, and managed Gate state |
 | `/etc/systemd/system/mcpanel.service` | Root-owned hardened systemd unit |
 | `/etc/systemd/system/mcpanel-runtime.service` | Persistent Java process and console supervisor |
 
@@ -63,6 +71,23 @@ Every Minecraft server and every installed plugin/mod runs under the same Unix
 UID. This protects the host from ordinary writes outside the data directory,
 but it is **not isolation between instances**: malicious server extensions can
 read or alter sibling instances. Install only trusted plugins and mods.
+
+Gate is not installed as part of panel deployment. An administrator explicitly
+creates a Gate Proxy from the normal Create Server flow; MC Panel selects the
+official Linux asset, verifies Minekube's SHA-256 checksum, validates the
+reported version, and keeps the preceding version available for that instance's
+rollback. Gate is Apache-2.0 licensed; see
+Minekube's [binary checksum guidance](https://gate.minekube.com/guide/install/binaries)
+and [Gate repository](https://github.com/minekube/gate).
+
+Player inventory reads and writes use the pinned, BSD-licensed
+[fNbt 1.0.0](https://www.nuget.org/packages/fNbt/1.0.0) package.
+
+MC Panel intentionally has no arbitrary Server Links editor. Without a plugin,
+mod, or custom Gate build, the supported server kinds do not provide a
+persistent native arbitrary-link configuration. The version-aware
+`bug-report-link` property remains available through Server Properties where
+Minecraft supports it.
 
 The HTTP/realtime contract is documented in
 [src/McPanel.Api/CONTRACT.md](src/McPanel.Api/CONTRACT.md). Production
@@ -106,6 +131,7 @@ tests:
 
 ```bash
 npm ci --prefix src/McPanel.Web
+npm run typecheck --prefix src/McPanel.Web
 npm run build --prefix src/McPanel.Web
 npm run lint --prefix src/McPanel.Web
 npm test --prefix src/McPanel.Web

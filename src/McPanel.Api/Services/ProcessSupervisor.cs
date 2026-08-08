@@ -31,6 +31,7 @@ public sealed class ProcessSupervisor(
     JavaDiscoveryService javaDiscovery,
     CgroupMemoryService cgroups,
     PersistentRuntimeClient persistentRuntime,
+    GateProxyService gate,
     OperationQueue operations,
     IOptions<PanelOptions> options,
     IHubContext<PanelHub> hub,
@@ -101,6 +102,8 @@ public sealed class ProcessSupervisor(
                 ?? throw PanelProblems.NotFound("Server");
             if (await db.Jobs.AsNoTracking().AnyAsync(x => x.ServerId == id && (x.State == JobState.Queued || x.State == JobState.Running), cancellationToken))
                 throw PanelProblems.Conflict("SERVER_BUSY", "Another operation is already running for this server.");
+            if (server.Kind == ServerKind.Gate && normalized is "start" or "restart")
+                await gate.ValidateStartConfigurationAsync(id, cancellationToken);
             if (normalized == "start") EnsurePortAvailable(server.Port);
             return await operations.EnqueueAsync(char.ToUpperInvariant(normalized[0]) + normalized[1..], id, async (_, _, token) =>
             {
@@ -134,6 +137,11 @@ public sealed class ProcessSupervisor(
             throw PanelProblems.Conflict("SERVER_BUSY", "The server already has a managed process.");
         if (server.State is ServerState.Installing or ServerState.Updating or ServerState.BackingUp or ServerState.Error)
             throw PanelProblems.Conflict("SERVER_BUSY", "The server cannot be started in its current state.");
+        if (server.Kind == ServerKind.Gate)
+        {
+            await StartPersistentGateLockedAsync(server, db, recovery, cancellationToken);
+            return;
+        }
         if (server.MemoryMb < PanelOptions.MinimumServerMemoryMb || server.MemoryLimitMb < PanelOptions.MinimumServerTotalMemoryMb || server.MemoryMb >= server.MemoryLimitMb)
             throw new PanelException(409, "MEMORY_LIMIT_TOO_LOW", "The configured server memory is below the supported minimum.",
                 $"Allocate at least {PanelOptions.MinimumServerTotalMemoryMb} MiB total and leave native-memory headroom above the Java heap.");
@@ -175,6 +183,50 @@ public sealed class ProcessSupervisor(
             server.RestartRequired = false; server.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(cancellationToken); await PublishStateAsync(server, cancellationToken);
             _runtimeStates[id] = snapshot.State;
+        }
+        finally { _memoryAdmission.Release(); }
+    }
+
+    private async Task StartPersistentGateLockedAsync(
+        ServerEntity server, StateDbContext db, bool recovery, CancellationToken cancellationToken)
+    {
+        await _memoryAdmission.WaitAsync(cancellationToken);
+        try
+        {
+            var total = HostMetricsService.ReadMemory().Total;
+            var allocationMb = await db.Servers.Where(x => x.Id != server.Id &&
+                (x.State == ServerState.Running || x.State == ServerState.Starting))
+                .SumAsync(x => (long)x.MemoryLimitMb, cancellationToken);
+            if ((allocationMb + 256) * 1024 * 1024 > total * options.Value.MemoryAllocationFraction)
+                throw new PanelException(409, "MEMORY_LIMIT_EXCEEDED", "Starting Gate would exceed the host memory allocation limit.");
+            EnsurePortAvailable(server.Port);
+            var launch = await gate.PrepareLaunchAsync(server.Id, cancellationToken);
+            server.State = ServerState.Starting;
+            server.ProcessId = null;
+            server.MemoryMb = server.InitialMemoryMb = server.MemoryLimitMb = 256;
+            server.UpdatedAt = DateTimeOffset.UtcNow;
+            if (!recovery) server.CrashAttempts = 0;
+            await db.SaveChangesAsync(cancellationToken);
+            await PublishStateAsync(server, cancellationToken);
+            RuntimeServerSnapshot snapshot;
+            try { snapshot = await persistentRuntime.StartAsync(launch, cancellationToken); }
+            catch
+            {
+                server.State = ServerState.Crashed;
+                server.ProcessId = null;
+                server.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(CancellationToken.None);
+                await PublishStateAsync(server, CancellationToken.None);
+                throw;
+            }
+            server.State = snapshot.State == RuntimeProcessState.Running ? ServerState.Running : ServerState.Starting;
+            server.ProcessId = snapshot.ProcessId;
+            server.StartedAt = snapshot.StartedAt;
+            server.RestartRequired = false;
+            server.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(cancellationToken);
+            await PublishStateAsync(server, cancellationToken);
+            _runtimeStates[server.Id] = snapshot.State;
         }
         finally { _memoryAdmission.Release(); }
     }
@@ -233,7 +285,7 @@ public sealed class ProcessSupervisor(
         }
 
         await using var db = await stateFactory.CreateDbContextAsync();
-        var keepRunning = await db.Admins.Select(x => x.KeepServersRunningOnPanelStop).SingleOrDefaultAsync();
+        var keepRunning = await db.PanelSettings.Select(x => x.KeepServersRunningOnPanelStop).SingleOrDefaultAsync();
         if (!keepRunning)
         {
             try
@@ -283,13 +335,23 @@ public sealed class ProcessSupervisor(
         if (db.ChangeTracker.HasChanges()) await db.SaveChangesAsync(cancellationToken);
         if (initial)
         {
-            var startIds = servers.Where(x => x.StartOnBoot && x.State == ServerState.Stopped).Select(x => x.Id).ToList();
-            foreach (var id in startIds)
-            {
-                try { await StartPersistentAsync(id, false, cancellationToken); }
-                catch (Exception exception) { logger.LogError(exception, "Start-on-boot failed for {ServerId}", id); }
-            }
+            // A runtime process cannot survive a host/runtime restart. Its persisted snapshot
+            // is normalized to Crashed during runtime initialization, so start-on-boot must
+            // restore both cleanly stopped and interrupted workloads on the initial pass.
+            var startIds = servers.Where(x => x.StartOnBoot && x.State is ServerState.Stopped or ServerState.Crashed)
+                .Select(x => x.Id).ToList();
+            foreach (var id in startIds) SchedulePersistentStartOnBoot(id);
         }
+    }
+
+    private void SchedulePersistentStartOnBoot(Guid id)
+    {
+        _ = Task.Run(async () =>
+        {
+            try { await StartPersistentAsync(id, false, lifetime.ApplicationStopping); }
+            catch (OperationCanceledException) when (lifetime.ApplicationStopping.IsCancellationRequested) { }
+            catch (Exception exception) { logger.LogError(exception, "Start-on-boot failed for {ServerId}", id); }
+        });
     }
 
     private void SchedulePersistentRecovery(Guid id, int attempt)
@@ -509,6 +571,11 @@ public sealed class ProcessSupervisor(
         if (string.IsNullOrWhiteSpace(command) || command.Length > 4096 || command.Any(x => x is '\r' or '\n' or '\0'))
             throw PanelProblems.Validation("Commands must be one non-empty line of at most 4096 characters.");
         if (command.Trim().Equals("stop", StringComparison.OrdinalIgnoreCase)) { await StopAsync(id, cancellationToken); return; }
+        await using (var db = await stateFactory.CreateDbContextAsync(cancellationToken))
+        {
+            if (await db.Servers.AnyAsync(x => x.Id == id && x.Kind == ServerKind.Gate, cancellationToken))
+                throw new PanelException(409, "GATE_COMMAND_UNSUPPORTED", "Gate does not accept Minecraft console commands.");
+        }
         if (persistentRuntime.Enabled)
         {
             if (!persistentRuntime.IsRunning(id)) throw PanelProblems.Conflict("SERVER_NOT_RUNNING", "The server is not running.");
