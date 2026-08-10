@@ -92,6 +92,7 @@ public sealed class StateDbContext(DbContextOptions<StateDbContext> options) : D
                         "DefaultBackendServerId" TEXT NULL,
                         "DefaultExternalBackendId" TEXT NULL,
                         "ClassicForwardingMode" TEXT NOT NULL DEFAULT 'Velocity',
+                        "ClassicConfigJson" TEXT NULL,
                         "BackendSetupAcknowledgementHash" TEXT NULL,
                         "ApiPort" INTEGER NOT NULL DEFAULT 0,
                         "Revision" TEXT NOT NULL DEFAULT '',
@@ -123,6 +124,13 @@ public sealed class StateDbContext(DbContextOptions<StateDbContext> options) : D
             {
                 await using var alter = connection.CreateCommand();
                 alter.CommandText = "ALTER TABLE \"GateSettings\" ADD COLUMN \"DefaultExternalBackendId\" TEXT NULL;";
+                await alter.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            if (gateSettingsColumns.Count > 0 && !gateSettingsColumns.Contains(nameof(GateSettingsEntity.ClassicConfigJson)))
+            {
+                await using var alter = connection.CreateCommand();
+                alter.CommandText = "ALTER TABLE \"GateSettings\" ADD COLUMN \"ClassicConfigJson\" TEXT NULL;";
                 await alter.ExecuteNonQueryAsync(cancellationToken);
             }
 

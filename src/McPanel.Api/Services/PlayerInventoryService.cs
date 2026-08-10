@@ -21,8 +21,6 @@ public sealed partial class PlayerInventoryService(
     private const int MaximumDecompressedBytes = 32 * 1024 * 1024;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private static readonly IReadOnlyList<SlotDefinition> Definitions = BuildDefinitions();
-    private static readonly IReadOnlyDictionary<(string Section, int Index), SlotDefinition> ByUi =
-        Definitions.ToDictionary(x => (x.Section, x.Index), SlotKeyComparer.Instance);
     private static readonly IReadOnlyDictionary<(string List, int Slot), SlotDefinition> ByNbt =
         Definitions.ToDictionary(x => (x.List, x.NbtSlot));
 
@@ -31,24 +29,6 @@ public sealed partial class PlayerInventoryService(
         var context = await ResolveAsync(serverId, requestedUuid, requireStableState: false, cancellationToken);
         var loaded = await LoadAsync(context.Path, cancellationToken);
         return ToDto(context, loaded);
-    }
-
-    public async Task<PlayerInventoryDto> SaveAsync(
-        Guid serverId, string requestedUuid, SavePlayerInventoryRequest request, CancellationToken cancellationToken)
-    {
-        if (request is null || string.IsNullOrWhiteSpace(request.ExpectedRevision) || request.Items is null)
-            throw PanelProblems.Validation("An expected player-data revision and complete inventory are required.");
-        using var serverLock = await keyedLock.AcquireAsync(serverId, cancellationToken);
-        var context = await ResolveAsync(serverId, requestedUuid, requireStableState: true, cancellationToken);
-        EnsureOffline(context);
-        var loaded = await LoadAsync(context.Path, cancellationToken);
-        EnsureRevision(loaded.Revision, request.ExpectedRevision);
-        var desired = ValidateItems(request.Items, loaded);
-        await WriteBackupAsync(serverId, context.Uuid, loaded, cancellationToken);
-        ReplaceInventory(loaded.File.RootTag, desired, loaded);
-        await AtomicSaveAsync(context.Path, loaded.File, cancellationToken);
-        var updated = await LoadAsync(context.Path, cancellationToken);
-        return ToDto(context with { SavedAt = File.GetLastWriteTimeUtc(context.Path) }, updated);
     }
 
     public async Task<IReadOnlyList<PlayerInventoryBackupDto>> ListBackupsAsync(
@@ -84,6 +64,33 @@ public sealed partial class PlayerInventoryService(
         var loaded = await LoadAsync(context.Path, cancellationToken);
         EnsureRevision(loaded.Revision, request.ExpectedRevision);
         return await WriteBackupAsync(serverId, context.Uuid, loaded, cancellationToken);
+    }
+
+    public async Task<PlayerInventoryBackupPreviewDto> PreviewBackupAsync(
+        Guid serverId, string requestedUuid, Guid backupId, CancellationToken cancellationToken)
+    {
+        var context = await ResolveAsync(serverId, requestedUuid, requireStableState: false, cancellationToken);
+        var directory = paths.PlayerInventoryBackups(serverId, context.Uuid);
+        var dataPath = Path.Combine(directory, backupId.ToString("N") + ".dat");
+        var metadataPath = Path.Combine(directory, backupId.ToString("N") + ".json");
+        if (!File.Exists(dataPath) || !File.Exists(metadataPath)) throw PanelProblems.NotFound("Inventory backup");
+        EnsureNoLinks(paths.ServerBackups(serverId), dataPath);
+        EnsureNoLinks(paths.ServerBackups(serverId), metadataPath);
+        SnapshotMetadata metadata;
+        try
+        {
+            metadata = JsonSerializer.Deserialize<SnapshotMetadata>(
+                await File.ReadAllTextAsync(metadataPath, cancellationToken), Json)
+                ?? throw new InvalidDataException("The inventory backup metadata is empty.");
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidDataException or IOException)
+        {
+            throw InvalidData(exception.Message);
+        }
+        if (metadata.Id != backupId) throw InvalidData("The inventory backup metadata does not match the requested snapshot.");
+        var loaded = await LoadAsync(dataPath, cancellationToken);
+        var backup = new PlayerInventoryBackupDto(metadata.Id, metadata.CreatedAt, metadata.SourceRevision, new FileInfo(dataPath).Length);
+        return new PlayerInventoryBackupPreviewDto(context.Name, context.Uuid, backup, Slots(loaded));
     }
 
     public async Task<int> CreateScheduledBackupsAsync(
@@ -235,12 +242,14 @@ public sealed partial class PlayerInventoryService(
 
     private static PlayerInventoryDto ToDto(PlayerContext context, LoadedPlayerData loaded)
     {
-        var slots = Definitions.Select(definition => new InventorySlotDto(
+        return new PlayerInventoryDto(context.Name, context.Uuid, loaded.Revision, context.SavedAt,
+            context.Online, context.Online, loaded.DataVersion, Slots(loaded));
+    }
+
+    private static IReadOnlyList<InventorySlotDto> Slots(LoadedPlayerData loaded) =>
+        Definitions.Select(definition => new InventorySlotDto(
             definition.Section, definition.Index, definition.NbtSlot,
             loaded.Occupied.TryGetValue((definition.Section, definition.Index), out var stack) ? Describe(stack) : null)).ToList();
-        return new PlayerInventoryDto(context.Name, context.Uuid, loaded.Revision, context.SavedAt,
-            context.Online, context.Online, !context.Online, loaded.DataVersion, slots);
-    }
 
     private static InventoryItemDto Describe(NbtCompound stack)
     {
@@ -254,51 +263,6 @@ public sealed partial class PlayerInventoryService(
         var path = id.Contains(':') ? id[(id.IndexOf(':') + 1)..] : id;
         var display = CultureInfo.InvariantCulture.TextInfo.ToTitleCase(path.Replace('_', ' ').Replace('/', ' '));
         return new InventoryItemDto(id, count, display, metadata);
-    }
-
-    private static IReadOnlyDictionary<(string Section, int Index), NbtCompound> ValidateItems(
-        IReadOnlyList<InventoryItemUpdateDto> items, LoadedPlayerData loaded)
-    {
-        var result = new Dictionary<(string Section, int Index), NbtCompound>(SlotKeyComparer.Instance);
-        var sources = new HashSet<(string Section, int Index)>(SlotKeyComparer.Instance);
-        foreach (var item in items)
-        {
-            var targetKey = NormalizeUi(item.Section, item.Index);
-            if (!ByUi.TryGetValue(targetKey, out var target)) throw PanelProblems.Validation("An inventory item targets an unknown slot.");
-            if (!result.TryAdd(targetKey, null!)) throw PanelProblems.Validation("Inventory slots must be unique.");
-            ValidateItem(item.Id, item.Count);
-            NbtCompound stack;
-            if (item.SourceSection is not null || item.SourceIndex is not null)
-            {
-                if (item.SourceSection is null || item.SourceIndex is null) throw PanelProblems.Validation("An original source requires both a section and index.");
-                var sourceKey = NormalizeUi(item.SourceSection, item.SourceIndex.Value);
-                if (!sources.Add(sourceKey)) throw PanelProblems.Validation("An original inventory source can only be used once.");
-                if (!loaded.Occupied.TryGetValue(sourceKey, out var original)) throw PanelProblems.Validation("An original inventory source no longer contains an item.");
-                stack = new NbtCompound(original);
-            }
-            else stack = NewStack(item.Id, item.Count, loaded.DataVersion);
-            if (item.ClearMetadata) { stack.Remove("tag"); stack.Remove("components"); }
-            SetId(stack, item.Id); SetCount(stack, item.Count, loaded.DataVersion); SetSlot(stack, target.NbtSlot);
-            result[targetKey] = stack;
-        }
-        return result;
-    }
-
-    private static void ReplaceInventory(
-        NbtCompound root, IReadOnlyDictionary<(string Section, int Index), NbtCompound> desired, LoadedPlayerData loaded)
-    {
-        var oldInventory = RequiredList(root, "Inventory");
-        var oldEnder = root.Get("EnderItems") as NbtList ?? new NbtList("EnderItems", NbtTagType.Compound);
-        var inventory = new NbtList("Inventory", NbtTagType.Compound);
-        var ender = new NbtList("EnderItems", NbtTagType.Compound);
-        foreach (var compound in oldInventory.OfType<NbtCompound>().Where(x => !TryDefinition("Inventory", x, out _))) inventory.Add(new NbtCompound(compound));
-        foreach (var compound in oldEnder.OfType<NbtCompound>().Where(x => !TryDefinition("EnderItems", x, out _))) ender.Add(new NbtCompound(compound));
-        foreach (var (key, stack) in desired)
-        {
-            var definition = ByUi[key];
-            (definition.List == "Inventory" ? inventory : ender).Add(stack);
-        }
-        Set(root, inventory); Set(root, ender);
     }
 
     private async Task<PlayerInventoryBackupDto> WriteBackupAsync(
@@ -394,44 +358,6 @@ public sealed partial class PlayerInventoryService(
         _ => throw InvalidData("An inventory item has an invalid count tag.")
     };
 
-    private static NbtCompound NewStack(string id, int count, int? dataVersion)
-    {
-        var stack = new NbtCompound();
-        SetId(stack, id); SetCount(stack, count, dataVersion);
-        return stack;
-    }
-
-    private static void SetId(NbtCompound stack, string id)
-    {
-        stack.Remove("id");
-        if (int.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out var numeric))
-        {
-            if (numeric <= short.MaxValue) stack.Add(new NbtShort("id", (short)numeric));
-            else stack.Add(new NbtInt("id", numeric));
-        }
-        else stack.Add(new NbtString("id", id));
-    }
-
-    private static void SetCount(NbtCompound stack, int count, int? dataVersion)
-    {
-        var modern = stack.Get("count") is NbtInt || stack.Get("Count") is null && dataVersion >= 3837;
-        stack.Remove("Count"); stack.Remove("count");
-        if (modern) stack.Add(new NbtInt("count", count));
-        else stack.Add(new NbtByte("Count", (byte)count));
-    }
-
-    private static void SetSlot(NbtCompound stack, int nbtSlot)
-    {
-        stack.Remove("Slot"); stack.Add(new NbtByte("Slot", unchecked((byte)(sbyte)nbtSlot)));
-    }
-
-    private static void ValidateItem(string id, int count)
-    {
-        if (count is < 1 or > 127) throw PanelProblems.Validation("Item counts must be between 1 and 127.");
-        if (int.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out var numeric) && numeric >= 0) return;
-        if (!ItemIdRegex().IsMatch(id)) throw PanelProblems.Validation("Item IDs must be legacy numeric IDs or lowercase namespaced Minecraft IDs.");
-    }
-
     private static NbtList RequiredList(NbtCompound root, string name) => root.Get(name) switch
     {
         NbtList list => list,
@@ -448,16 +374,15 @@ public sealed partial class PlayerInventoryService(
     }
 
     private static void Set(NbtCompound root, NbtTag tag) { root.Remove(tag.Name!); root.Add(tag); }
-    private static (string Section, int Index) NormalizeUi(string section, int index) => (section.Trim().ToLowerInvariant(), index);
     private static void EnsureRevision(string actual, string expected)
     {
         var normalized = expected.Trim().ToLowerInvariant();
         if (actual.Length != normalized.Length || !CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(actual), Encoding.ASCII.GetBytes(normalized)))
-            throw new PanelException(409, "PLAYER_DATA_CHANGED", "The saved player data changed after it was loaded. Refresh or rebase the staged inventory edits.");
+            throw new PanelException(409, "PLAYER_DATA_CHANGED", "The saved player data changed after it was loaded. Refresh and try again.");
     }
     private static void EnsureOffline(PlayerContext context)
     {
-        if (context.Online) throw new PanelException(409, "PLAYER_ONLINE", "The player must be offline before inventory changes can be saved.");
+        if (context.Online) throw new PanelException(409, "PLAYER_ONLINE", "The player must be offline before an inventory backup can be restored.");
     }
 
     private static string NormalizeUuid(string value)

@@ -28,9 +28,9 @@ administration, or a dense operator interface.
   address per Minecraft or Gate server, with copy-ready IPv4/IPv6 formatting.
 - One server RAM control that sets Xms and Xmx equally, version-aware sectioned `server.properties`,
   cropped server icons, player actions, and a confined file manager.
-- Structured player inventory and Ender Chest viewing, online-safe manual or
-  scheduled snapshots, offline-only atomic editing/restoring, and optimistic
-  concurrency.
+- Read-only player inventory and Ender Chest viewing, online-safe manual or
+  scheduled snapshots with previews, and offline-only atomic restore with
+  optimistic concurrency.
 - Read-only Fabric, Forge, and NeoForge mod inventories with metadata details
   parsed directly from each instance's top-level mod JARs.
 - Paper plugin inventory and verified Modrinth plugin installation.

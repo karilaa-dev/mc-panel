@@ -77,6 +77,7 @@ public sealed class GateSettingsEntity
     public Guid? DefaultBackendServerId { get; set; }
     public Guid? DefaultExternalBackendId { get; set; }
     public GateForwardingMode ClassicForwardingMode { get; set; } = GateForwardingMode.Velocity;
+    public string? ClassicConfigJson { get; set; }
     public int ApiPort { get; set; }
     [MaxLength(64)] public string Revision { get; set; } = Guid.NewGuid().ToString("N");
     public bool ConfigurationDirty { get; set; } = true;

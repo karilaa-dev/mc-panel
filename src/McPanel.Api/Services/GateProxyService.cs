@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using McPanel.Api.Configuration;
 using McPanel.Api.Contracts;
 using McPanel.Api.Data;
@@ -349,6 +350,203 @@ public sealed class GateReleaseService(ValidatedDownloadClient downloads, PanelP
 public sealed class GateConfigurationService(PanelPaths paths)
 {
     private static readonly IdnMapping Idn = new() { UseStd3AsciiRules = true };
+    private static readonly string[] DefaultTrustedProxies =
+    [
+        "127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12",
+        "192.168.0.0/16", "169.254.0.0/16", "fc00::/7", "fe80::/10"
+    ];
+
+    public static GateClassicConfigurationDto DefaultClassic() => new(
+        OnlineMode: true, SessionServerUrl: null, OnlineModeKickExistingPlayers: false,
+        ShowMaxPlayers: 1000, Motd: "§bA Gate Proxy\n§bVisit ➞ §fgithub.com/minekube/gate", Favicon: null, LogPingRequests: false,
+        QueryEnabled: false, QueryPort: 25577, QueryShowPlugins: false, AnnounceForge: false,
+        FailoverOnUnexpectedServerDisconnect: true, ConnectionTimeout: "5s", ReadTimeout: "30s",
+        ConnectionsQuotaEnabled: true, ConnectionsQuotaOps: 5, ConnectionsQuotaBurst: 10, ConnectionsQuotaMaxEntries: 1000,
+        LoginsQuotaEnabled: true, LoginsQuotaOps: 0.4, LoginsQuotaBurst: 3, LoginsQuotaMaxEntries: 1000,
+        PacketLimiterInterval: "7s", PacketsPerSecond: 500, BytesPerSecond: -1,
+        CompressionThreshold: 256, CompressionLevel: -1,
+        ProxyProtocol: false, ProxyProtocolBackend: false, ProxyProtocolTrustedProxies: DefaultTrustedProxies,
+        ShouldPreventClientProxyConnections: false, AcceptTransfers: false,
+        BungeePluginChannelEnabled: true, BuiltinCommands: true,
+        RequireBuiltinCommandPermissions: false, AnnounceProxyCommands: true,
+        ForceKeyAuthentication: true, Debug: false,
+        ShutdownReason: "§cGate proxy is shutting down...\nPlease reconnect in a moment!",
+        ViaEnabled: false, ViaMode: "subprocess", ViaBind: null, ViaLibraryPath: null,
+        ViaBinaryPath: null, ViaVersion: null, ViaMirror: null, ViaOffline: false,
+        BedrockEnabled: false, BedrockGeyserListenAddress: "localhost:25567", BedrockUsernameFormat: "_%s",
+        BedrockFloodgateKeyPath: "floodgate.pem", BedrockManagedEnabled: false, BedrockManagedEngine: "geyserlite",
+        BedrockManagedMode: "subprocess", BedrockManagedJarUrl: "https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/standalone",
+        BedrockManagedDataDirectory: ".geyser", BedrockManagedJavaPath: "java",
+        BedrockManagedLibraryPath: null, BedrockManagedBinaryPath: null, BedrockManagedMirror: null,
+        BedrockManagedVersion: null, BedrockManagedOffline: false, BedrockManagedAutoUpdate: true,
+        BedrockManagedExtraArguments: [], BedrockConfigOverridesJson: "{}",
+        BedrockBackendFloodgateEnabled: false, BedrockBackendFloodgateServerIds: []);
+
+    public static GateClassicConfigurationDto Classic(GateSettingsEntity settings)
+    {
+        if (string.IsNullOrWhiteSpace(settings.ClassicConfigJson)) return DefaultClassic();
+        try
+        {
+            return JsonSerializer.Deserialize<GateClassicConfigurationDto>(settings.ClassicConfigJson, GateReleaseService.JsonOptions)
+                ?? throw InvalidConfig("The stored Gate Classic configuration is empty.");
+        }
+        catch (JsonException exception)
+        {
+            throw InvalidConfig($"The stored Gate Classic configuration is invalid: {exception.Message}");
+        }
+    }
+
+    public static string SerializeClassic(GateClassicConfigurationDto value) =>
+        JsonSerializer.Serialize(NormalizeClassic(value), GateReleaseService.JsonOptions);
+
+    public static GateClassicConfigurationDto NormalizeClassic(GateClassicConfigurationDto value)
+    {
+        if (value is null) throw InvalidConfig("Gate Classic settings are required.");
+        var normalized = value with
+        {
+            SessionServerUrl = Optional(value.SessionServerUrl),
+            Favicon = Optional(value.Favicon),
+            ConnectionTimeout = value.ConnectionTimeout?.Trim() ?? "",
+            ReadTimeout = value.ReadTimeout?.Trim() ?? "",
+            PacketLimiterInterval = value.PacketLimiterInterval?.Trim() ?? "",
+            ProxyProtocolTrustedProxies = (value.ProxyProtocolTrustedProxies ?? [])
+                .Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+            ViaMode = value.ViaMode?.Trim().ToLowerInvariant() ?? "",
+            ViaBind = Optional(value.ViaBind),
+            ViaLibraryPath = Optional(value.ViaLibraryPath),
+            ViaBinaryPath = Optional(value.ViaBinaryPath),
+            ViaVersion = Optional(value.ViaVersion),
+            ViaMirror = Optional(value.ViaMirror),
+            BedrockGeyserListenAddress = value.BedrockGeyserListenAddress?.Trim() ?? "",
+            BedrockUsernameFormat = value.BedrockUsernameFormat?.Trim() ?? "",
+            BedrockFloodgateKeyPath = value.BedrockFloodgateKeyPath?.Trim() ?? "",
+            BedrockManagedEngine = value.BedrockManagedEngine?.Trim().ToLowerInvariant() ?? "",
+            BedrockManagedMode = value.BedrockManagedMode?.Trim().ToLowerInvariant() ?? "",
+            BedrockManagedJarUrl = Optional(value.BedrockManagedJarUrl),
+            BedrockManagedDataDirectory = value.BedrockManagedDataDirectory?.Trim() ?? "",
+            BedrockManagedJavaPath = value.BedrockManagedJavaPath?.Trim() ?? "",
+            BedrockManagedLibraryPath = Optional(value.BedrockManagedLibraryPath),
+            BedrockManagedBinaryPath = Optional(value.BedrockManagedBinaryPath),
+            BedrockManagedMirror = Optional(value.BedrockManagedMirror),
+            BedrockManagedVersion = Optional(value.BedrockManagedVersion),
+            BedrockManagedExtraArguments = (value.BedrockManagedExtraArguments ?? []).Select(x => x.Trim()).Where(x => x.Length > 0).ToList(),
+            BedrockConfigOverridesJson = string.IsNullOrWhiteSpace(value.BedrockConfigOverridesJson) ? "{}" : value.BedrockConfigOverridesJson.Trim(),
+            BedrockBackendFloodgateServerIds = (value.BedrockBackendFloodgateServerIds ?? []).Distinct().ToList()
+        };
+        ValidateClassic(normalized);
+        return normalized;
+    }
+
+    public static void ValidateClassic(GateClassicConfigurationDto value)
+    {
+        if (string.IsNullOrWhiteSpace(value.Motd) || value.Motd.Length > 4096)
+            throw InvalidConfig("The Gate MOTD must contain 1 to 4096 characters.");
+        if (value.Favicon?.Length > 1_500_000)
+            throw InvalidConfig("The Gate favicon path or data URL is too large.");
+        if (string.IsNullOrWhiteSpace(value.ShutdownReason) || value.ShutdownReason.Length > 4096)
+            throw InvalidConfig("The Gate shutdown reason must contain 1 to 4096 characters.");
+        if (value.ShowMaxPlayers < 0)
+            throw InvalidConfig("The displayed maximum player count cannot be negative.");
+        if (value.QueryPort is < 1 or > 65535)
+            throw InvalidConfig("The query port must be between 1 and 65535.");
+        ValidateDuration(value.ConnectionTimeout, "connection timeout");
+        ValidateDuration(value.ReadTimeout, "read timeout");
+        ValidateDuration(value.PacketLimiterInterval, "packet limiter interval");
+        ValidateQuota(value.ConnectionsQuotaEnabled, value.ConnectionsQuotaOps, value.ConnectionsQuotaBurst, value.ConnectionsQuotaMaxEntries, "connection");
+        ValidateQuota(value.LoginsQuotaEnabled, value.LoginsQuotaOps, value.LoginsQuotaBurst, value.LoginsQuotaMaxEntries, "login");
+        if (value.CompressionThreshold < -1)
+            throw InvalidConfig("The compression threshold must be -1 or greater.");
+        if (value.CompressionLevel is < -1 or > 9)
+            throw InvalidConfig("The compression level must be between -1 and 9.");
+        if (value.ProxyProtocolTrustedProxies.Count > 64)
+            throw InvalidConfig("At most 64 trusted PROXY protocol networks can be configured.");
+        foreach (var network in value.ProxyProtocolTrustedProxies) ValidateNetwork(network);
+        if (value.SessionServerUrl is { } session &&
+            (!Uri.TryCreate(session, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || session.Length > 2048))
+            throw InvalidConfig("The custom session server must be an absolute HTTP or HTTPS URL.");
+        if (value.ViaMode is not ("subprocess" or "embedded"))
+            throw InvalidConfig("Via mode must be subprocess or embedded.");
+        if (value.ViaBind is { } bind) ValidateHostPort(bind, allowZeroPort: true, "Via bind");
+        foreach (var (text, name) in new[]
+        {
+            (value.ViaLibraryPath, "Via library path"), (value.ViaBinaryPath, "Via binary path"),
+            (value.ViaVersion, "Via version"), (value.ViaMirror, "Via mirror")
+        })
+            if (text?.Length > 2048) throw InvalidConfig($"{name} is too long.");
+        ValidateHostPort(value.BedrockGeyserListenAddress, allowZeroPort: false, "Bedrock Geyser listen address");
+        if (!value.BedrockUsernameFormat.Contains("%s", StringComparison.Ordinal) || value.BedrockUsernameFormat.Length > 64)
+            throw InvalidConfig("The Bedrock username format must contain %s and use at most 64 characters.");
+        if (string.IsNullOrWhiteSpace(value.BedrockFloodgateKeyPath) || value.BedrockFloodgateKeyPath.Length > 2048)
+            throw InvalidConfig("The Bedrock Floodgate key path is required and cannot exceed 2048 characters.");
+        if (value.BedrockManagedEngine is not ("geyserlite" or "java"))
+            throw InvalidConfig("The managed Bedrock engine must be geyserlite or java.");
+        if (value.BedrockManagedMode is not ("subprocess" or "embedded"))
+            throw InvalidConfig("The managed Geyserlite mode must be subprocess or embedded.");
+        if (value.BedrockManagedJarUrl is { } jarUrl &&
+            (!Uri.TryCreate(jarUrl, UriKind.Absolute, out var jarUri) || jarUri.Scheme is not ("http" or "https") || jarUrl.Length > 2048))
+            throw InvalidConfig("The managed Geyser JAR URL must be an absolute HTTP or HTTPS URL.");
+        if (string.IsNullOrWhiteSpace(value.BedrockManagedDataDirectory) ||
+            string.IsNullOrWhiteSpace(value.BedrockManagedJavaPath))
+            throw InvalidConfig("The managed Geyser data directory and Java path are required.");
+        foreach (var (text, name) in new[]
+        {
+            (value.BedrockManagedDataDirectory, "Managed Geyser data directory"),
+            (value.BedrockManagedJavaPath, "Managed Geyser Java path"),
+            (value.BedrockManagedLibraryPath, "Managed Geyserlite library path"),
+            (value.BedrockManagedBinaryPath, "Managed Geyserlite binary path"),
+            (value.BedrockManagedMirror, "Managed Geyserlite mirror"),
+            (value.BedrockManagedVersion, "Managed Geyserlite version")
+        })
+            if (text?.Length > 2048) throw InvalidConfig($"{name} is too long.");
+        if (value.BedrockManagedExtraArguments.Count > 64 || value.BedrockManagedExtraArguments.Any(x => x.Length > 1024 || x.Contains('\0')))
+            throw InvalidConfig("Managed Geyser accepts at most 64 extra arguments of 1024 characters each.");
+        try
+        {
+            if (JsonNode.Parse(value.BedrockConfigOverridesJson) is not JsonObject)
+                throw InvalidConfig("Bedrock Geyser config overrides must be a JSON object.");
+        }
+        catch (JsonException exception)
+        {
+            throw InvalidConfig($"Bedrock Geyser config overrides are invalid JSON: {exception.Message}");
+        }
+        if (value.BedrockBackendFloodgateEnabled && !value.BedrockEnabled)
+            throw InvalidConfig("Backend Floodgate requires Bedrock support to be enabled.");
+        if (value.BedrockBackendFloodgateEnabled && value.BedrockBackendFloodgateServerIds.Count == 0)
+            throw InvalidConfig("Select at least one backend when backend Floodgate forwarding is enabled.");
+    }
+
+    private static string? Optional(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    private static void ValidateDuration(string value, string name)
+    {
+        if (value.Length > 64 || !Regex.IsMatch(value, @"^(?:\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h))+$", RegexOptions.CultureInvariant))
+            throw InvalidConfig($"The {name} must be a positive duration such as 500ms, 5s, or 1m30s.");
+    }
+    private static void ValidateQuota(bool enabled, double ops, int burst, int maxEntries, string name)
+    {
+        if (!double.IsFinite(ops) || enabled && ops <= 0)
+            throw InvalidConfig($"The {name} quota rate must be greater than zero when enabled.");
+        if (enabled && burst < 1) throw InvalidConfig($"The {name} quota burst must be at least 1 when enabled.");
+        if (enabled && maxEntries < 1) throw InvalidConfig($"The {name} quota cache must contain at least 1 entry when enabled.");
+    }
+    private static void ValidateNetwork(string value)
+    {
+        var parts = value.Split('/', 2);
+        if (!IPAddress.TryParse(parts[0], out var address))
+            throw InvalidConfig($"Trusted PROXY protocol network '{value}' is invalid.");
+        if (parts.Length == 2 && (!int.TryParse(parts[1], out var prefix) || prefix < 0 ||
+            prefix > (address.AddressFamily == AddressFamily.InterNetworkV6 ? 128 : 32)))
+            throw InvalidConfig($"Trusted PROXY protocol network '{value}' has an invalid prefix length.");
+    }
+    private static void ValidateHostPort(string value, bool allowZeroPort, string name)
+    {
+        var separator = value.LastIndexOf(':');
+        if (separator <= 0 || !int.TryParse(value[(separator + 1)..], out var port) ||
+            port < (allowZeroPort ? 0 : 1) || port > 65535)
+            throw InvalidConfig($"{name} must contain a valid host and port.");
+        var host = value[..separator].Trim();
+        if (host.StartsWith('[') && host.EndsWith(']')) host = host[1..^1];
+        _ = NormalizeHost(host) ?? throw InvalidConfig($"{name} must contain a valid host and port.");
+    }
 
     public static string? NormalizeHost(string? input)
     {
@@ -497,6 +695,8 @@ public sealed class GateConfigurationService(PanelPaths paths)
             }
         };
         var proxy = root["config"]!.AsObject();
+        var classic = Classic(settings);
+        ValidateClassic(classic);
         if (settings.Mode == GateMode.Lite)
         {
             var lite = proxy["lite"]!["routes"]!.AsArray();
@@ -507,6 +707,7 @@ public sealed class GateConfigurationService(PanelPaths paths)
         }
         else
         {
+            ApplyClassic(proxy, classic, targets, settings.ClassicForwardingMode);
             var servers = proxy["servers"]!.AsObject();
             foreach (var backend in targets) servers[StableName(backend.Id)] = backend.Address;
             if (defaultTarget is not null) proxy["try"]!.AsArray().Add(StableName(defaultTarget.Id));
@@ -529,6 +730,121 @@ public sealed class GateConfigurationService(PanelPaths paths)
         persisted["config"]!["forwarding"]!.AsObject().Remove("bungeeGuardSecret");
         return new GateGeneratedConfiguration(root.ToJsonString(GateReleaseService.JsonOptions),
             persisted.ToJsonString(GateReleaseService.JsonOptions), routes, warnings);
+    }
+
+    private static void ApplyClassic(JsonObject proxy, GateClassicConfigurationDto value,
+        IReadOnlyList<GateBackendTarget> targets, GateForwardingMode forwardingMode)
+    {
+        proxy["onlineMode"] = value.OnlineMode;
+        proxy["onlineModeKickExistingPlayers"] = value.OnlineModeKickExistingPlayers;
+        var auth = new JsonObject();
+        if (value.SessionServerUrl is not null) auth["sessionServerUrl"] = value.SessionServerUrl;
+        proxy["auth"] = auth;
+        var status = new JsonObject
+        {
+            ["showMaxPlayers"] = value.ShowMaxPlayers,
+            ["motd"] = value.Motd,
+            ["logPingRequests"] = value.LogPingRequests
+        };
+        if (value.Favicon is not null) status["favicon"] = value.Favicon;
+        proxy["status"] = status;
+        proxy["query"] = new JsonObject
+        {
+            ["enabled"] = value.QueryEnabled,
+            ["port"] = value.QueryPort,
+            ["showPlugins"] = value.QueryShowPlugins
+        };
+        proxy["announceForge"] = value.AnnounceForge;
+        proxy["failoverOnUnexpectedServerDisconnect"] = value.FailoverOnUnexpectedServerDisconnect;
+        proxy["connectionTimeout"] = value.ConnectionTimeout;
+        proxy["readTimeout"] = value.ReadTimeout;
+        proxy["quota"] = new JsonObject
+        {
+            ["connections"] = new JsonObject
+            {
+                ["enabled"] = value.ConnectionsQuotaEnabled, ["ops"] = value.ConnectionsQuotaOps,
+                ["burst"] = value.ConnectionsQuotaBurst, ["maxEntries"] = value.ConnectionsQuotaMaxEntries
+            },
+            ["logins"] = new JsonObject
+            {
+                ["enabled"] = value.LoginsQuotaEnabled, ["ops"] = value.LoginsQuotaOps,
+                ["burst"] = value.LoginsQuotaBurst, ["maxEntries"] = value.LoginsQuotaMaxEntries
+            }
+        };
+        proxy["packetLimiter"] = new JsonObject
+        {
+            ["interval"] = value.PacketLimiterInterval,
+            ["packetsPerSecond"] = value.PacketsPerSecond,
+            ["bytesPerSecond"] = value.BytesPerSecond
+        };
+        proxy["compression"] = new JsonObject
+        {
+            ["threshold"] = value.CompressionThreshold,
+            ["level"] = value.CompressionLevel
+        };
+        proxy["proxyProtocol"] = value.ProxyProtocol;
+        proxy["proxyProtocolBackend"] = value.ProxyProtocolBackend;
+        proxy["proxyProtocolTrustedProxies"] = JsonSerializer.SerializeToNode(value.ProxyProtocolTrustedProxies, GateReleaseService.JsonOptions);
+        proxy["shouldPreventClientProxyConnections"] = value.ShouldPreventClientProxyConnections;
+        proxy["acceptTransfers"] = value.AcceptTransfers;
+        proxy["bungeePluginChannelEnabled"] = value.BungeePluginChannelEnabled;
+        proxy["builtinCommands"] = value.BuiltinCommands;
+        proxy["requireBuiltinCommandPermissions"] = value.RequireBuiltinCommandPermissions;
+        proxy["announceProxyCommands"] = value.AnnounceProxyCommands;
+        proxy["forceKeyAuthentication"] = value.ForceKeyAuthentication;
+        proxy["debug"] = value.Debug;
+        proxy["shutdownReason"] = value.ShutdownReason;
+        var via = new JsonObject
+        {
+            ["enabled"] = value.ViaEnabled,
+            ["mode"] = value.ViaMode,
+            ["offline"] = value.ViaOffline
+        };
+        if (value.ViaBind is not null) via["bind"] = value.ViaBind;
+        if (value.ViaLibraryPath is not null) via["libraryPath"] = value.ViaLibraryPath;
+        if (value.ViaBinaryPath is not null) via["binaryPath"] = value.ViaBinaryPath;
+        if (value.ViaVersion is not null) via["version"] = value.ViaVersion;
+        if (value.ViaMirror is not null) via["mirror"] = value.ViaMirror;
+        proxy["via"] = via;
+        var allowedFloodgateServers = new JsonArray();
+        foreach (var id in value.BedrockBackendFloodgateServerIds)
+        {
+            if (targets.All(x => x.Id != id))
+                throw InvalidConfig("Every backend selected for Floodgate forwarding must belong to this Gate instance.");
+            allowedFloodgateServers.Add(StableName(id));
+        }
+        if (value.BedrockBackendFloodgateEnabled && forwardingMode is GateForwardingMode.Legacy or GateForwardingMode.BungeeGuard)
+            throw InvalidConfig("Backend Floodgate forwarding requires Velocity or None player forwarding.");
+        var managed = new JsonObject
+        {
+            ["enabled"] = value.BedrockManagedEnabled,
+            ["engine"] = value.BedrockManagedEngine,
+            ["mode"] = value.BedrockManagedMode,
+            ["dataDir"] = value.BedrockManagedDataDirectory,
+            ["javaPath"] = value.BedrockManagedJavaPath,
+            ["offline"] = value.BedrockManagedOffline,
+            ["autoUpdate"] = value.BedrockManagedAutoUpdate,
+            ["extraArgs"] = JsonSerializer.SerializeToNode(value.BedrockManagedExtraArguments, GateReleaseService.JsonOptions),
+            ["configOverrides"] = JsonNode.Parse(value.BedrockConfigOverridesJson)
+        };
+        if (value.BedrockManagedJarUrl is not null) managed["jarUrl"] = value.BedrockManagedJarUrl;
+        if (value.BedrockManagedLibraryPath is not null) managed["libraryPath"] = value.BedrockManagedLibraryPath;
+        if (value.BedrockManagedBinaryPath is not null) managed["binaryPath"] = value.BedrockManagedBinaryPath;
+        if (value.BedrockManagedMirror is not null) managed["mirror"] = value.BedrockManagedMirror;
+        if (value.BedrockManagedVersion is not null) managed["version"] = value.BedrockManagedVersion;
+        proxy["bedrock"] = new JsonObject
+        {
+            ["enabled"] = value.BedrockEnabled,
+            ["geyserListenAddr"] = value.BedrockGeyserListenAddress,
+            ["usernameFormat"] = value.BedrockUsernameFormat,
+            ["floodgateKeyPath"] = value.BedrockFloodgateKeyPath,
+            ["managed"] = managed,
+            ["backendFloodgate"] = new JsonObject
+            {
+                ["enabled"] = value.BedrockBackendFloodgateEnabled,
+                ["allowedServers"] = allowedFloodgateServers
+            }
+        };
     }
 
     public static string StableName(Guid id) => "mc-" + id.ToString("N");
@@ -679,7 +995,8 @@ public sealed class GateProxyService(
                 gate.Port, gate.StartOnBoot, gate.CrashRecovery,
                 settings.DefaultExternalBackendId,
                 externalBackends.Select(x => new GateExternalBackendDto(
-                    x.Id, x.Name, GateConfigurationService.FormatAddress(x.Host, x.Port))).ToList()),
+                    x.Id, x.Name, GateConfigurationService.FormatAddress(x.Host, x.Port))).ToList(),
+                GateConfigurationService.Classic(settings)),
             generated.Routes, warnings);
     }
 
@@ -738,6 +1055,8 @@ public sealed class GateProxyService(
         settings.DefaultBackendServerId = request.DefaultServerId;
         settings.DefaultExternalBackendId = request.DefaultExternalBackendId;
         settings.ClassicForwardingMode = request.ClassicForwardingMode;
+        if (request.Classic is not null)
+            settings.ClassicConfigJson = GateConfigurationService.SerializeClassic(request.Classic);
         var existing = await db.GateBackends.Where(x => x.GateServerId == serverId).ToListAsync(cancellationToken);
         db.GateBackends.RemoveRange(existing);
         db.GateBackends.AddRange(ids.Select(id => new GateBackendEntity { GateServerId = serverId, BackendServerId = id }));

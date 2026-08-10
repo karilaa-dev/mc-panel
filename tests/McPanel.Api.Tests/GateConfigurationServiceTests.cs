@@ -1,5 +1,6 @@
 using System.Text.Json;
 using McPanel.Api.Configuration;
+using McPanel.Api.Contracts;
 using McPanel.Api.Data;
 using McPanel.Api.Infrastructure;
 using McPanel.Api.Services;
@@ -89,6 +90,66 @@ public sealed class GateConfigurationServiceTests : IDisposable
         Assert.False(persisted.RootElement.GetProperty("config").GetProperty("forwarding").TryGetProperty("velocitySecret", out _));
         Assert.True(File.Exists(_paths.GateVelocitySecret(gate.Id)));
         Assert.StartsWith(_paths.Instance(gate.Id), _paths.GateVelocitySecret(gate.Id), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Classic_configuration_emits_the_complete_managed_feature_surface()
+    {
+        var gate = Gate(25570);
+        var lobby = Backend("Lobby", 25566, null);
+        WriteProperties(lobby);
+        var settings = Settings(gate, GateMode.Classic, lobby.Id);
+        var classic = GateConfigurationService.DefaultClassic() with
+        {
+            OnlineMode = false,
+            SessionServerUrl = "https://auth.example.test/session/minecraft/hasJoined",
+            ShowMaxPlayers = 250,
+            QueryEnabled = true,
+            QueryPort = 25579,
+            ProxyProtocol = true,
+            ProxyProtocolTrustedProxies = ["203.0.113.7", "198.51.100.0/24"],
+            CompressionLevel = 6,
+            ViaEnabled = true,
+            ViaMode = "embedded",
+            ViaBind = "127.0.0.1:0",
+            BedrockEnabled = true,
+            BedrockManagedEnabled = true,
+            BedrockBackendFloodgateEnabled = true,
+            BedrockBackendFloodgateServerIds = [lobby.Id]
+        };
+        settings.ClassicConfigJson = GateConfigurationService.SerializeClassic(classic);
+
+        var generated = await new GateConfigurationService(_paths).GenerateAsync(
+            gate, settings, [lobby], "play.example.com", CancellationToken.None);
+        using var json = JsonDocument.Parse(generated.Json);
+        var config = json.RootElement.GetProperty("config");
+
+        Assert.False(config.GetProperty("onlineMode").GetBoolean());
+        Assert.Equal(classic.SessionServerUrl, config.GetProperty("auth").GetProperty("sessionServerUrl").GetString());
+        Assert.Equal(250, config.GetProperty("status").GetProperty("showMaxPlayers").GetInt32());
+        Assert.Equal(classic.Motd, config.GetProperty("status").GetProperty("motd").GetString());
+        Assert.Equal(25579, config.GetProperty("query").GetProperty("port").GetInt32());
+        Assert.Equal(6, config.GetProperty("compression").GetProperty("level").GetInt32());
+        Assert.Equal(2, config.GetProperty("proxyProtocolTrustedProxies").GetArrayLength());
+        Assert.Equal("embedded", config.GetProperty("via").GetProperty("mode").GetString());
+        Assert.True(config.GetProperty("bedrock").GetProperty("managed").GetProperty("enabled").GetBoolean());
+        Assert.Equal(GateConfigurationService.StableName(lobby.Id),
+            config.GetProperty("bedrock").GetProperty("backendFloodgate").GetProperty("allowedServers")[0].GetString());
+        using var persisted = JsonDocument.Parse(generated.PersistedJson);
+        Assert.Equal(classic.Motd,
+            persisted.RootElement.GetProperty("config").GetProperty("status").GetProperty("motd").GetString());
+    }
+
+    [Fact]
+    public void Classic_configuration_validation_rejects_invalid_compression_and_trusted_networks()
+    {
+        var compression = Assert.Throws<PanelException>(() => GateConfigurationService.NormalizeClassic(
+            GateConfigurationService.DefaultClassic() with { CompressionLevel = 10 }));
+        Assert.Equal("GATE_CONFIG_INVALID", compression.Code);
+
+        var network = Assert.Throws<PanelException>(() => GateConfigurationService.NormalizeClassic(
+            GateConfigurationService.DefaultClassic() with { ProxyProtocolTrustedProxies = ["0.0.0.0/99"] }));
+        Assert.Equal("GATE_CONFIG_INVALID", network.Code);
     }
 
     [Fact]

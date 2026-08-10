@@ -28,8 +28,8 @@ import type {
   PanelSettingsDto,
   GateConfigurationWriteDto,
   GateStatusDto,
-  InventoryItemUpdateDto,
   PlayerInventoryBackupDto,
+  PlayerInventoryBackupPreviewDto,
   PlayerInventoryDto,
 } from "@/lib/contracts"
 
@@ -303,11 +303,9 @@ export const api = {
 
   players: (id: string) => request<PlayerDto[]>(`${serverPath(id)}/players`),
   playerInventory: (id: string, uuid: string) => request<PlayerInventoryDto>(`${serverPath(id)}/players/${encodeURIComponent(uuid)}/inventory`),
-  savePlayerInventory: (id: string, uuid: string, expectedRevision: string, items: InventoryItemUpdateDto[]) =>
-    request<PlayerInventoryDto>(`${serverPath(id)}/players/${encodeURIComponent(uuid)}/inventory`, {
-      method: "PUT", body: JSON.stringify({ expectedRevision, items }),
-    }),
   playerInventoryBackups: (id: string, uuid: string) => request<PlayerInventoryBackupDto[]>(`${serverPath(id)}/players/${encodeURIComponent(uuid)}/inventory/backups`),
+  playerInventoryBackup: (id: string, uuid: string, backupId: string) =>
+    request<PlayerInventoryBackupPreviewDto>(`${serverPath(id)}/players/${encodeURIComponent(uuid)}/inventory/backups/${encodeURIComponent(backupId)}`),
   createPlayerInventoryBackup: (id: string, uuid: string, expectedRevision: string) =>
     request<PlayerInventoryBackupDto>(`${serverPath(id)}/players/${encodeURIComponent(uuid)}/inventory/backups`, {
       method: "POST", body: JSON.stringify({ expectedRevision }),

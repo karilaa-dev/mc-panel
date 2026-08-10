@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { api } from "@/lib/api"
-import type { GateStatusDto, ServerSummaryDto } from "@/lib/contracts"
+import { defaultGateClassicConfiguration, type GateStatusDto, type ServerSummaryDto } from "@/lib/contracts"
 import { GateProxyPage } from "@/pages/gate-proxy-page"
 
 vi.mock("@/lib/api", () => ({ api: {
@@ -17,7 +17,7 @@ const status: GateStatusDto = {
   serverId: "gate-1",
   installation: { installed: true, version: "0.71.1", latestVersion: "0.71.1", updateAvailable: false },
   runtime: { state: "Stopped", desiredRunning: false, activeConnections: 0, onlinePlayers: 0 },
-  configuration: { mode: "Classic", defaultServerId: "server-1", backendServerIds: ["server-1"], externalBackends: [], classicForwardingMode: "Velocity", hasVelocitySecret: false, hasBungeeGuardSecret: false, revision: "revision-1", configurationDirty: false, listenerPort: 25565, startOnBoot: false, crashRecovery: true },
+  configuration: { mode: "Classic", defaultServerId: "server-1", backendServerIds: ["server-1"], externalBackends: [], classicForwardingMode: "Velocity", hasVelocitySecret: false, hasBungeeGuardSecret: false, revision: "revision-1", configurationDirty: false, listenerPort: 25565, startOnBoot: false, crashRecovery: true, classic: defaultGateClassicConfiguration },
   routes: [],
   warnings: [],
 }
@@ -45,6 +45,7 @@ describe("GateProxyPage", () => {
     const user = userEvent.setup()
     renderPage()
 
+    await user.click(await screen.findByRole("tab", { name: "Classic" }))
     await user.click(await screen.findByRole("button", { name: "Generate secret" }))
 
     await waitFor(() => expect(mockedApi.generateGateSecret).toHaveBeenCalledWith("gate-1", "velocity", false))
@@ -56,6 +57,7 @@ describe("GateProxyPage", () => {
     const user = userEvent.setup()
     renderPage()
 
+    await user.click(await screen.findByRole("tab", { name: "Classic" }))
     await user.click(await screen.findByRole("button", { name: "Generate new secret" }))
     expect(await screen.findByRole("alertdialog")).toHaveTextContent("Replace the existing Velocity secret?")
     await user.click(screen.getByRole("button", { name: "Generate new secret" }))
@@ -67,6 +69,90 @@ describe("GateProxyPage", () => {
     const user = userEvent.setup()
     renderPage()
     await user.click(await screen.findByRole("button", { name: "Save settings" }))
-    await waitFor(() => expect(mockedApi.saveGate).toHaveBeenCalledWith("gate-1", expect.objectContaining({ backendServerIds: ["server-1"], externalBackends: [] })))
+    await waitFor(() => expect(mockedApi.saveGate).toHaveBeenCalledWith("gate-1", expect.objectContaining({ backendServerIds: ["server-1"], externalBackends: [], classic: defaultGateClassicConfiguration })))
+  })
+
+  it("disables the Classic configuration tab while Lite mode is enabled", async () => {
+    mockedApi.gate.mockResolvedValue({ ...status, configuration: { ...status.configuration, mode: "Lite" } })
+    renderPage()
+
+    expect(await screen.findByRole("tab", { name: "Classic" })).toHaveAttribute("aria-disabled", "true")
+    expect(screen.getByText("Classic features are inactive in Lite mode")).toBeVisible()
+  })
+
+  it("keeps advanced Classic settings collapsed until requested", async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(await screen.findByRole("tab", { name: "Classic" }))
+    expect(screen.queryByText("Authentication details")).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Show advanced settings" }))
+    expect(screen.getByText("Authentication details")).toBeVisible()
+
+    const connectionTimeout = screen.getByRole("textbox", { name: "Connection timeout" })
+    await user.clear(connectionTimeout)
+    await user.type(connectionTimeout, "12s")
+    await user.click(screen.getByRole("button", { name: "Save settings" }))
+
+    await waitFor(() => expect(mockedApi.saveGate).toHaveBeenCalledWith("gate-1", expect.objectContaining({ classic: expect.objectContaining({ connectionTimeout: "12s" }) })))
+  })
+
+  it("keeps status, query, and key authentication in the primary Classic view", async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(await screen.findByRole("tab", { name: "Classic" }))
+
+    expect(screen.getByText("Status and query")).toBeVisible()
+    expect(screen.getByRole("switch", { name: "Force key authentication" })).toBeVisible()
+    expect(screen.getByRole("button", { name: "Edit MOTD" })).toBeVisible()
+    expect(screen.queryByRole("textbox", { name: "MOTD message" })).not.toBeInTheDocument()
+    expect(screen.queryByText("Authentication details")).not.toBeInTheDocument()
+  })
+
+  it("applies MOTD popup changes to the Gate settings request", async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(await screen.findByRole("tab", { name: "Classic" }))
+    await user.click(screen.getByRole("button", { name: "Edit MOTD" }))
+    const message = screen.getByRole("textbox", { name: "MOTD message" })
+    await user.clear(message)
+    await user.type(message, "§aA green Gate")
+    await user.click(screen.getByRole("button", { name: "Apply MOTD" }))
+    await user.click(screen.getByRole("button", { name: "Save settings" }))
+
+    await waitFor(() => expect(mockedApi.saveGate).toHaveBeenCalledWith("gate-1", expect.objectContaining({ classic: expect.objectContaining({ motd: "§aA green Gate" }) })))
+  })
+
+  it("shows setting descriptions from the help control", async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(await screen.findByRole("tab", { name: "Classic" }))
+    await user.hover(screen.getByRole("button", { name: "About Online mode" }))
+
+    expect(await screen.findByText(/Authenticate Java players with Mojang/)).toBeVisible()
+  })
+
+  it("shows friendly labels for selected Classic list values", async () => {
+    mockedApi.gate.mockResolvedValue({
+      ...status,
+      configuration: {
+        ...status.configuration,
+        classic: {
+          ...defaultGateClassicConfiguration,
+          bedrockEnabled: true,
+          bedrockManagedEnabled: true,
+        },
+      },
+    })
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(await screen.findByRole("tab", { name: "Classic" }))
+
+    expect(screen.getByRole("combobox", { name: "Managed engine" })).toHaveTextContent("Geyserlite")
+    expect(screen.getByRole("combobox", { name: "Geyserlite mode" })).toHaveTextContent("Subprocess")
   })
 })

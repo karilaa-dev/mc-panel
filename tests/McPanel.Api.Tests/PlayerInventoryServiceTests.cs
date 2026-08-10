@@ -38,7 +38,7 @@ public sealed class PlayerInventoryServiceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Modern_inventory_and_ender_chest_are_mapped_and_metadata_is_preserved_when_moved()
+    public async Task Modern_inventory_and_ender_chest_are_mapped_with_read_only_metadata()
     {
         var before = await _service.GetAsync(_serverId, Uuid, CancellationToken.None);
         Assert.Equal(68, before.Slots.Count);
@@ -47,35 +47,7 @@ public sealed class PlayerInventoryServiceTests : IAsyncLifetime
         Assert.Contains(diamond.Metadata, value => value.StartsWith("components:", StringComparison.Ordinal));
         Assert.Equal("minecraft:ender_pearl", before.Slots.Single(x => x.Section == "ender" && x.Index == 3).Item!.Id);
 
-        var saved = await _service.SaveAsync(_serverId, Uuid, new SavePlayerInventoryRequest(before.Revision,
-        [
-            new("storage", 0, "hotbar", 0, "minecraft:diamond_sword", 2),
-            new("ender", 3, "ender", 3, "minecraft:ender_pearl", 16)
-        ]), CancellationToken.None);
-
-        Assert.Null(saved.Slots.Single(x => x.Section == "hotbar" && x.Index == 0).Item);
-        Assert.Equal(2, saved.Slots.Single(x => x.Section == "storage" && x.Index == 0).Item!.Count);
-        var file = new NbtFile(PlayerPath());
-        var moved = Assert.IsType<NbtList>(file.RootTag.Get("Inventory")).OfType<NbtCompound>().Single();
-        Assert.NotNull(Assert.IsType<NbtCompound>(moved.Get("components")).Get("minecraft:custom_data"));
-        Assert.Equal(20f, Assert.IsType<NbtFloat>(file.RootTag.Get("Health")).Value);
-        Assert.Single(await _service.ListBackupsAsync(_serverId, Uuid, CancellationToken.None));
-    }
-
-    [Fact]
-    public async Task Save_rejects_online_players_without_modifying_the_file()
-    {
-        var before = await _service.GetAsync(_serverId, Uuid, CancellationToken.None);
-        await using (var db = new StateDbContext(_options))
-        {
-            (await db.Players.SingleAsync()).Online = true;
-            await db.SaveChangesAsync();
-        }
-
-        var exception = await Assert.ThrowsAsync<PanelException>(() => _service.SaveAsync(_serverId, Uuid,
-            new SavePlayerInventoryRequest(before.Revision, []), CancellationToken.None));
-        Assert.Equal("PLAYER_ONLINE", exception.Code);
-        Assert.Equal(before.Revision, (await _service.GetAsync(_serverId, Uuid, CancellationToken.None)).Revision);
+        Assert.Equal(20f, Assert.IsType<NbtFloat>(new NbtFile(PlayerPath()).RootTag.Get("Health")).Value);
     }
 
     [Fact]
@@ -90,7 +62,6 @@ public sealed class PlayerInventoryServiceTests : IAsyncLifetime
         var inventory = await _service.GetAsync(_serverId, Uuid, CancellationToken.None);
         Assert.True(inventory.Online);
         Assert.True(inventory.SnapshotMayBeStale);
-        Assert.False(inventory.WriteAllowed);
 
         var backup = await _service.CreateBackupAsync(_serverId, Uuid,
             new CreatePlayerInventoryBackupRequest(inventory.Revision), CancellationToken.None);
@@ -182,10 +153,10 @@ public sealed class PlayerInventoryServiceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Revision_conflicts_are_rejected_before_snapshot_or_write()
+    public async Task Revision_conflicts_are_rejected_before_a_backup_is_created()
     {
-        var exception = await Assert.ThrowsAsync<PanelException>(() => _service.SaveAsync(_serverId, Uuid,
-            new SavePlayerInventoryRequest(new string('0', 64), []), CancellationToken.None));
+        var exception = await Assert.ThrowsAsync<PanelException>(() => _service.CreateBackupAsync(_serverId, Uuid,
+            new CreatePlayerInventoryBackupRequest(new string('0', 64)), CancellationToken.None));
         Assert.Equal("PLAYER_DATA_CHANGED", exception.Code);
         Assert.Empty(await _service.ListBackupsAsync(_serverId, Uuid, CancellationToken.None));
     }
@@ -204,29 +175,35 @@ public sealed class PlayerInventoryServiceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Clear_metadata_removes_components_when_an_existing_item_id_changes()
+    public async Task Backup_preview_returns_the_saved_slots_and_metadata()
     {
         var before = await _service.GetAsync(_serverId, Uuid, CancellationToken.None);
+        var backup = await _service.CreateBackupAsync(_serverId, Uuid,
+            new CreatePlayerInventoryBackupRequest(before.Revision), CancellationToken.None);
 
-        await _service.SaveAsync(_serverId, Uuid, new SavePlayerInventoryRequest(before.Revision,
-        [
-            new("hotbar", 0, "hotbar", 0, "minecraft:stick", 1, ClearMetadata: true),
-            new("ender", 3, "ender", 3, "minecraft:ender_pearl", 16)
-        ]), CancellationToken.None);
+        var preview = await _service.PreviewBackupAsync(_serverId, Uuid, backup.Id, CancellationToken.None);
 
-        var stack = Assert.IsType<NbtList>(new NbtFile(PlayerPath()).RootTag.Get("Inventory")).OfType<NbtCompound>().Single();
-        Assert.Equal("minecraft:stick", Assert.IsType<NbtString>(stack.Get("id")).Value);
-        Assert.Null(stack.Get("components"));
+        Assert.Equal(backup, preview.Backup);
+        Assert.Equal("minecraft:diamond_sword", preview.Slots.Single(x => x.Section == "hotbar" && x.Index == 0).Item!.Id);
+        Assert.Contains(preview.Slots.Single(x => x.Section == "hotbar" && x.Index == 0).Item!.Metadata,
+            value => value.StartsWith("components:", StringComparison.Ordinal));
+        Assert.Equal("minecraft:ender_pearl", preview.Slots.Single(x => x.Section == "ender" && x.Index == 3).Item!.Id);
     }
 
     [Fact]
     public async Task Snapshot_restore_changes_only_inventory_tags()
     {
         var before = await _service.GetAsync(_serverId, Uuid, CancellationToken.None);
-        var changed = await _service.SaveAsync(_serverId, Uuid, new SavePlayerInventoryRequest(before.Revision,
-        [new("storage", 0, "hotbar", 0, "minecraft:diamond_sword", 2)]), CancellationToken.None);
-        var backup = Assert.Single(await _service.ListBackupsAsync(_serverId, Uuid, CancellationToken.None));
+        var backup = await _service.CreateBackupAsync(_serverId, Uuid,
+            new CreatePlayerInventoryBackupRequest(before.Revision), CancellationToken.None);
         var file = new NbtFile(PlayerPath());
+        var inventory = Assert.IsType<NbtList>(file.RootTag.Get("Inventory"));
+        inventory.Clear();
+        var changedStack = new NbtCompound();
+        changedStack.Add(new NbtByte("Slot", 9));
+        changedStack.Add(new NbtString("id", "minecraft:stone"));
+        changedStack.Add(new NbtInt("count", 2));
+        inventory.Add(changedStack);
         Assert.IsType<NbtFloat>(file.RootTag.Get("Health")).Value = 7f;
         file.SaveToFile(PlayerPath(), NbtCompression.GZip);
         var current = await _service.GetAsync(_serverId, Uuid, CancellationToken.None);
@@ -237,7 +214,7 @@ public sealed class PlayerInventoryServiceTests : IAsyncLifetime
         Assert.Equal("minecraft:diamond_sword", restored.Slots.Single(x => x.Section == "hotbar" && x.Index == 0).Item!.Id);
         Assert.Null(restored.Slots.Single(x => x.Section == "storage" && x.Index == 0).Item);
         Assert.Equal(7f, Assert.IsType<NbtFloat>(new NbtFile(PlayerPath()).RootTag.Get("Health")).Value);
-        Assert.NotEqual(changed.Revision, restored.Revision);
+        Assert.NotEqual(current.Revision, restored.Revision);
     }
 
     [Fact]

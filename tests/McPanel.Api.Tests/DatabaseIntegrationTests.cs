@@ -133,6 +133,8 @@ public sealed class DatabaseIntegrationTests : IDisposable
         await proxy.DisposeAsync();
         select.CommandText = "SELECT COUNT(*) FROM pragma_table_info('GateSettings') WHERE name = 'DefaultExternalBackendId';";
         Assert.Equal(1L, (long)(await select.ExecuteScalarAsync())!);
+        select.CommandText = "SELECT COUNT(*) FROM pragma_table_info('GateSettings') WHERE name = 'ClassicConfigJson';";
+        Assert.Equal(1L, (long)(await select.ExecuteScalarAsync())!);
         select.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'GateExternalBackends';";
         Assert.Equal(1L, (long)(await select.ExecuteScalarAsync())!);
     }

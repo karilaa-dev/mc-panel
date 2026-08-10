@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { api } from "@/lib/api"
-import type { GateStatusDto, ServerSummaryDto } from "@/lib/contracts"
+import { defaultGateClassicConfiguration, type GateStatusDto, type ServerSummaryDto } from "@/lib/contracts"
 import { GateBackendsPage } from "@/pages/gate-backends-page"
 
 vi.mock("@/lib/api", () => ({ api: { gate: vi.fn(), servers: vi.fn(), saveGate: vi.fn() } }))
@@ -15,7 +15,7 @@ const status: GateStatusDto = {
   serverId: "gate-1",
   installation: { installed: true, version: "0.71.1", latestVersion: "0.71.1", updateAvailable: false },
   runtime: { state: "Stopped", desiredRunning: false, activeConnections: 0, onlinePlayers: 0 },
-  configuration: { mode: "Lite", defaultServerId: "server-1", backendServerIds: ["server-1"], externalBackends: [], classicForwardingMode: "Velocity", hasVelocitySecret: false, hasBungeeGuardSecret: false, revision: "revision-1", configurationDirty: false, listenerPort: 25565, startOnBoot: false, crashRecovery: true },
+  configuration: { mode: "Lite", defaultServerId: "server-1", backendServerIds: ["server-1"], externalBackends: [], classicForwardingMode: "Velocity", hasVelocitySecret: false, hasBungeeGuardSecret: false, revision: "revision-1", configurationDirty: false, listenerPort: 25565, startOnBoot: false, crashRecovery: true, classic: defaultGateClassicConfiguration },
   routes: [{ serverId: "server-1", serverName: "Lobby", backendAddress: "127.0.0.1:25566", routeKind: "Direct", backendKind: "Managed" }],
   warnings: [],
 }

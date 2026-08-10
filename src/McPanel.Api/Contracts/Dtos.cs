@@ -102,6 +102,30 @@ public sealed record PanelSettingsDto(
     string Revision = "");
 
 public sealed record UpdateServerPublicAddressRequest(string? Address, string ExpectedRevision);
+public sealed record GateClassicConfigurationDto(
+    bool OnlineMode, string? SessionServerUrl, bool OnlineModeKickExistingPlayers,
+    int ShowMaxPlayers, string Motd, string? Favicon, bool LogPingRequests,
+    bool QueryEnabled, int QueryPort, bool QueryShowPlugins, bool AnnounceForge,
+    bool FailoverOnUnexpectedServerDisconnect, string ConnectionTimeout, string ReadTimeout,
+    bool ConnectionsQuotaEnabled, double ConnectionsQuotaOps, int ConnectionsQuotaBurst, int ConnectionsQuotaMaxEntries,
+    bool LoginsQuotaEnabled, double LoginsQuotaOps, int LoginsQuotaBurst, int LoginsQuotaMaxEntries,
+    string PacketLimiterInterval, int PacketsPerSecond, int BytesPerSecond,
+    int CompressionThreshold, int CompressionLevel,
+    bool ProxyProtocol, bool ProxyProtocolBackend, IReadOnlyList<string> ProxyProtocolTrustedProxies,
+    bool ShouldPreventClientProxyConnections, bool AcceptTransfers,
+    bool BungeePluginChannelEnabled, bool BuiltinCommands,
+    bool RequireBuiltinCommandPermissions, bool AnnounceProxyCommands,
+    bool ForceKeyAuthentication, bool Debug, string ShutdownReason,
+    bool ViaEnabled, string ViaMode, string? ViaBind, string? ViaLibraryPath,
+    string? ViaBinaryPath, string? ViaVersion, string? ViaMirror, bool ViaOffline,
+    bool BedrockEnabled, string BedrockGeyserListenAddress, string BedrockUsernameFormat,
+    string BedrockFloodgateKeyPath, bool BedrockManagedEnabled, string BedrockManagedEngine,
+    string BedrockManagedMode, string? BedrockManagedJarUrl, string BedrockManagedDataDirectory,
+    string BedrockManagedJavaPath, string? BedrockManagedLibraryPath, string? BedrockManagedBinaryPath,
+    string? BedrockManagedMirror, string? BedrockManagedVersion, bool BedrockManagedOffline,
+    bool BedrockManagedAutoUpdate, IReadOnlyList<string> BedrockManagedExtraArguments,
+    string BedrockConfigOverridesJson, bool BedrockBackendFloodgateEnabled,
+    IReadOnlyList<Guid> BedrockBackendFloodgateServerIds);
 public sealed record GateConfigurationDto(
     GateMode Mode, Guid? DefaultServerId, IReadOnlyList<Guid> BackendServerIds,
     GateForwardingMode ClassicForwardingMode, bool HasVelocitySecret,
@@ -109,7 +133,8 @@ public sealed record GateConfigurationDto(
     bool ConfigurationDirty = false, string? LastApplyError = null,
     int ListenerPort = 25565, bool StartOnBoot = false, bool CrashRecovery = true,
     Guid? DefaultExternalBackendId = null,
-    IReadOnlyList<GateExternalBackendDto>? ExternalBackends = null);
+    IReadOnlyList<GateExternalBackendDto>? ExternalBackends = null,
+    GateClassicConfigurationDto? Classic = null);
 public sealed record GateExternalBackendDto(Guid Id, string Name, string Address);
 public sealed record GateExternalBackendWriteDto(Guid Id, string? Name, string Address);
 public sealed record UpdateGateConfigurationRequest(
@@ -118,7 +143,8 @@ public sealed record UpdateGateConfigurationRequest(
     int? ListenerPort = null,
     bool? StartOnBoot = null, bool? CrashRecovery = null,
     Guid? DefaultExternalBackendId = null,
-    IReadOnlyList<GateExternalBackendWriteDto>? ExternalBackends = null);
+    IReadOnlyList<GateExternalBackendWriteDto>? ExternalBackends = null,
+    GateClassicConfigurationDto? Classic = null);
 public sealed record GateInstallationDto(bool Installed, string? Version, string? LatestVersion, bool UpdateAvailable);
 public sealed record GateRuntimeDto(
     RuntimeProcessState State, bool DesiredRunning, int? ProcessId, DateTimeOffset? StartedAt,
@@ -140,15 +166,13 @@ public sealed record InventorySlotDto(
     string Section, int Index, int NbtSlot, InventoryItemDto? Item);
 public sealed record PlayerInventoryDto(
     string PlayerName, string Uuid, string Revision, DateTimeOffset SavedAt,
-    bool Online, bool SnapshotMayBeStale, bool WriteAllowed, int? DataVersion,
+    bool Online, bool SnapshotMayBeStale, int? DataVersion,
     IReadOnlyList<InventorySlotDto> Slots);
-public sealed record InventoryItemUpdateDto(
-    string Section, int Index, string? SourceSection, int? SourceIndex,
-    string Id, int Count, bool ClearMetadata = false);
-public sealed record SavePlayerInventoryRequest(
-    string ExpectedRevision, IReadOnlyList<InventoryItemUpdateDto> Items);
 public sealed record PlayerInventoryBackupDto(
     Guid Id, DateTimeOffset CreatedAt, string SourceRevision, long Size);
+public sealed record PlayerInventoryBackupPreviewDto(
+    string PlayerName, string Uuid, PlayerInventoryBackupDto Backup,
+    IReadOnlyList<InventorySlotDto> Slots);
 public sealed record CreatePlayerInventoryBackupRequest(string ExpectedRevision);
 public sealed record RestorePlayerInventoryRequest(string ExpectedRevision);
 

@@ -74,9 +74,9 @@ public static partial class ApiEndpoints
         api.MapGet("/servers/{id:guid}/players", (Guid id, PlayerService service, CancellationToken token) => service.ListAsync(id, token));
         api.MapPost("/servers/{id:guid}/players/{name}/{action}", (Guid id, string name, string action, PlayerService service, CancellationToken token) => service.ActionAsync(id, name, action, token));
         api.MapGet("/servers/{id:guid}/players/{uuid}/inventory", (Guid id, string uuid, PlayerInventoryService service, CancellationToken token) => service.GetAsync(id, uuid, token));
-        api.MapPut("/servers/{id:guid}/players/{uuid}/inventory", (Guid id, string uuid, SavePlayerInventoryRequest request, PlayerInventoryService service, CancellationToken token) => service.SaveAsync(id, uuid, request, token));
         api.MapGet("/servers/{id:guid}/players/{uuid}/inventory/backups", (Guid id, string uuid, PlayerInventoryService service, CancellationToken token) => service.ListBackupsAsync(id, uuid, token));
         api.MapPost("/servers/{id:guid}/players/{uuid}/inventory/backups", (Guid id, string uuid, CreatePlayerInventoryBackupRequest request, PlayerInventoryService service, CancellationToken token) => service.CreateBackupAsync(id, uuid, request, token));
+        api.MapGet("/servers/{id:guid}/players/{uuid}/inventory/backups/{backupId:guid}", (Guid id, string uuid, Guid backupId, PlayerInventoryService service, CancellationToken token) => service.PreviewBackupAsync(id, uuid, backupId, token));
         api.MapPost("/servers/{id:guid}/players/{uuid}/inventory/backups/{backupId:guid}/restore", (Guid id, string uuid, Guid backupId, RestorePlayerInventoryRequest request, PlayerInventoryService service, CancellationToken token) => service.RestoreAsync(id, uuid, backupId, request, token));
         api.MapGet("/servers/{id:guid}/mods", (Guid id, ModMetadataService service, CancellationToken token) => service.ListAsync(id, token));
         api.MapPost("/servers/{id:guid}/mods/modrinth", async (

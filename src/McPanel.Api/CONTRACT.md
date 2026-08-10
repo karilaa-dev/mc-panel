@@ -48,9 +48,10 @@ them `SessionRevoked`; the bundled client immediately returns to authentication.
 | POST | `/servers/{id}/console` | `{command}` -> `204` |
 | GET | `/servers/{id}/players` | observed players merged with authoritative whitelist, operator, and ban JSON files |
 | POST | `/servers/{id}/players/{name}/{whitelist|unwhitelist|op|deop|ban|pardon|kick}` | resulting `PlayerDto` |
-| GET/PUT | `/servers/{id}/players/{uuid}/inventory` | fixed saved inventory slots / complete occupied slot set plus `expectedRevision` |
+| GET | `/servers/{id}/players/{uuid}/inventory` | read-only fixed saved inventory slots; available while online as the latest on-disk save |
 | GET | `/servers/{id}/players/{uuid}/inventory/backups` | latest inventory-only recovery snapshots |
 | POST | `/servers/{id}/players/{uuid}/inventory/backups` | `{expectedRevision}` -> inventory-only snapshot; allowed while online |
+| GET | `/servers/{id}/players/{uuid}/inventory/backups/{backupId}` | read-only slot preview of an inventory-only snapshot |
 | POST | `/servers/{id}/players/{uuid}/inventory/backups/{backupId}/restore` | `{expectedRevision}` -> restored inventory |
 | GET | `/servers/{id}/mods` | Fabric/Forge/NeoForge top-level JAR metadata as `ModFileDto[]` |
 | POST | `/servers/{id}/mods/modrinth` | `{projectId,versionId,selectedDependencyProjectIds?}` -> verified install `202 Job` |
@@ -226,6 +227,14 @@ requires confirmation. Classic Velocity/BungeeGuard start requires the selected
 secret to exist, but has no acknowledgement checkbox. Managed config files are
 atomically replaced and Gate's documented config watcher validates and
 live-applies valid changes.
+
+The Gate Settings UI keeps listener/workload mode on General and exposes the
+current Java Classic configuration surface on a separate Classic tab. The tab
+is disabled while Lite is selected because Lite ignores authentication,
+forwarding, status/query, failover, quotas, packet limits, compression, proxy
+protocol, proxy commands, and Via translation. Panel-owned bind, backend,
+forced-host, Lite route, secret, and loopback API fields remain generated from
+the server and Backends pages rather than duplicated as raw inputs.
 
 Deleting a default backend is blocked with every affected Gate name. Deleting a
 non-default backend removes only its memberships and marks those Gate instances

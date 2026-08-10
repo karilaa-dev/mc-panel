@@ -184,6 +184,144 @@ export interface PlayerDto {
 
 export type GateMode = "Lite" | "Classic"
 export type GateForwardingMode = "Velocity" | "BungeeGuard" | "Legacy" | "None"
+export interface GateClassicConfigurationDto {
+  onlineMode: boolean
+  sessionServerUrl?: string | null
+  onlineModeKickExistingPlayers: boolean
+  showMaxPlayers: number
+  motd: string
+  favicon?: string | null
+  logPingRequests: boolean
+  queryEnabled: boolean
+  queryPort: number
+  queryShowPlugins: boolean
+  announceForge: boolean
+  failoverOnUnexpectedServerDisconnect: boolean
+  connectionTimeout: string
+  readTimeout: string
+  connectionsQuotaEnabled: boolean
+  connectionsQuotaOps: number
+  connectionsQuotaBurst: number
+  connectionsQuotaMaxEntries: number
+  loginsQuotaEnabled: boolean
+  loginsQuotaOps: number
+  loginsQuotaBurst: number
+  loginsQuotaMaxEntries: number
+  packetLimiterInterval: string
+  packetsPerSecond: number
+  bytesPerSecond: number
+  compressionThreshold: number
+  compressionLevel: number
+  proxyProtocol: boolean
+  proxyProtocolBackend: boolean
+  proxyProtocolTrustedProxies: string[]
+  shouldPreventClientProxyConnections: boolean
+  acceptTransfers: boolean
+  bungeePluginChannelEnabled: boolean
+  builtinCommands: boolean
+  requireBuiltinCommandPermissions: boolean
+  announceProxyCommands: boolean
+  forceKeyAuthentication: boolean
+  debug: boolean
+  shutdownReason: string
+  viaEnabled: boolean
+  viaMode: "subprocess" | "embedded"
+  viaBind?: string | null
+  viaLibraryPath?: string | null
+  viaBinaryPath?: string | null
+  viaVersion?: string | null
+  viaMirror?: string | null
+  viaOffline: boolean
+  bedrockEnabled: boolean
+  bedrockGeyserListenAddress: string
+  bedrockUsernameFormat: string
+  bedrockFloodgateKeyPath: string
+  bedrockManagedEnabled: boolean
+  bedrockManagedEngine: "geyserlite" | "java"
+  bedrockManagedMode: "subprocess" | "embedded"
+  bedrockManagedJarUrl?: string | null
+  bedrockManagedDataDirectory: string
+  bedrockManagedJavaPath: string
+  bedrockManagedLibraryPath?: string | null
+  bedrockManagedBinaryPath?: string | null
+  bedrockManagedMirror?: string | null
+  bedrockManagedVersion?: string | null
+  bedrockManagedOffline: boolean
+  bedrockManagedAutoUpdate: boolean
+  bedrockManagedExtraArguments: string[]
+  bedrockConfigOverridesJson: string
+  bedrockBackendFloodgateEnabled: boolean
+  bedrockBackendFloodgateServerIds: string[]
+}
+export const defaultGateClassicConfiguration: GateClassicConfigurationDto = {
+  onlineMode: true,
+  sessionServerUrl: null,
+  onlineModeKickExistingPlayers: false,
+  showMaxPlayers: 1000,
+  motd: "§bA Gate Proxy\n§bVisit ➞ §fgithub.com/minekube/gate",
+  favicon: null,
+  logPingRequests: false,
+  queryEnabled: false,
+  queryPort: 25577,
+  queryShowPlugins: false,
+  announceForge: false,
+  failoverOnUnexpectedServerDisconnect: true,
+  connectionTimeout: "5s",
+  readTimeout: "30s",
+  connectionsQuotaEnabled: true,
+  connectionsQuotaOps: 5,
+  connectionsQuotaBurst: 10,
+  connectionsQuotaMaxEntries: 1000,
+  loginsQuotaEnabled: true,
+  loginsQuotaOps: 0.4,
+  loginsQuotaBurst: 3,
+  loginsQuotaMaxEntries: 1000,
+  packetLimiterInterval: "7s",
+  packetsPerSecond: 500,
+  bytesPerSecond: -1,
+  compressionThreshold: 256,
+  compressionLevel: -1,
+  proxyProtocol: false,
+  proxyProtocolBackend: false,
+  proxyProtocolTrustedProxies: ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7", "fe80::/10"],
+  shouldPreventClientProxyConnections: false,
+  acceptTransfers: false,
+  bungeePluginChannelEnabled: true,
+  builtinCommands: true,
+  requireBuiltinCommandPermissions: false,
+  announceProxyCommands: true,
+  forceKeyAuthentication: true,
+  debug: false,
+  shutdownReason: "§cGate proxy is shutting down...\nPlease reconnect in a moment!",
+  viaEnabled: false,
+  viaMode: "subprocess",
+  viaBind: null,
+  viaLibraryPath: null,
+  viaBinaryPath: null,
+  viaVersion: null,
+  viaMirror: null,
+  viaOffline: false,
+  bedrockEnabled: false,
+  bedrockGeyserListenAddress: "localhost:25567",
+  bedrockUsernameFormat: "_%s",
+  bedrockFloodgateKeyPath: "floodgate.pem",
+  bedrockManagedEnabled: false,
+  bedrockManagedEngine: "geyserlite",
+  bedrockManagedMode: "subprocess",
+  bedrockManagedJarUrl: "https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/standalone",
+  bedrockManagedDataDirectory: ".geyser",
+  bedrockManagedJavaPath: "java",
+  bedrockManagedLibraryPath: null,
+  bedrockManagedBinaryPath: null,
+  bedrockManagedMirror: null,
+  bedrockManagedVersion: null,
+  bedrockManagedOffline: false,
+  bedrockManagedAutoUpdate: true,
+  bedrockManagedExtraArguments: [],
+  bedrockConfigOverridesJson: "{}",
+  bedrockBackendFloodgateEnabled: false,
+  bedrockBackendFloodgateServerIds: [],
+}
 export interface GateConfigurationDto {
   mode: GateMode
   defaultServerId?: string | null
@@ -199,6 +337,7 @@ export interface GateConfigurationDto {
   crashRecovery: boolean
   defaultExternalBackendId?: string | null
   externalBackends: GateExternalBackendDto[]
+  classic: GateClassicConfigurationDto
 }
 export interface GateExternalBackendDto { id: string; name: string; address: string }
 export interface GateRouteDto {
@@ -238,6 +377,7 @@ export interface GateConfigurationWriteDto {
   crashRecovery?: boolean
   defaultExternalBackendId?: string | null
   externalBackends: GateExternalBackendDto[]
+  classic: GateClassicConfigurationDto
 }
 
 export interface InventoryItemDto { id: string; count: number; displayName: string; metadata: string[] }
@@ -249,20 +389,16 @@ export interface PlayerInventoryDto {
   savedAt: string
   online: boolean
   snapshotMayBeStale: boolean
-  writeAllowed: boolean
   dataVersion?: number | null
   slots: InventorySlotDto[]
 }
-export interface InventoryItemUpdateDto {
-  section: string
-  index: number
-  sourceSection?: string | null
-  sourceIndex?: number | null
-  id: string
-  count: number
-  clearMetadata?: boolean
-}
 export interface PlayerInventoryBackupDto { id: string; createdAt: string; sourceRevision: string; size: number }
+export interface PlayerInventoryBackupPreviewDto {
+  playerName: string
+  uuid: string
+  backup: PlayerInventoryBackupDto
+  slots: InventorySlotDto[]
+}
 
 export interface BackupDto {
   id: string

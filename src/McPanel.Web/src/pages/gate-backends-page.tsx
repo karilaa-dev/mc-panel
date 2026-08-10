@@ -42,6 +42,7 @@ function GateBackendsEditor({ gate, servers }: { gate: GateStatusDto; servers: S
     listenerPort: gate.configuration.listenerPort,
     startOnBoot: gate.configuration.startOnBoot,
     crashRecovery: gate.configuration.crashRecovery,
+    classic: gate.configuration.classic,
   })
   const [externalName, setExternalName] = useState("")
   const [externalAddress, setExternalAddress] = useState("")
