@@ -71,6 +71,54 @@ public sealed class ServerImportServiceTests : IAsyncLifetime
         Assert.Equal("server.jar", server.LaunchTarget);
         Assert.Equal(LaunchMode.Jar, server.LaunchMode);
         Assert.NotEmpty(await db.JavaRuntimes.AsNoTracking().ToListAsync());
+        Assert.Empty(Directory.EnumerateFiles(_paths.Staging, "import-activation-*.json"));
+    }
+
+    [Fact]
+    public async Task Startup_recovery_removes_an_imported_directory_without_a_committed_server()
+    {
+        var serverId = Guid.NewGuid();
+        var destination = _paths.Instance(serverId);
+        Directory.CreateDirectory(destination);
+        await File.WriteAllTextAsync(Path.Combine(destination, "server.jar"), "orphan");
+        var journal = _service.CreateActivationJournal(serverId);
+
+        await using (var db = _factory.CreateDbContext())
+            await ServerImportService.RecoverInterruptedActivationsAsync(
+                _paths, db, NullLogger.Instance, CancellationToken.None);
+
+        Assert.False(Directory.Exists(destination));
+        Assert.False(File.Exists(journal));
+    }
+
+    [Fact]
+    public async Task Startup_recovery_keeps_a_committed_import_and_removes_its_journal()
+    {
+        var serverId = Guid.NewGuid();
+        var destination = _paths.Instance(serverId);
+        Directory.CreateDirectory(destination);
+        await File.WriteAllTextAsync(Path.Combine(destination, "server.jar"), "committed");
+        await using (var db = _factory.CreateDbContext())
+        {
+            db.Servers.Add(new ServerEntity
+            {
+                Id = serverId,
+                Name = "Committed import",
+                Kind = ServerKind.Paper,
+                Version = "1.21.8",
+                JavaRuntimeId = "java",
+                State = ServerState.Stopped
+            });
+            await db.SaveChangesAsync();
+        }
+        var journal = _service.CreateActivationJournal(serverId);
+
+        await using (var db = _factory.CreateDbContext())
+            await ServerImportService.RecoverInterruptedActivationsAsync(
+                _paths, db, NullLogger.Instance, CancellationToken.None);
+
+        Assert.True(Directory.Exists(destination));
+        Assert.False(File.Exists(journal));
     }
 
     [Theory]

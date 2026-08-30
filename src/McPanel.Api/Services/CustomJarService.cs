@@ -94,7 +94,8 @@ public sealed class CustomJarService(
             IgnoreInaccessible = true,
             MaxRecursionDepth = 32
         };
-        foreach (var file in Directory.EnumerateFiles(instanceRoot, "*.jar", enumeration))
+        foreach (var file in Directory.EnumerateFiles(instanceRoot, "*", enumeration)
+                     .Where(file => Path.GetExtension(file).Equals(".jar", StringComparison.OrdinalIgnoreCase)))
         {
             try
             {
@@ -162,14 +163,54 @@ public sealed class CustomJarService(
                 throw PanelProblems.Validation("The JAR does not contain a valid executable manifest.");
             using var reader = new StreamReader(manifest.Open());
             var text = reader.ReadToEnd();
-            var hasMainClass = text.Replace("\r\n", "\n", StringComparison.Ordinal)
-                .Split('\n').Any(line => line.StartsWith("Main-Class:", StringComparison.OrdinalIgnoreCase) &&
-                    !string.IsNullOrWhiteSpace(line["Main-Class:".Length..]));
+            var hasMainClass = MainAttributes(text).TryGetValue("Main-Class", out var mainClass) &&
+                !string.IsNullOrWhiteSpace(mainClass);
             if (!hasMainClass) throw PanelProblems.Validation("The JAR manifest does not declare Main-Class.");
         }
         catch (PanelException) { throw; }
         catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
         { throw PanelProblems.Validation("The uploaded file is not a readable executable JAR."); }
+    }
+
+    private static IReadOnlyDictionary<string, string> MainAttributes(string manifest)
+    {
+        var attributes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        string? name = null;
+        var value = new System.Text.StringBuilder();
+        foreach (var line in manifest.Replace("\r\n", "\n", StringComparison.Ordinal)
+                     .Replace('\r', '\n').Split('\n'))
+        {
+            if (line.Length == 0)
+            {
+                CommitAttribute();
+                break;
+            }
+            if (line[0] == ' ')
+            {
+                if (name is null) throw PanelProblems.Validation("The JAR manifest main section is invalid.");
+                value.Append(line.AsSpan(1));
+                continue;
+            }
+
+            CommitAttribute();
+            var separator = line.IndexOf(": ", StringComparison.Ordinal);
+            var parsedName = separator > 0 ? line[..separator] : "";
+            if (separator is <= 0 or > 70 || parsedName.Any(character =>
+                    !char.IsAsciiLetterOrDigit(character) && character is not ('_' or '-')))
+                throw PanelProblems.Validation("The JAR manifest main section is invalid.");
+            name = parsedName;
+            value.Append(line.AsSpan(separator + 2));
+        }
+        CommitAttribute();
+        return attributes;
+
+        void CommitAttribute()
+        {
+            if (name is null) return;
+            attributes[name] = value.ToString();
+            name = null;
+            value.Clear();
+        }
     }
 
     private async Task<(string Root, ImportMetadata Metadata)> ReadImportAsync(string token, CancellationToken cancellationToken)

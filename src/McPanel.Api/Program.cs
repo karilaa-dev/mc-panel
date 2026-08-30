@@ -173,6 +173,10 @@ static async Task InitializeAsync(IServiceProvider services)
         await state.EnsureCompatibleSchemaAsync();
         await scope.ServiceProvider.GetRequiredService<LegacyGateMigrationService>().MigrateAsync(state, CancellationToken.None);
         await state.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
+        await ServerImportService.RecoverInterruptedActivationsAsync(
+            scope.ServiceProvider.GetRequiredService<PanelPaths>(), state,
+            scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger<ServerImportService>(),
+            CancellationToken.None);
         var unrecoveredActivations = await scope.ServiceProvider.GetRequiredService<SoftwareActivationService>()
             .RecoverInterruptedAsync(state, CancellationToken.None);
         var staleJobs = await state.Jobs.Where(x => x.State == JobState.Running || x.State == JobState.Queued).ToListAsync();

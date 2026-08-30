@@ -54,6 +54,7 @@ public sealed class StateDbContext(DbContextOptions<StateDbContext> options) : D
         {
             var adminColumns = await ColumnsAsync(connection, "Admins", cancellationToken);
             var serverColumns = await ColumnsAsync(connection, "Servers", cancellationToken);
+            var backupColumns = await ColumnsAsync(connection, "Backups", cancellationToken);
             var addingLaunchTarget = serverColumns.Count > 0 && !serverColumns.Contains(nameof(ServerEntity.LaunchTarget));
             var addingAdvertisedPort = serverColumns.Count > 0 && !serverColumns.Contains(nameof(ServerEntity.PublicPort));
 
@@ -345,6 +346,12 @@ public sealed class StateDbContext(DbContextOptions<StateDbContext> options) : D
                 await using var index = connection.CreateCommand();
                 index.CommandText = "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_Jobs_ClientRequestId\" ON \"Jobs\" (\"ClientRequestId\") WHERE \"ClientRequestId\" IS NOT NULL;";
                 await index.ExecuteNonQueryAsync(cancellationToken);
+            }
+            if (backupColumns.Count > 0 && !backupColumns.Contains(nameof(BackupEntity.SoftwareMetadataJson)))
+            {
+                await using var alter = connection.CreateCommand();
+                alter.CommandText = "ALTER TABLE \"Backups\" ADD COLUMN \"SoftwareMetadataJson\" TEXT NULL;";
+                await alter.ExecuteNonQueryAsync(cancellationToken);
             }
         }
         finally

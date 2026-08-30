@@ -1255,6 +1255,49 @@ END;
     }
 
     [Fact]
+    public async Task Backup_restore_uses_the_software_metadata_captured_before_a_core_change()
+    {
+        using (var response = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/backups", "{}"))
+        {
+            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var creation = await WaitForJobAsync(document.RootElement.GetProperty("id").GetGuid());
+            Assert.Equal("Completed", creation.GetProperty("state").GetString());
+        }
+
+        Guid backupId;
+        await using (var scope = _factory!.Services.CreateAsyncScope())
+        {
+            var stateFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+            await using var db = await stateFactory.CreateDbContextAsync();
+            var backup = Assert.Single(await db.Backups.AsNoTracking().ToListAsync());
+            Assert.False(string.IsNullOrWhiteSpace(backup.SoftwareMetadataJson));
+            backupId = backup.Id;
+            var server = await db.Servers.SingleAsync(x => x.Id == _serverId);
+            server.Kind = ServerKind.CustomJar;
+            server.Version = "1.21.8";
+            server.LaunchTarget = "custom-server.jar";
+            server.RequiredJavaMajor = 21;
+            await db.SaveChangesAsync();
+        }
+        await File.WriteAllBytesAsync(Path.Combine(_paths!.Instance(_serverId), "custom-server.jar"), []);
+
+        using var restore = await SendJsonAsync(HttpMethod.Post,
+            $"/api/v1/servers/{_serverId}/backups/{backupId}/restore", "{}");
+        Assert.Equal(HttpStatusCode.Accepted, restore.StatusCode);
+        using var restoreDocument = JsonDocument.Parse(await restore.Content.ReadAsStringAsync());
+        var restoration = await WaitForJobAsync(restoreDocument.RootElement.GetProperty("id").GetGuid());
+
+        Assert.Equal("Completed", restoration.GetProperty("state").GetString());
+        var restored = await ReadServerAsync();
+        Assert.Equal(ServerKind.Paper, restored.Kind);
+        Assert.Equal("1.20.4", restored.Version);
+        Assert.Equal("server.jar", restored.LaunchTarget);
+        Assert.False(File.Exists(Path.Combine(_paths.Instance(_serverId), "custom-server.jar")));
+        Assert.True(File.Exists(Path.Combine(_paths.Instance(_serverId), "server.jar")));
+    }
+
+    [Fact]
     public async Task Backup_creation_removes_activated_archive_when_metadata_commit_fails()
     {
         await using (var triggerScope = _factory!.Services.CreateAsyncScope())

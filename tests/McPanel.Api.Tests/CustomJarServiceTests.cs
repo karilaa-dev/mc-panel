@@ -65,6 +65,34 @@ public sealed class CustomJarServiceTests : IDisposable
     }
 
     [Fact]
+    public void Candidates_include_executable_jars_with_uppercase_extensions()
+    {
+        var (service, paths) = CreateService();
+        var instance = Path.Combine(paths.Instances, "uppercase-candidate");
+        Directory.CreateDirectory(instance);
+        File.WriteAllBytes(Path.Combine(instance, "paper.JAR"), CreateJar(true));
+
+        var candidate = Assert.Single(service.Candidates(instance));
+
+        Assert.Equal("paper.JAR", candidate.Path);
+    }
+
+    [Theory]
+    [InlineData("Manifest-Version: 1.0\r\n\r\nName: library\r\nMain-Class: example.Main\r\n")]
+    [InlineData("Manifest-Version: 1.0\r\nMain-Class:example.Main\r\n")]
+    public async Task Upload_rejects_main_class_outside_a_valid_main_manifest_section(string manifest)
+    {
+        var (service, _) = CreateService();
+        var jar = CreateJar(manifest);
+        await using var stream = new MemoryStream(jar);
+
+        var exception = await Assert.ThrowsAsync<PanelException>(() => service.PrepareAsync(
+            new FormFile(stream, 0, jar.Length, "file", "library.jar"), CancellationToken.None));
+
+        Assert.Equal("VALIDATION_FAILED", exception.Code);
+    }
+
+    [Fact]
     public async Task Expired_upload_is_rejected_and_removed()
     {
         var (service, paths) = CreateService();
@@ -146,14 +174,17 @@ public sealed class CustomJarServiceTests : IDisposable
         return (new CustomJarService(paths, new SafePathResolver(), Options.Create(options)), paths);
     }
 
-    private static byte[] CreateJar(bool executable)
+    private static byte[] CreateJar(bool executable) => CreateJar(
+        executable ? "Manifest-Version: 1.0\r\nMain-Class: example.Main\r\n" : "Manifest-Version: 1.0\r\n");
+
+    private static byte[] CreateJar(string manifestText)
     {
         using var output = new MemoryStream();
         using (var archive = new ZipArchive(output, ZipArchiveMode.Create, true))
         {
             var manifest = archive.CreateEntry("META-INF/MANIFEST.MF");
             using var writer = new StreamWriter(manifest.Open());
-            writer.Write(executable ? "Manifest-Version: 1.0\r\nMain-Class: example.Main\r\n" : "Manifest-Version: 1.0\r\n");
+            writer.Write(manifestText);
         }
         return output.ToArray();
     }

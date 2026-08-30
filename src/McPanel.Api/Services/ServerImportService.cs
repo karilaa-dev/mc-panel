@@ -484,7 +484,7 @@ public static class ServerImportSource
         }
     }
 
-    private static class NativeMethods
+    internal static class NativeMethods
     {
         public const int AtCurrentWorkingDirectory = -100;
         public const int NoFollow = 0x100;
@@ -504,6 +504,9 @@ public static class ServerImportSource
 
         [DllImport("libc", EntryPoint = "statx", SetLastError = true, CharSet = CharSet.Ansi)]
         public static extern int Statx(int directoryFileDescriptor, string path, int flags, uint mask, out StatxBuffer buffer);
+
+        [DllImport("libc", EntryPoint = "fsync", SetLastError = true)]
+        public static extern int Fsync(int fileDescriptor);
 
         [StructLayout(LayoutKind.Sequential)]
         public struct StatxTimestamp
@@ -609,6 +612,9 @@ public sealed partial class ServerImportService(
     JavaDiscoveryService javaDiscovery,
     IOptions<PanelOptions> options)
 {
+    private const int ImportActivationVersion = 1;
+    private static readonly JsonSerializerOptions ImportActivationJsonOptions = new(JsonSerializerDefaults.Web);
+
     public async Task<ServerImportInspection> InspectAsync(string root, CancellationToken cancellationToken)
     {
         root = ValidateRoot(root);
@@ -784,6 +790,8 @@ public sealed partial class ServerImportService(
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var activated = false;
+        var committed = false;
+        string? activationJournal = null;
         try
         {
             var existingRuntime = await db.JavaRuntimes.FindAsync([validated.Runtime.Id], cancellationToken);
@@ -812,15 +820,24 @@ public sealed partial class ServerImportService(
             }
             db.Servers.Add(entity);
             await db.SaveChangesAsync(cancellationToken);
+            activationJournal = CreateActivationJournal(id);
             Directory.Move(root, destination);
             activated = true;
             if (!OperatingSystem.IsWindows()) InstancePermissionService.NormalizeTree(destination, false);
             await transaction.CommitAsync(cancellationToken);
+            committed = true;
+            try { File.Delete(activationJournal); } catch { }
         }
         catch (ServerImportException) { throw; }
         catch (Exception exception)
         {
-            try { await transaction.RollbackAsync(CancellationToken.None); } catch { }
+            var databaseRolledBack = false;
+            try
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                databaseRolledBack = true;
+            }
+            catch { }
             if (activated)
             {
                 try { Directory.Move(destination, root); }
@@ -830,11 +847,117 @@ public sealed partial class ServerImportService(
                         $"The import failed and the activated directory could not be rolled back: {destination}", innerException: new AggregateException(exception, rollbackException));
                 }
             }
+            if (!committed && databaseRolledBack && activationJournal is not null)
+            {
+                try { File.Delete(activationJournal); } catch { }
+            }
             throw new ServerImportException(ServerImportFailureKind.Operation, "IMPORT_FAILED", "The server could not be registered.", innerException: exception);
         }
 
         return new(id, entity.Name, entity.Kind, entity.Version, destination, entity.State);
     }
+
+    internal string CreateActivationJournal(Guid serverId)
+    {
+        Directory.CreateDirectory(paths.Staging);
+        var destination = Path.GetFullPath(paths.Instance(serverId));
+        var journal = Path.Combine(paths.Staging, $"import-activation-{serverId:N}.json");
+        var temporary = journal + $".{Guid.NewGuid():N}.tmp";
+        try
+        {
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                JsonSerializer.Serialize(stream,
+                    new ImportActivationJournal(ImportActivationVersion, serverId, destination),
+                    ImportActivationJsonOptions);
+                stream.Flush(true);
+            }
+            File.Move(temporary, journal, false);
+            FlushJournalDirectory(paths.Staging);
+            return journal;
+        }
+        finally
+        {
+            try { if (File.Exists(temporary)) File.Delete(temporary); } catch { }
+        }
+    }
+
+    private static void FlushJournalDirectory(string directory)
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var descriptor = ServerImportSource.NativeMethods.OpenAt(
+            ServerImportSource.NativeMethods.AtCurrentWorkingDirectory,
+            directory,
+            ServerImportSource.NativeMethods.ReadOnly |
+            ServerImportSource.NativeMethods.CloseOnExec |
+            ServerImportSource.NativeMethods.NoFollowOpen |
+            ServerImportSource.NativeMethods.Directory);
+        if (descriptor < 0) throw new Win32Exception(Marshal.GetLastPInvokeError());
+        using var handle = new SafeFileHandle((IntPtr)descriptor, ownsHandle: true);
+        if (ServerImportSource.NativeMethods.Fsync(descriptor) != 0)
+            throw new Win32Exception(Marshal.GetLastPInvokeError());
+    }
+
+    public static async Task RecoverInterruptedActivationsAsync(
+        PanelPaths paths,
+        StateDbContext state,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(paths.Staging)) return;
+        foreach (var journalPath in Directory.EnumerateFiles(
+                     paths.Staging, "import-activation-*.json", SearchOption.TopDirectoryOnly))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                ImportActivationJournal journal;
+                await using (var stream = new FileStream(journalPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    journal = await JsonSerializer.DeserializeAsync<ImportActivationJournal>(
+                                  stream, ImportActivationJsonOptions, cancellationToken)
+                              ?? throw new InvalidDataException("The import activation journal is empty.");
+                var destination = Path.GetFullPath(paths.Instance(journal.ServerId));
+                if (journal.Version != ImportActivationVersion || journal.ServerId == Guid.Empty ||
+                    !Path.GetFullPath(journal.Destination).Equals(destination, StringComparison.Ordinal))
+                    throw new InvalidDataException("The import activation journal is invalid.");
+
+                var server = await state.Servers.SingleOrDefaultAsync(x => x.Id == journal.ServerId, cancellationToken);
+                if (server is not null)
+                {
+                    if (!Directory.Exists(destination))
+                    {
+                        server.State = ServerState.Error;
+                        server.ProcessId = null;
+                        server.UpdatedAt = DateTimeOffset.UtcNow;
+                        await state.SaveChangesAsync(cancellationToken);
+                        logger.LogError("Imported server {ServerId} committed without its activated directory; preserving {JournalPath}",
+                            journal.ServerId, journalPath);
+                        continue;
+                    }
+                    File.Delete(journalPath);
+                    logger.LogInformation("Finalized interrupted server import activation for {ServerId}", journal.ServerId);
+                    continue;
+                }
+
+                if (Directory.Exists(destination))
+                {
+                    if ((File.GetAttributes(destination) & FileAttributes.ReparsePoint) != 0)
+                        throw new InvalidDataException("The imported server activation destination is a symbolic link.");
+                    Directory.Delete(destination, true);
+                }
+                else if (File.Exists(destination))
+                    throw new InvalidDataException("The imported server activation destination is not a directory.");
+                File.Delete(journalPath);
+                logger.LogWarning("Rolled back interrupted server import activation for {ServerId}", journal.ServerId);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogError(exception, "Could not recover server import activation journal {JournalPath}; preserving it for recovery", journalPath);
+            }
+        }
+    }
+
+    private sealed record ImportActivationJournal(int Version, Guid ServerId, string Destination);
 
     public async Task<IReadOnlyList<JavaRuntimeEntity>> JavaRuntimesAsync(CancellationToken cancellationToken)
     {

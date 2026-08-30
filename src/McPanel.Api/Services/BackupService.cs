@@ -1,4 +1,6 @@
 using System.IO.Compression;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using McPanel.Api.Configuration;
 using McPanel.Api.Contracts;
 using McPanel.Api.Data;
@@ -19,6 +21,11 @@ public sealed class BackupService(
     IOptions<PanelOptions> options,
     InstancePermissionService? permissions = null)
 {
+    private static readonly JsonSerializerOptions MetadataJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() }
+    };
+
     public async Task<IReadOnlyList<BackupDto>> ListAsync(Guid serverId, CancellationToken cancellationToken)
     {
         await EnsureServerAsync(serverId, cancellationToken);
@@ -74,6 +81,8 @@ public sealed class BackupService(
         var server = await db.Servers.FindAsync([serverId], cancellationToken) ?? throw PanelProblems.NotFound("Server");
         var running = supervisor.IsRunning(serverId);
         EnsureCreateAllowed(server.State, running);
+        var softwareMetadataJson = JsonSerializer.Serialize(
+            SoftwareActivationService.SoftwareMetadataSnapshot.Capture(server), MetadataJsonOptions);
         var stage = Path.Combine(paths.Staging, $"backup-{serverId:N}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(stage);
         server.State = ServerState.BackingUp; await db.SaveChangesAsync(cancellationToken);
@@ -125,7 +134,15 @@ public sealed class BackupService(
                 ZipFile.CreateFromDirectory(stage, temporary, CompressionLevel.Fastest, false);
                 using (var archive = ZipFile.OpenRead(temporary)) ValidateArchiveLimits(archive);
                 File.Move(temporary, destination);
-                var backup = new BackupEntity { Id = id, ServerId = serverId, FileName = fileName, Size = new FileInfo(destination).Length, Reason = reason };
+                var backup = new BackupEntity
+                {
+                    Id = id,
+                    ServerId = serverId,
+                    FileName = fileName,
+                    Size = new FileInfo(destination).Length,
+                    Reason = reason,
+                    SoftwareMetadataJson = softwareMetadataJson
+                };
                 db.Backups.Add(backup); await db.SaveChangesAsync(cancellationToken);
                 committed = true;
                 await console.AppendAsync(serverId, "system", $"Backup {fileName} completed.", cancellationToken);
@@ -147,6 +164,7 @@ public sealed class BackupService(
         var server = await db.Servers.FindAsync([serverId], cancellationToken) ?? throw PanelProblems.NotFound("Server");
         if (server.State != ServerState.Stopped || supervisor.IsRunning(serverId)) throw PanelProblems.Conflict("SERVER_NOT_STOPPED", "Stop the server before restoring a backup.");
         var backup = await db.Backups.AsNoTracking().SingleOrDefaultAsync(x => x.ServerId == serverId && x.Id == backupId, cancellationToken) ?? throw PanelProblems.NotFound("Backup");
+        var backupMetadata = ReadSoftwareMetadata(backup);
         var archivePath = Path.Combine(paths.ServerBackups(serverId), backup.FileName);
         if (!File.Exists(archivePath)) throw PanelProblems.NotFound("Backup file");
         await operations.ProgressAsync(jobId, 5, "Creating mandatory safety backup", cancellationToken);
@@ -158,7 +176,7 @@ public sealed class BackupService(
         {
             await operations.ProgressAsync(jobId, 40, "Validating and extracting backup", cancellationToken);
             await ExtractSafeAsync(archivePath, stage, cancellationToken);
-            var launchTarget = ProcessSupervisor.ResolveLaunchTarget(stage, server.LaunchTarget);
+            var launchTarget = ProcessSupervisor.ResolveLaunchTarget(stage, backupMetadata?.LaunchTarget ?? server.LaunchTarget);
             if (!File.Exists(launchTarget))
                 throw new PanelException(400, "OPERATION_FAILED", "The backup does not contain this server's launch target.");
             var current = paths.Instance(serverId);
@@ -167,7 +185,8 @@ public sealed class BackupService(
             catch { Directory.Move(old, current); throw; }
             Directory.Delete(old, true);
             if (permissions is not null) await permissions.NormalizeInstanceAsync(serverId, cancellationToken);
-            server.RestartRequired = false; server.UpdatedAt = DateTimeOffset.UtcNow;
+            if (backupMetadata is not null) backupMetadata.Restore(server);
+            else { server.RestartRequired = false; server.UpdatedAt = DateTimeOffset.UtcNow; }
             await db.SaveChangesAsync(cancellationToken);
             await console.AppendAsync(serverId, "system", $"Restored backup {backup.FileName}.", cancellationToken);
         }
@@ -175,6 +194,22 @@ public sealed class BackupService(
         {
             if (Directory.Exists(stage)) Directory.Delete(stage, true);
             // If rollback itself failed, preserve the old directory beside the instance for manual recovery.
+        }
+    }
+
+    private static SoftwareActivationService.SoftwareMetadataSnapshot? ReadSoftwareMetadata(BackupEntity backup)
+    {
+        if (string.IsNullOrWhiteSpace(backup.SoftwareMetadataJson)) return null;
+        try
+        {
+            return JsonSerializer.Deserialize<SoftwareActivationService.SoftwareMetadataSnapshot>(
+                       backup.SoftwareMetadataJson, MetadataJsonOptions)
+                   ?? throw new JsonException("The metadata document is empty.");
+        }
+        catch (JsonException)
+        {
+            throw new PanelException(400, "BACKUP_METADATA_INVALID",
+                "The backup's server core metadata is invalid.");
         }
     }
 
