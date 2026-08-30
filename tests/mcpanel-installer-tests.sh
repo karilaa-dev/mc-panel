@@ -257,12 +257,14 @@ test_service_security_contract() {
 
 test_systemd_minimum() {
   (
-    # shellcheck disable=SC2317 -- validate_host invokes this test stub indirectly.
+    # validate_host invokes this test stub indirectly.
+    # shellcheck disable=SC2317
     systemctl() { printf 'systemd 246 (246.1)\n'; }
     assert_fails "systemd 246" validate_host
   )
   (
-    # shellcheck disable=SC2317 -- validate_host invokes this test stub indirectly.
+    # validate_host invokes this test stub indirectly.
+    # shellcheck disable=SC2317
     systemctl() { printf 'systemd 247 (247.1)\n'; }
     validate_host >/dev/null || fail "systemd 247 was rejected"
   )
