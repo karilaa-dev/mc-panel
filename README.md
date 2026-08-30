@@ -128,7 +128,7 @@ restored.
 ```
 
 `update` downloads the newest build from the selected release and replaces the
-installed application. When that commit is already installed, it still repairs
+installed application. When that commit is already installed, it refreshes
 credentials, group membership, permissions, and systemd units.
 Running Minecraft servers stay online during a normal panel update. You can
 rerun the saved installer without downloading it again:

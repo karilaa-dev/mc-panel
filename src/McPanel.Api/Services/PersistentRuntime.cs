@@ -29,10 +29,6 @@ public sealed record RuntimeServerSnapshot(
     double AnonymousMemoryMb, double FileMemoryMb, double KernelMemoryMb, double SocketMemoryMb,
     bool MemoryEnforced, long UptimeSeconds);
 public sealed record RuntimeSubscription(long Revision, IReadOnlyList<RuntimeServerSnapshot> Servers);
-public sealed record RuntimeCapabilities(
-    int ProtocolVersion,
-    IReadOnlyList<RuntimeWorkloadKind> WorkloadKinds,
-    IReadOnlyList<string>? Features = null);
 
 internal sealed record RuntimeWireRequest(int Version, Guid RequestId, string Operation, JsonElement Payload);
 internal sealed record RuntimeWireResponse(int Version, Guid RequestId, bool Success, string? Error, JsonElement Payload);
@@ -142,12 +138,6 @@ public sealed class PersistentRuntimeClient(PanelPaths paths, IHostEnvironment e
 
     public Task CommandAsync(Guid id, string command, CancellationToken cancellationToken) =>
         SendAsync<object>("command", new RuntimeCommand(id, command), cancellationToken);
-
-    public Task<RuntimeCapabilities?> CapabilitiesAsync(CancellationToken cancellationToken) =>
-        SendAsync<RuntimeCapabilities>("capabilities", null, cancellationToken);
-
-    public async Task<bool> UpgradeWhenIdleAsync(CancellationToken cancellationToken) =>
-        await SendAsync<bool>("upgradeWhenIdle", null, cancellationToken);
 
     private async Task<T?> SendAsync<T>(string operation, object? payload, CancellationToken cancellationToken)
     {
@@ -343,10 +333,6 @@ internal sealed class RuntimeSocketService(
         "stop" => RuntimeWire.Element(await engine.StopAsync(RuntimeWire.Value<Guid>(request.Payload), false, cancellationToken)),
         "kill" => RuntimeWire.Element(await engine.StopAsync(RuntimeWire.Value<Guid>(request.Payload), true, cancellationToken)),
         "command" => await CommandAsync(request.Payload, cancellationToken),
-        "capabilities" => RuntimeWire.Element(new RuntimeCapabilities(
-            RuntimeWire.Version,
-            [RuntimeWorkloadKind.Minecraft, RuntimeWorkloadKind.Gate],
-            ["typed-workloads", "gate-api-readiness", "upgrade-when-idle"])),
         "upgradeWhenIdle" => RuntimeWire.Element(await UpgradeWhenIdleAsync(cancellationToken)),
         _ => throw new InvalidDataException("Unknown runtime operation.")
     };

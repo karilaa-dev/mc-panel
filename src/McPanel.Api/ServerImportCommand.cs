@@ -61,7 +61,6 @@ internal static class ServerImportCommand
             await using (var db = factory.CreateDbContext())
             {
                 await db.Database.EnsureCreatedAsync();
-                await db.EnsureCompatibleSchemaAsync();
                 await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
             }
             var java = new JavaDiscoveryService(factory, NullLogger<JavaDiscoveryService>.Instance);

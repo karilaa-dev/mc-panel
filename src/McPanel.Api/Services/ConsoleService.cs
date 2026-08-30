@@ -66,15 +66,6 @@ public sealed partial class ConsoleService(
             .Select(x => new ConsoleEventDto(x.ServerId, x.Sequence, x.Timestamp, x.Stream, x.Level, x.Text)).ToListAsync(cancellationToken);
     }
 
-    public async Task NormalizeRuntimeServerIdsAsync(long after, CancellationToken cancellationToken)
-    {
-        await using var db = await consoleFactory.CreateDbContextAsync(cancellationToken);
-        await db.Database.ExecuteSqlInterpolatedAsync($"""
-            UPDATE "Lines" SET "ServerId" = upper("ServerId")
-            WHERE "Sequence" > {Math.Max(0, after)} AND "ServerId" <> upper("ServerId");
-            """, cancellationToken);
-    }
-
     public async Task PublishExistingAsync(IReadOnlyList<ConsoleEventDto> lines, CancellationToken cancellationToken)
     {
         if (lines.Count == 0) return;

@@ -3,7 +3,6 @@ import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { LegacySoftwareRedirect } from "@/App"
 import { RuntimeSettingsPage } from "@/pages/core-pages"
 import { api } from "@/lib/api"
 
@@ -144,14 +143,5 @@ describe("Runtime server core settings", () => {
     await waitFor(() => expect(screen.queryByText("Ready to activate as custom-server.jar.")).not.toBeInTheDocument())
     expect(screen.getByLabelText("Executable JAR")).toHaveValue("")
     expect(screen.getByRole("button", { name: "Review server core change" })).toBeDisabled()
-  })
-
-  it("redirects old software URLs to Runtime", async () => {
-    render(<MemoryRouter initialEntries={["/servers/server-1/software"]}><Routes>
-      <Route path="servers/:serverId/software" element={<LegacySoftwareRedirect />} />
-      <Route path="servers/:serverId/runtime" element={<p>Runtime destination</p>} />
-    </Routes></MemoryRouter>)
-
-    expect(await screen.findByText("Runtime destination")).toBeVisible()
   })
 })

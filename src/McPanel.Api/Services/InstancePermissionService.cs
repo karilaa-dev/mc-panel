@@ -6,25 +6,8 @@ namespace McPanel.Api.Services;
 
 public sealed class InstancePermissionService(
     PanelPaths paths,
-    IDbContextFactory<StateDbContext> stateFactory,
-    ILogger<InstancePermissionService> logger)
+    IDbContextFactory<StateDbContext> stateFactory)
 {
-    public async Task NormalizeAllAsync(CancellationToken cancellationToken, bool tolerateFailures = true)
-    {
-        if (OperatingSystem.IsWindows()) return;
-        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
-        var servers = await db.Servers.AsNoTracking().Select(x => new { x.Id, x.Kind }).ToListAsync(cancellationToken);
-        foreach (var server in servers)
-        {
-            try { NormalizeTree(paths.Instance(server.Id), server.Kind == ServerKind.Gate, tolerateMissing: true); }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                logger.LogWarning(exception, "Could not normalize permissions for {ServerId}", server.Id);
-                if (!tolerateFailures) throw;
-            }
-        }
-    }
-
     public async Task NormalizeInstanceAsync(Guid serverId, CancellationToken cancellationToken = default)
     {
         if (OperatingSystem.IsWindows()) return;

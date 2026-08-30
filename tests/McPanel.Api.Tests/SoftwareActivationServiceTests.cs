@@ -195,31 +195,6 @@ public sealed class SoftwareActivationServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Startup_recovery_accepts_legacy_activation_journals()
-    {
-        var (service, paths, options) = await CreateAsync(ServerState.Updating);
-        var serverId = await ServerIdAsync(options);
-        var instance = paths.Instance(serverId);
-        var stage = Path.Combine(paths.Staging, "software-stage");
-        var rollback = Path.Combine(paths.Staging, $"software-rollback-{serverId:N}-legacy");
-        Directory.CreateDirectory(stage);
-        await File.WriteAllTextAsync(Path.Combine(instance, "server.jar"), "old");
-        await File.WriteAllTextAsync(Path.Combine(stage, "server.jar"), "new");
-        service.Begin(serverId, stage, rollback, await MetadataAsync(options)).Activate();
-        var manifest = Path.Combine(rollback, "activation-manifest.json");
-        await File.WriteAllTextAsync(manifest,
-            (await File.ReadAllTextAsync(manifest)).Replace("\"version\":3", "\"version\":2", StringComparison.Ordinal));
-        File.Move(Path.Combine(rollback, "files", "server.jar"), Path.Combine(rollback, "server.jar"));
-        Directory.Delete(Path.Combine(rollback, "files"));
-
-        await using (var db = new StateDbContext(options))
-            await service.RecoverInterruptedAsync(db, CancellationToken.None);
-
-        Assert.Equal("old", await File.ReadAllTextAsync(Path.Combine(instance, "server.jar")));
-        Assert.False(Directory.Exists(rollback));
-    }
-
-    [Fact]
     public async Task Activation_rejects_a_symlinked_destination_parent()
     {
         if (OperatingSystem.IsWindows()) return;

@@ -5,7 +5,6 @@ using McPanel.Api.Infrastructure;
 using McPanel.Api.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace McPanel.Api.Tests;
@@ -162,44 +161,6 @@ public sealed class CustomJarServiceTests : IDisposable
         service.CleanupExpiredImports();
 
         Assert.True(Directory.Exists(root));
-    }
-
-    [Fact]
-    public async Task Permission_repair_opens_only_regular_instances_to_the_group()
-    {
-        if (OperatingSystem.IsWindows()) return;
-        var (_, paths) = CreateService();
-        var options = new DbContextOptionsBuilder<StateDbContext>()
-            .UseSqlite($"Data Source={Path.Combine(_root, "permissions.db")}").Options;
-        IDbContextFactory<StateDbContext> factory = new TestStateDbContextFactory(options);
-        var regularId = Guid.NewGuid();
-        var gateId = Guid.NewGuid();
-        await using (var db = await factory.CreateDbContextAsync())
-        {
-            await db.Database.EnsureCreatedAsync();
-            db.Servers.AddRange(
-                new ServerEntity { Id = regularId, Name = "Regular", Kind = ServerKind.Paper, Version = "1.21.8", JavaRuntimeId = "java" },
-                new ServerEntity { Id = gateId, Name = "Gate", Kind = ServerKind.Gate, Version = "1", JavaRuntimeId = "" });
-            await db.SaveChangesAsync();
-        }
-        Directory.CreateDirectory(paths.Instance(regularId));
-        Directory.CreateDirectory(paths.Instance(gateId));
-        await File.WriteAllTextAsync(Path.Combine(paths.Instance(regularId), "server.jar"), "regular");
-        await File.WriteAllTextAsync(Path.Combine(paths.Instance(gateId), "secret"), "gate");
-        var permissions = new InstancePermissionService(paths, factory, NullLogger<InstancePermissionService>.Instance);
-
-        await permissions.NormalizeAllAsync(CancellationToken.None);
-
-        var regularDirectory = File.GetUnixFileMode(paths.Instance(regularId));
-        var regularFile = File.GetUnixFileMode(Path.Combine(paths.Instance(regularId), "server.jar"));
-        var gateDirectory = File.GetUnixFileMode(paths.Instance(gateId));
-        var gateFile = File.GetUnixFileMode(Path.Combine(paths.Instance(gateId), "secret"));
-        Assert.True(regularDirectory.HasFlag(UnixFileMode.SetGroup));
-        Assert.True(regularDirectory.HasFlag(UnixFileMode.GroupWrite));
-        Assert.True(regularFile.HasFlag(UnixFileMode.GroupRead));
-        Assert.True(regularFile.HasFlag(UnixFileMode.GroupWrite));
-        Assert.False(gateDirectory.HasFlag(UnixFileMode.GroupRead));
-        Assert.False(gateFile.HasFlag(UnixFileMode.GroupRead));
     }
 
     private (CustomJarService Service, PanelPaths Paths) CreateService()

@@ -50,8 +50,6 @@ public static partial class ApiEndpoints
         });
         api.MapDelete("/servers/{id:guid}", DeleteServerAsync);
         api.MapPost("/servers/{id:guid}/actions/{action}", HandleActionAsync);
-        foreach (var action in new[] { "start", "stop", "restart", "update" })
-            api.MapPost($"/servers/{{id:guid}}/{action}", (Guid id, ProcessSupervisor supervisor, ServerInstallerService installer, CancellationToken token) => QueueAction(id, action, false, supervisor, installer, token));
 
         api.MapGet("/servers/{id:guid}/configuration", (Guid id, PropertiesService service, CancellationToken token) => service.ReadAsync(id, token));
         api.MapPut("/servers/{id:guid}/configuration", (Guid id, ServerConfigurationDto request, PropertiesService service, CancellationToken token) => service.SaveAsync(id, request, token));
@@ -172,16 +170,6 @@ public static partial class ApiEndpoints
             response.Headers.CacheControl = "no-store";
             return await gate.GenerateSecretAsync(id, kind, request.ConfirmReplace, token);
         });
-        api.MapGet("/system/gate", GateApiReplaced);
-        api.MapPut("/system/gate/config", GateApiReplaced);
-        api.MapPost("/system/gate/install", GateApiReplaced);
-        api.MapPost("/system/gate/update", GateApiReplaced);
-        api.MapPost("/system/gate/start", GateApiReplaced);
-        api.MapPost("/system/gate/stop", GateApiReplaced);
-        api.MapPost("/system/gate/restart", GateApiReplaced);
-        api.MapPost("/system/gate/secrets/{kind}/reveal", GateApiReplaced);
-        api.MapPost("/system/gate/secrets/{kind}/rotate", GateApiReplaced);
-        api.MapGet("/system/gate/logs", GateApiReplaced);
         api.MapGet("/system/info", (PanelPaths paths, IOptions<PanelOptions> options) =>
         {
             var total = HostMetricsService.ReadMemory().Total;
@@ -203,8 +191,6 @@ public static partial class ApiEndpoints
             settings.KeepServersRunningOnPanelStop = request.KeepServersRunningOnPanelStop;
             settings.Revision = Guid.NewGuid().ToString("N");
             settings.UpdatedAt = DateTimeOffset.UtcNow;
-            var admin = await db.Admins.SingleOrDefaultAsync(token);
-            if (admin is not null) admin.KeepServersRunningOnPanelStop = settings.KeepServersRunningOnPanelStop;
             await gate.MarkGlobalAddressChangedAsync(db, token);
             await db.SaveChangesAsync(token);
             return new PanelSettingsDto(settings.KeepServersRunningOnPanelStop, settings.GlobalServerHost, settings.Revision);
@@ -312,9 +298,6 @@ public static partial class ApiEndpoints
         catch (Exception exception) { logger.LogWarning(exception, "Could not remove console rows for deleted server {ServerId}", id); }
         return Results.NoContent();
     }
-
-    private static IResult GateApiReplaced() =>
-        throw new PanelException(410, "GATE_API_REPLACED", "Gate is now managed as a server. Select a Gate server to manage this instance.");
 
     private static void ValidateDeletionPath(string target, string expectedParent)
     {

@@ -1,7 +1,6 @@
 # HTTP and realtime API
 
-The main API prefix is `/api/v1`. `/api` is a compatibility alias used by the
-bundled web client. JSON property names use camel case.
+The API prefix is `/api/v1`. JSON property names use camel case.
 
 This file records the protocol rules and route groups. The request and response
 types in `Contracts/Dtos.cs` and the mappings in `ApiEndpoints.cs` define the
@@ -63,8 +62,7 @@ data. File operations reject paths outside the selected server and reject
 symlink escapes.
 
 Gate is a normal server kind. Each Gate has its own listener, configuration,
-backends, secrets, logs, and rollback copy. Old `/system/gate` routes return
-`410 GATE_API_REPLACED`.
+backends, secrets, logs, and rollback copy.
 
 Inventory reads return Minecraft's most recent saved file, which may lag behind
 an online player. Inventory restores require that player to be offline. MC

@@ -15,7 +15,6 @@ public sealed class AdminEntity
     [MaxLength(64)] public required string Username { get; set; }
     [MaxLength(1024)] public required string PasswordHash { get; set; }
     [MaxLength(64)] public string SessionStamp { get; set; } = Guid.NewGuid().ToString("N");
-    public bool KeepServersRunningOnPanelStop { get; set; } = true;
     public long LastConsoleSequence { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
@@ -98,20 +97,6 @@ public sealed class GateExternalBackendEntity
     [MaxLength(64)] public required string Name { get; set; }
     [MaxLength(255)] public required string Host { get; set; }
     public int Port { get; set; } = 25565;
-}
-
-public sealed class ProxySettingsEntity
-{
-    public int Id { get; set; } = 1;
-    public GateMode Mode { get; set; } = GateMode.Lite;
-    [MaxLength(255)] public string? GlobalPublicHost { get; set; }
-    public int PublicPort { get; set; } = 25565;
-    public Guid? DefaultServerId { get; set; }
-    public GateForwardingMode ClassicForwardingMode { get; set; } = GateForwardingMode.Velocity;
-    [MaxLength(64)] public string? BackendSetupAcknowledgementHash { get; set; }
-    public int ApiPort { get; set; }
-    [MaxLength(64)] public string Revision { get; set; } = Guid.NewGuid().ToString("N");
-    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
 public sealed class JavaRuntimeEntity

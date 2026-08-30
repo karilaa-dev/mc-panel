@@ -158,33 +158,6 @@ public sealed class ServerIconService(
         }
     }
 
-    public async Task BackfillAsync(CancellationToken cancellationToken)
-    {
-        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
-        var servers = await db.Servers.ToListAsync(cancellationToken);
-        var changed = false;
-        foreach (var server in servers)
-        {
-            var path = IconPath(server.Id);
-            if (!File.Exists(path)) continue;
-            if (new FileInfo(path).Length > MaximumIconBytes) continue;
-            try
-            {
-                var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
-                ValidatePng(bytes);
-                var revision = Revision(bytes);
-                await StoreLibraryAsync(revision, bytes, cancellationToken);
-                if (server.IconRevision != revision)
-                {
-                    server.IconRevision = revision;
-                    changed = true;
-                }
-            }
-            catch (Exception exception) when (exception is IOException or InvalidDataException or PanelException) { }
-        }
-        if (changed) await db.SaveChangesAsync(cancellationToken);
-    }
-
     public static void ValidatePng(ReadOnlySpan<byte> bytes)
     {
         if (bytes.Length < 33 || bytes.Length > MaximumIconBytes || !bytes[..8].SequenceEqual(PngSignature) ||

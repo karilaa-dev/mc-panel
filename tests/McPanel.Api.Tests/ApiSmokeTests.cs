@@ -27,6 +27,8 @@ public sealed class ApiSmokeTests : IAsyncLifetime
         using var client = _factory!.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
         var status = await client.GetAsync("/api/v1/auth/status");
         Assert.Equal(HttpStatusCode.OK, status.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/auth/status")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/v1/system/gate")).StatusCode);
         using var json = JsonDocument.Parse(await status.Content.ReadAsStringAsync());
         Assert.True(json.RootElement.GetProperty("setupRequired").GetBoolean());
         var antiforgery = await client.GetAsync("/api/v1/auth/antiforgery");

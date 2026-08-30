@@ -30,151 +30,6 @@ public sealed record ParsedAdvertisedAddress(string Host, int? ExplicitPort)
 internal sealed record GateBackendTarget(
     Guid Id, string Name, string Address, string? PublicHost, int? PublicPort, string Kind);
 
-public sealed class LegacyGateMigrationService(PanelPaths paths, ILogger<LegacyGateMigrationService> logger)
-{
-    public async Task MigrateAsync(StateDbContext db, CancellationToken cancellationToken)
-    {
-        if (!File.Exists(paths.LegacyGateInstallManifest)) return;
-
-        GateInstallManifest legacyManifest;
-        byte[] originalManifest;
-        try
-        {
-            originalManifest = await File.ReadAllBytesAsync(paths.LegacyGateInstallManifest, cancellationToken);
-            legacyManifest = JsonSerializer.Deserialize<GateInstallManifest>(originalManifest, GateReleaseService.JsonOptions)
-                ?? throw new InvalidDataException("The legacy Gate install manifest is empty.");
-            var executable = Path.GetFullPath(legacyManifest.Executable);
-            var legacyRoot = Path.GetFullPath(paths.Gate) + Path.DirectorySeparatorChar;
-            if (!executable.StartsWith(legacyRoot, StringComparison.Ordinal) || !File.Exists(executable))
-                throw new InvalidDataException("The legacy Gate manifest does not reference an installed binary.");
-        }
-        catch (Exception exception)
-        {
-            logger.LogWarning(exception, "Legacy Gate artifacts were found but do not describe a complete installation; no Gate server was created");
-            return;
-        }
-
-        var proxy = await db.ProxySettings.SingleAsync(x => x.Id == 1, cancellationToken);
-        var backendIds = await db.Servers.Where(x => x.Kind != ServerKind.Gate).Select(x => x.Id).ToListAsync(cancellationToken);
-        var id = Guid.NewGuid();
-        var instance = paths.Instance(id);
-        var desiredRunning = ReadDesiredRunning(paths.GateDesiredState);
-        var name = "Gate Proxy";
-        for (var suffix = 2; await db.Servers.AnyAsync(x => x.Name == name, cancellationToken); suffix++)
-            name = $"Gate Proxy {suffix}";
-
-        var relativeExecutable = Path.GetRelativePath(paths.Gate, Path.GetFullPath(legacyManifest.Executable));
-        if (relativeExecutable.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relativeExecutable))
-            throw new InvalidDataException("The legacy Gate executable path escapes its managed directory.");
-
-        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-        var movedGate = false;
-        var movedFiles = new List<(string Source, string Destination)>();
-        try
-        {
-            Directory.Move(paths.Gate, instance);
-            movedGate = true;
-            MoveLegacyFile(paths.LegacyGateVelocitySecret, paths.GateVelocitySecret(id), movedFiles);
-            MoveLegacyFile(paths.LegacyGateBungeeGuardSecret, paths.GateBungeeGuardSecret(id), movedFiles);
-            MoveLegacyFile(paths.LegacyGateLog, paths.GateLog(id), movedFiles);
-
-            var migratedManifest = legacyManifest with { Executable = Path.Combine(instance, relativeExecutable) };
-            await GateReleaseService.AtomicJsonAsync(paths.GateInstallManifest(id), migratedManifest, cancellationToken);
-            SetManagedMode(paths.GateConfig(id));
-            SetManagedMode(paths.GateVelocitySecret(id));
-            SetManagedMode(paths.GateBungeeGuardSecret(id));
-
-            var gate = new ServerEntity
-            {
-                Id = id,
-                Name = name,
-                Kind = ServerKind.Gate,
-                Version = legacyManifest.Version,
-                State = ServerState.Stopped,
-                Port = proxy.PublicPort,
-                MemoryMb = 256,
-                InitialMemoryMb = 256,
-                MemoryLimitMb = 256,
-                JavaRuntimeId = "",
-                LaunchTarget = "",
-                StartOnBoot = desiredRunning,
-                CrashRecovery = true,
-                CreatedAt = DateTimeOffset.UtcNow,
-                UpdatedAt = DateTimeOffset.UtcNow
-            };
-            db.Servers.Add(gate);
-            db.GateSettings.Add(new GateSettingsEntity
-            {
-                ServerId = id,
-                Mode = proxy.Mode,
-                DefaultBackendServerId = proxy.DefaultServerId is { } defaultId && backendIds.Contains(defaultId) ? defaultId : null,
-                ClassicForwardingMode = proxy.ClassicForwardingMode,
-                ApiPort = proxy.ApiPort is >= 1024 and <= 65535 ? proxy.ApiPort : FreeLoopbackPort(),
-                ConfigurationDirty = true,
-                UpdatedAt = DateTimeOffset.UtcNow
-            });
-            db.GateBackends.AddRange(backendIds.Select(backendId => new GateBackendEntity { GateServerId = id, BackendServerId = backendId }));
-            await db.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
-            logger.LogInformation("Migrated the legacy singleton Gate installation to server {ServerId}", id);
-        }
-        catch
-        {
-            await transaction.RollbackAsync(CancellationToken.None);
-            foreach (var (source, destination) in movedFiles.AsEnumerable().Reverse())
-            {
-                try { if (File.Exists(destination) && !File.Exists(source)) { Directory.CreateDirectory(Path.GetDirectoryName(source)!); File.Move(destination, source); } }
-                catch { }
-            }
-            if (movedGate && Directory.Exists(instance) && !Directory.Exists(paths.Gate))
-            {
-                try
-                {
-                    Directory.Move(instance, paths.Gate);
-                    await File.WriteAllBytesAsync(paths.LegacyGateInstallManifest, originalManifest, CancellationToken.None);
-                }
-                catch { }
-            }
-            throw;
-        }
-    }
-
-    private static bool ReadDesiredRunning(string path)
-    {
-        try
-        {
-            using var document = JsonDocument.Parse(File.ReadAllText(path));
-            foreach (var property in document.RootElement.EnumerateObject())
-                if (property.Name.Equals("desiredRunning", StringComparison.OrdinalIgnoreCase) && property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
-                    return property.Value.GetBoolean();
-        }
-        catch { }
-        return false;
-    }
-
-    private static void MoveLegacyFile(string source, string destination, ICollection<(string Source, string Destination)> moved)
-    {
-        if (!File.Exists(source)) return;
-        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-        File.Move(source, destination);
-        moved.Add((source, destination));
-    }
-
-    private static void SetManagedMode(string path)
-    {
-        if (!OperatingSystem.IsWindows() && File.Exists(path))
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-    }
-
-    private static int FreeLoopbackPort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
-    }
-}
-
 public sealed class GateReleaseService(ValidatedDownloadClient downloads, PanelPaths paths)
 {
     private static readonly Uri ReleasesUri = new("https://api.github.com/repos/minekube/gate/releases?per_page=20");
@@ -905,49 +760,6 @@ public sealed class GateApiClient
     }
 }
 
-public sealed class RuntimeCompatibilityService(PersistentRuntimeClient runtime, ILogger<RuntimeCompatibilityService> logger) : BackgroundService
-{
-    private volatile bool _gateSupported;
-    public bool GateSupported => !runtime.Enabled || _gateSupported;
-
-    public async Task EnsureGateSupportedAsync(CancellationToken cancellationToken)
-    {
-        if (GateSupported) return;
-        await ProbeAsync(cancellationToken);
-        if (!GateSupported) throw new PanelException(409, "RUNTIME_UPGRADE_PENDING",
-            "Gate will be available after the persistent runtime upgrades. Existing Minecraft servers can keep running until the runtime becomes idle.");
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try { await ProbeAsync(stoppingToken); }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-            catch (Exception exception) { logger.LogDebug(exception, "Runtime capability probe failed"); }
-            try { await Task.Delay(_gateSupported ? TimeSpan.FromSeconds(30) : TimeSpan.FromSeconds(2), stoppingToken); }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-        }
-    }
-
-    private async Task ProbeAsync(CancellationToken cancellationToken)
-    {
-        if (!runtime.Enabled) { _gateSupported = true; return; }
-        try
-        {
-            var capabilities = await runtime.CapabilitiesAsync(cancellationToken);
-            _gateSupported = capabilities?.WorkloadKinds.Contains(RuntimeWorkloadKind.Gate) == true;
-        }
-        catch (PanelException exception) when (exception.Code == "RUNTIME_OPERATION_FAILED" &&
-                                                exception.Message.Contains("Unknown runtime operation", StringComparison.OrdinalIgnoreCase))
-        {
-            _gateSupported = false;
-            try { await runtime.UpgradeWhenIdleAsync(cancellationToken); } catch { }
-        }
-        catch (PanelException exception) when (exception.Code == "RUNTIME_UNAVAILABLE") { _gateSupported = false; }
-    }
-}
-
 public sealed class GateProxyService(
     PanelPaths paths,
     IDbContextFactory<StateDbContext> stateFactory,
@@ -955,7 +767,6 @@ public sealed class GateProxyService(
     GateConfigurationService configuration,
     GateApiClient api,
     PersistentRuntimeClient runtime,
-    RuntimeCompatibilityService compatibility,
     AsyncKeyedLock keyedLock,
     OperationQueue operations,
     ILogger<GateProxyService> logger)
@@ -981,7 +792,6 @@ public sealed class GateProxyService(
         var warnings = generated.Warnings.ToList();
         try { ValidateStart(gate, settings, backends, externalBackends, panel.GlobalServerHost, paths); }
         catch (PanelException exception) { warnings.Insert(0, exception.Message); }
-        if (!compatibility.GateSupported) warnings.Add("The persistent runtime upgrade is pending; Gate lifecycle actions are temporarily unavailable.");
         if (settings.ConfigurationDirty) warnings.Add("Gate configuration is waiting to be applied.");
         if (settings.LastApplyError is not null) warnings.Add(settings.LastApplyError);
         return new GateStatusDto(serverId,
@@ -1160,7 +970,6 @@ public sealed class GateProxyService(
 
     public async Task<RuntimeLaunchRequest> PrepareLaunchAsync(Guid serverId, CancellationToken cancellationToken)
     {
-        await compatibility.EnsureGateSupportedAsync(cancellationToken);
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var gate = await RequireGateAsync(db, serverId, cancellationToken);
         var settings = await SettingsAsync(db, serverId, cancellationToken);
@@ -1181,7 +990,6 @@ public sealed class GateProxyService(
 
     public async Task ValidateStartConfigurationAsync(Guid serverId, CancellationToken cancellationToken)
     {
-        await compatibility.EnsureGateSupportedAsync(cancellationToken);
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var gate = await RequireGateAsync(db, serverId, cancellationToken);
         var settings = await SettingsAsync(db, serverId, cancellationToken);
@@ -1221,7 +1029,6 @@ public sealed class GateProxyService(
 
     private async Task UpdateBinaryLockedAsync(Guid serverId, CancellationToken cancellationToken)
     {
-        await compatibility.EnsureGateSupportedAsync(cancellationToken);
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var gate = await RequireGateAsync(db, serverId, cancellationToken);
         var running = runtime.IsRunning(serverId);

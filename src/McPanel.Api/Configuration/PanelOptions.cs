@@ -38,8 +38,6 @@ public sealed class PanelPaths
         Modpacks = Path.Combine(Data, "modpacks");
         ModpackImports = Path.Combine(Data, "modpack-imports");
         CustomJarImports = Path.Combine(Data, "custom-jar-imports");
-        Gate = Path.Combine(Data, "gate");
-        LegacyGateVersions = Path.Combine(Gate, "versions");
         StateDatabase = Path.Combine(Data, "state.db");
         ConsoleDatabase = Path.Combine(Data, "console.db");
         SetupTokenFile = options.SetupTokenFile is { Length: > 0 }
@@ -61,22 +59,13 @@ public sealed class PanelPaths
     public string Modpacks { get; }
     public string ModpackImports { get; }
     public string CustomJarImports { get; }
-    public string Gate { get; }
-    public string LegacyGateVersions { get; }
-    public string LegacyGateConfig => Path.Combine(Gate, "config.json");
-    public string LegacyGateInstallManifest => Path.Combine(Gate, "install.json");
-    public string LegacyGateVelocitySecret => Path.Combine(Keys, "gate-velocity.secret");
-    public string LegacyGateBungeeGuardSecret => Path.Combine(Keys, "gate-bungeeguard.secret");
-    public string GateDesiredState => Path.Combine(Gate, "desired-state.json");
-    public string GateRuntimeState => Path.Combine(Gate, "runtime-state.json");
-    public string LegacyGateLog => Path.Combine(Logs, "gate.log");
     public string StateDatabase { get; }
     public string ConsoleDatabase { get; }
     public string SetupTokenFile { get; }
 
     public void EnsureCreated()
     {
-        foreach (var directory in new[] { Data, Config, Instances, Staging, Backups, Logs, Runtime, RuntimeState, Keys, Icons, Modpacks, ModpackImports, CustomJarImports, Gate, LegacyGateVersions })
+        foreach (var directory in new[] { Data, Config, Instances, Staging, Backups, Logs, Runtime, RuntimeState, Keys, Icons, Modpacks, ModpackImports, CustomJarImports })
             Directory.CreateDirectory(directory);
     }
 

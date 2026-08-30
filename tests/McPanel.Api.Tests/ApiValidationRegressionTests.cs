@@ -333,10 +333,8 @@ done
         Assert.Equal(validName, Assert.Single(await db.Schedules.ToListAsync()).Name);
     }
 
-    [Theory]
-    [InlineData("/api/v1")]
-    [InlineData("/api")]
-    public async Task Schedule_rejects_null_action_elements_with_a_structured_problem(string prefix)
+    [Fact]
+    public async Task Schedule_rejects_null_action_elements_with_a_structured_problem()
     {
         var body = JsonSerializer.Serialize(new
         {
@@ -348,7 +346,7 @@ done
             actions = new object?[] { null }
         });
 
-        using var response = await SendJsonAsync(HttpMethod.Post, $"{prefix}/servers/{_serverId}/schedules", body);
+        using var response = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/schedules", body);
 
         await AssertProblemAsync(response, HttpStatusCode.BadRequest, "VALIDATION_FAILED");
     }
@@ -664,7 +662,7 @@ done
     }
 
     [Fact]
-    public async Task Legacy_configuration_preserves_aikar_and_keeps_xms_and_xmx_equal()
+    public async Task General_configuration_preserves_aikar_and_keeps_xms_and_xmx_equal()
     {
         var runtime = JsonSerializer.Serialize(new
         {
@@ -1755,7 +1753,7 @@ END;
 
     private async Task<JsonElement> QueueActionAndWaitAsync(string action)
     {
-        using var response = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/{action}", "{}");
+        using var response = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/actions/{action}", "{}");
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         return await WaitForJobAsync(document.RootElement.GetProperty("id").GetGuid());

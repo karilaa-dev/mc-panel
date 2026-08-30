@@ -376,7 +376,6 @@ public sealed class ProcessSupervisor(
         if (admin is null) return;
         while (true)
         {
-            await console.NormalizeRuntimeServerIdsAsync(admin.LastConsoleSequence, cancellationToken);
             var lines = await console.ReadGlobalAsync(admin.LastConsoleSequence, 500, cancellationToken);
             if (lines.Count == 0) break;
             await console.PublishExistingAsync(lines, cancellationToken);

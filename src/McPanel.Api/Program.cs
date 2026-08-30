@@ -22,7 +22,6 @@ if (PersistentRuntimeHost.IsInvocation(args)) return await PersistentRuntimeHost
 if (PersistentRuntimeUpgradeCommand.IsInvocation(args)) return await PersistentRuntimeUpgradeCommand.RunAsync();
 if (ServerImportCommand.IsStageInvocation(args)) return await ServerImportCommand.RunStageAsync(args);
 if (ServerImportCommand.IsImportInvocation(args)) return await ServerImportCommand.RunImportAsync(args);
-if (InstancePermissionRepairCommand.IsInvocation(args)) return await InstancePermissionRepairCommand.RunAsync(args);
 
 // systemd intentionally uses the writable data directory as its working directory.
 // Anchor configuration and bundled web assets to the executable instead of the CWD.
@@ -90,7 +89,7 @@ builder.Services.AddHttpClient("minecraft-profile", client =>
 }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, AutomaticDecompression = System.Net.DecompressionMethods.All });
 
 builder.Services.AddSingleton<AsyncKeyedLock>(); builder.Services.AddSingleton<SafePathResolver>(); builder.Services.AddSingleton<SessionAudience>();
-builder.Services.AddSingleton<InstancePermissionService>(); builder.Services.AddHostedService<InstancePermissionRepairService>();
+builder.Services.AddSingleton<InstancePermissionService>();
 builder.Services.AddSingleton<CustomJarService>(); builder.Services.AddSingleton<SoftwareActivationService>();
 builder.Services.AddSingleton<CgroupMemoryService>();
 builder.Services.AddSingleton<ValidatedDownloadClient>(); builder.Services.AddSingleton<DistributionCatalogService>();
@@ -98,8 +97,6 @@ builder.Services.AddSingleton<JavaDiscoveryService>(); builder.Services.AddSingl
 builder.Services.AddSingleton<PersistentRuntimeClient>();
 builder.Services.AddSingleton<GateReleaseService>(); builder.Services.AddSingleton<GateConfigurationService>();
 builder.Services.AddSingleton<GateApiClient>(); builder.Services.AddSingleton<GateProxyService>();
-builder.Services.AddSingleton<LegacyGateMigrationService>();
-builder.Services.AddSingleton<RuntimeCompatibilityService>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<RuntimeCompatibilityService>());
 builder.Services.AddHostedService<GateConfigurationReconciler>();
 builder.Services.AddSingleton<OperationQueue>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<OperationQueue>());
 builder.Services.AddSingleton<ProcessSupervisor>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<ProcessSupervisor>());
@@ -135,7 +132,6 @@ app.Use(async (context, next) =>
     await next(context);
 });
 app.MapPanelApi("/api/v1");
-app.MapPanelApi("/api");
 app.MapHub<PanelHub>("/hubs/panel").RequireAuthorization();
 
 var webRoot = panelOptions.WebRoot ?? Path.Combine(app.Environment.ContentRootPath, "wwwroot");
@@ -171,8 +167,7 @@ static async Task InitializeAsync(IServiceProvider services)
     await using (var state = await stateFactory.CreateDbContextAsync())
     {
         await state.Database.EnsureCreatedAsync();
-        await state.EnsureCompatibleSchemaAsync();
-        await scope.ServiceProvider.GetRequiredService<LegacyGateMigrationService>().MigrateAsync(state, CancellationToken.None);
+        if (!await state.PanelSettings.AnyAsync()) state.PanelSettings.Add(new PanelSettingsEntity());
         await state.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
         await ServerImportService.RecoverInterruptedActivationsAsync(
             scope.ServiceProvider.GetRequiredService<PanelPaths>(), state,
@@ -202,12 +197,10 @@ static async Task InitializeAsync(IServiceProvider services)
     services.GetRequiredService<SessionAudience>().Initialize(sessionStamp);
     services.GetRequiredService<ModpackService>().CleanupExpiredImports();
     services.GetRequiredService<CustomJarService>().CleanupExpiredImports();
-    await scope.ServiceProvider.GetRequiredService<ServerIconService>().BackfillAsync(CancellationToken.None);
     await using (var console = await consoleFactory.CreateDbContextAsync())
     {
         await console.Database.EnsureCreatedAsync();
         await console.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
-        await console.EnsureCompatibleSchemaAsync();
     }
     using (var javaTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
     {

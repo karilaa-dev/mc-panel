@@ -123,7 +123,6 @@ public sealed class SoftwareActivationService(
     internal sealed class ActivationTransaction
     {
         private const int ManifestVersion = 3;
-        private const int LegacyManifestVersion = 2;
         private const string PayloadDirectoryName = "files";
         private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
         private readonly string? _source;
@@ -132,7 +131,6 @@ public sealed class SoftwareActivationService(
         private readonly SoftwareMetadataSnapshot _originalMetadata;
         private readonly List<FileMutation> _files;
         private readonly List<string> _createdDirectories;
-        private readonly int _manifestVersion;
         private bool _commitRecorded;
         private bool _finished;
 
@@ -144,8 +142,7 @@ public sealed class SoftwareActivationService(
             SoftwareMetadataSnapshot originalMetadata,
             bool commitRecorded = false,
             List<FileMutation>? files = null,
-            List<string>? createdDirectories = null,
-            int manifestVersion = ManifestVersion)
+            List<string>? createdDirectories = null)
         {
             ServerId = serverId;
             _source = source;
@@ -155,7 +152,6 @@ public sealed class SoftwareActivationService(
             _commitRecorded = commitRecorded;
             _files = files ?? [];
             _createdDirectories = createdDirectories ?? [];
-            _manifestVersion = manifestVersion;
         }
 
         public ActivationTransaction(
@@ -265,14 +261,13 @@ public sealed class SoftwareActivationService(
             var manifestPath = Path.Combine(rollback, "activation-manifest.json");
             var manifest = JsonSerializer.Deserialize<ActivationManifest>(File.ReadAllText(manifestPath), JsonOptions)
                 ?? throw new InvalidDataException("The activation manifest is empty.");
-            if (manifest.Version is not (LegacyManifestVersion or ManifestVersion) || manifest.ServerId == Guid.Empty ||
+            if (manifest.Version != ManifestVersion || manifest.ServerId == Guid.Empty ||
                 manifest.OriginalMetadata is null || manifest.Files is null || manifest.CreatedDirectories is null)
                 throw new InvalidDataException("The activation manifest is invalid.");
             foreach (var file in manifest.Files) ResolveRelative(paths.Instance(manifest.ServerId), file.RelativePath);
             foreach (var directory in manifest.CreatedDirectories) ResolveRelative(paths.Instance(manifest.ServerId), directory);
             return new ActivationTransaction(manifest.ServerId, null, paths.Instance(manifest.ServerId), rollback,
-                manifest.OriginalMetadata, manifest.CommitRecorded, manifest.Files, manifest.CreatedDirectories,
-                manifest.Version);
+                manifest.OriginalMetadata, manifest.CommitRecorded, manifest.Files, manifest.CreatedDirectories);
         }
 
         private void CreateParents(string directory)
@@ -305,7 +300,7 @@ public sealed class SoftwareActivationService(
             using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
             {
                 JsonSerializer.Serialize(stream,
-                    new ActivationManifest(_manifestVersion, ServerId, _commitRecorded, _originalMetadata,
+                    new ActivationManifest(ManifestVersion, ServerId, _commitRecorded, _originalMetadata,
                         _files, _createdDirectories), JsonOptions);
                 stream.Flush(true);
             }
@@ -323,8 +318,7 @@ public sealed class SoftwareActivationService(
             return path;
         }
 
-        private string ResolveBackup(string relative) => ResolveRelative(
-            _manifestVersion == LegacyManifestVersion ? _rollback : PayloadRoot, relative);
+        private string ResolveBackup(string relative) => ResolveRelative(PayloadRoot, relative);
 
         private static void EnsureNoReparsePoints(string root, string path)
         {

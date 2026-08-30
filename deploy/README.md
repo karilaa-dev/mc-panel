@@ -178,13 +178,11 @@ both services, restore both directories, and set the data tree owner to
 ```
 
 An update downloads the newest commit from the selected release. A same-version
-run still repairs the credential, unit files, group membership, and access
-permissions. Otherwise,
-it replaces the web application while the runtime keeps active servers online.
+run refreshes the credential, unit files, group membership, and access
+permissions. Otherwise, it replaces the web application while the runtime keeps active servers online.
 The updater retains the previous application beside `/opt/mcpanel` in a dated
 rollback directory. It restores that copy if the new panel does not stay
-active. Updates preserve application configuration and data while atomically
-migrating legacy setup tokens out of `mcpanel.env`.
+active. Updates preserve application configuration, credentials, and data.
 
 The normal uninstall keeps all state and the service account:
 
