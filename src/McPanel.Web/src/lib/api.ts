@@ -31,6 +31,9 @@ import type {
   PlayerInventoryBackupDto,
   PlayerInventoryBackupPreviewDto,
   PlayerInventoryDto,
+  CustomJarImportDto,
+  ServerSoftwareDto,
+  ChangeServerSoftwareRequest,
 } from "@/lib/contracts"
 
 const API_BASE = "/api/v1"
@@ -138,6 +141,14 @@ export const api = {
     request<JobDto>("/servers/modpack", { method: "POST", body: JSON.stringify(body) }),
   createGateServer: (body: CreateGateServerRequest) =>
     request<JobDto>("/servers/gate", { method: "POST", body: JSON.stringify(body) }),
+  uploadCustomJar: (file: File) => {
+    const body = new FormData()
+    body.set("file", file)
+    return request<CustomJarImportDto>("/server-jars/imports", { method: "POST", body })
+  },
+  software: (id: string) => request<ServerSoftwareDto>(`${serverPath(id)}/software`),
+  changeSoftware: (id: string, body: ChangeServerSoftwareRequest) =>
+    request<JobDto>(`${serverPath(id)}/software/change`, { method: "POST", body: JSON.stringify(body) }),
   lifecycle: (id: string, action: "start" | "stop" | "restart" | "update") =>
     request<JobDto>(`${serverPath(id)}/actions/${action}`, { method: "POST" }),
   kill: (id: string) => request<JobDto>(`${serverPath(id)}/actions/kill`, {

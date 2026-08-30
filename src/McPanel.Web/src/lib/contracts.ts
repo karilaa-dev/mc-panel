@@ -1,4 +1,4 @@
-export type ServerKind = "Vanilla" | "Paper" | "Fabric" | "Forge" | "NeoForge" | "Gate"
+export type ServerKind = "Vanilla" | "Paper" | "Fabric" | "Forge" | "NeoForge" | "CustomJar" | "Gate"
 
 export type ServerState =
   | "Installing"
@@ -625,6 +625,47 @@ export interface CreateServerRequest {
   build?: string
   loaderVersion?: string
   installerVersion?: string
+  customJarImportToken?: string
+  clientRequestId?: string
+}
+
+export interface CustomJarImportDto {
+  token: string
+  expiresAt: string
+  fileName: string
+  size: number
+}
+
+export interface CustomJarCandidateDto {
+  path: string
+  size: number
+}
+
+export interface ServerSoftwareDto {
+  kind: ServerKind
+  version: string
+  build?: string | null
+  loaderVersion?: string | null
+  installerVersion?: string | null
+  launchMode: "Jar" | "ArgumentFile"
+  launchTarget: string
+  javaRuntimeId: string
+  requiredJavaMajor: number
+  isExperimental: boolean
+  jarCandidates: CustomJarCandidateDto[]
+}
+
+export interface ChangeServerSoftwareRequest {
+  kind: ServerKind
+  version: string
+  javaRuntimeId: string
+  includeExperimental?: boolean
+  createBackup: boolean
+  build?: string
+  loaderVersion?: string
+  installerVersion?: string
+  customJarImportToken?: string
+  existingJarPath?: string
   clientRequestId?: string
 }
 

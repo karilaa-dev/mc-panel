@@ -15,7 +15,8 @@ public sealed class FileManagerService(
     IOptions<PanelOptions> options,
     IDbContextFactory<StateDbContext> stateFactory,
     AsyncKeyedLock keyedLock,
-    IServerProcessStatus processStatus)
+    IServerProcessStatus processStatus,
+    InstancePermissionService? permissions = null)
 {
     public IReadOnlyList<FileEntryDto> List(Guid serverId, string relativePath)
     {
@@ -65,6 +66,7 @@ public sealed class FileManagerService(
             File.Move(temporary, target, true);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        if (permissions is not null) await permissions.NormalizeAsync(serverId, cancellationToken);
     }
 
     public async Task CreateAsync(Guid serverId, string relativePath, bool directory, CancellationToken cancellationToken)
@@ -76,6 +78,7 @@ public sealed class FileManagerService(
         if (File.Exists(path) || Directory.Exists(path)) throw PanelProblems.Conflict("VALIDATION_FAILED", "The path already exists.");
         if (directory) Directory.CreateDirectory(path);
         else { Directory.CreateDirectory(Path.GetDirectoryName(path)!); using var _ = new FileStream(path, FileMode.CreateNew); }
+        if (permissions is not null) await permissions.NormalizeAsync(serverId, cancellationToken);
     }
 
     public async Task UploadAsync(Guid serverId, string relativeDirectory, IFormFile file, CancellationToken cancellationToken)
@@ -108,6 +111,7 @@ public sealed class FileManagerService(
             File.Move(temporary, target, true);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        if (permissions is not null) await permissions.NormalizeAsync(serverId, cancellationToken);
     }
 
     public (string Path, string Name) Download(Guid serverId, string relativePath)
@@ -137,6 +141,7 @@ public sealed class FileManagerService(
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
         if (sourceIsFile) File.Move(source, destination);
         else Directory.Move(source, destination);
+        if (permissions is not null) await permissions.NormalizeAsync(serverId, cancellationToken);
     }
 
     public async Task DeleteAsync(Guid serverId, string relativePath, CancellationToken cancellationToken)
@@ -191,6 +196,7 @@ public sealed class FileManagerService(
             ValidateActivation(stage, destination);
             if (!Directory.Exists(destination)) Directory.Move(stage, destination);
             else ActivateDirectory(stage, destination);
+            if (permissions is not null) await permissions.NormalizeAsync(serverId, cancellationToken);
         }
         catch (Exception exception) when (exception is InvalidDataException or NotSupportedException)
         {

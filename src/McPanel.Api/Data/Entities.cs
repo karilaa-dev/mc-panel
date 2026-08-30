@@ -2,7 +2,7 @@ using System.ComponentModel.DataAnnotations;
 
 namespace McPanel.Api.Data;
 
-public enum ServerKind { Vanilla, Paper, Fabric, Forge, NeoForge, Gate }
+public enum ServerKind { Vanilla, Paper, Fabric, Forge, NeoForge, CustomJar, Gate }
 public enum LaunchMode { Jar, ArgumentFile }
 public enum ServerState { Installing, Stopped, Starting, Running, Stopping, BackingUp, Updating, Crashed, Error }
 public enum JobState { Queued, Running, Completed, Failed }

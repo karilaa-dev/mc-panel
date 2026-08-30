@@ -164,8 +164,8 @@ test_retry_and_handoff() {
 
   export MCPANEL_HANDOFF_LOG="$handoff_log"
   invoke_prepared_installer "$prepared/mcpanel-$commit.sh" update "$prepared/artifact" "$release" "$commit" linux-x64 \
-    /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel '' ''
-  [[ "$(< "$handoff_log")" == "__apply-prepared update $prepared/artifact $release $commit linux-x64 /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel  " ]] || \
+    /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel '' '' tester
+  [[ "$(< "$handoff_log")" == "__apply-prepared update $prepared/artifact $release $commit linux-x64 /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel   tester" ]] || \
     fail "refreshed installer handoff arguments were incorrect"
   [[ "$(wc -l < "$handoff_log")" -eq 1 ]] || fail "refreshed installer ran more than once"
 
@@ -185,10 +185,10 @@ test_retry_and_handoff() {
   export PATH="$fake_bin:$PATH"
   MCPANEL_SOURCE_ONLY=0 invoke_prepared_installer "$actual_prepared/mcpanel-$actual_commit.sh" update \
     "$actual_prepared/artifact" "$actual_release" "$actual_commit" linux-x64 \
-    /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel '' ''
+    /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel '' '' tester
   export PATH="$current_path"
   [[ "$(wc -l < "$sudo_log")" -eq 1 ]] || fail "the refreshed installer did not perform one privileged handoff"
-  [[ "$(< "$sudo_log")" == "-n -- $actual_prepared/mcpanel-$actual_commit.sh __update $actual_prepared/artifact /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel" ]] || \
+  [[ "$(< "$sudo_log")" == "-n -- $actual_prepared/mcpanel-$actual_commit.sh __update $actual_prepared/artifact /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel tester" ]] || \
     fail "the refreshed installer did not apply the prepared artifact"
 }
 
@@ -244,6 +244,28 @@ test_runtime_generation_wait() {
   )
 }
 
+test_service_security_contract() {
+  local panel_unit runtime_unit
+  panel_unit="$(render_panel_unit /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel)"
+  runtime_unit="$(render_runtime_unit /opt/mcpanel /etc/mcpanel /var/lib/mcpanel)"
+  [[ "$panel_unit" == *"LoadCredential=mcpanel.setup-token"* ]] || fail "panel unit does not load the setup credential"
+  [[ "$panel_unit" == *'Environment=MCPANEL_SETUP_TOKEN_FILE=%d/mcpanel.setup-token'* ]] || fail "panel unit does not expose the credential file"
+  [[ "$panel_unit" == *"UMask=0077"* ]] || fail "panel private umask changed"
+  [[ "$runtime_unit" == *"UMask=0007"* ]] || fail "runtime group-writable umask is missing"
+  [[ "$runtime_unit" != *"LoadCredential="* ]] || fail "runtime service should not receive the setup credential"
+}
+
+test_systemd_minimum() {
+  (
+    systemctl() { printf 'systemd 246 (246.1)\n'; }
+    assert_fails "systemd 246" validate_host
+  )
+  (
+    systemctl() { printf 'systemd 247 (247.1)\n'; }
+    validate_host >/dev/null || fail "systemd 247 was rejected"
+  )
+}
+
 test_option_parsing
 test_rid_detection
 test_release_validation
@@ -252,4 +274,6 @@ test_retry_and_handoff
 test_release_identity
 test_import_option_parsing
 test_runtime_generation_wait
+test_service_security_contract
+test_systemd_minimum
 printf 'MC Panel installer tests passed.\n'

@@ -667,6 +667,7 @@ public sealed partial class ServerImportService(
             db.Servers.Add(entity);
             await db.SaveChangesAsync(cancellationToken);
             Directory.Move(root, destination);
+            if (!OperatingSystem.IsWindows()) InstancePermissionService.NormalizeTree(destination, false);
             activated = true;
             await transaction.CommitAsync(cancellationToken);
         }

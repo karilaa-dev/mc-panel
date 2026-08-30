@@ -22,7 +22,9 @@ public sealed partial class ServerInstallerService(
     AsyncKeyedLock keyedLock,
     IOptions<PanelOptions> options,
     GateProxyService gate,
-    ILogger<ServerInstallerService> logger)
+    ILogger<ServerInstallerService> logger,
+    CustomJarService? customJars = null,
+    InstancePermissionService? permissions = null)
 {
     public async Task<(ServerEntity Server, JobDto Job)> CreateAsync(CreateServerRequest request, CancellationToken cancellationToken)
     {
@@ -32,6 +34,9 @@ public sealed partial class ServerInstallerService(
             ? null : await keyedLock.AcquireAsync(Guid.ParseExact(clientRequestId, "N"), cancellationToken);
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         if (await ExistingCreateAsync(db, clientRequestId, cancellationToken) is { } existing) return existing;
+        if (request.Kind == ServerKind.CustomJar)
+            await (customJars ?? throw new InvalidOperationException("Custom JAR service is unavailable."))
+                .InspectAsync(request.CustomJarImportToken!, cancellationToken);
         var runtime = await db.JavaRuntimes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == request.JavaRuntimeId, cancellationToken)
             ?? throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
         if (await db.Servers.AnyAsync(x => x.Port == request.Port, cancellationToken))
@@ -43,6 +48,9 @@ public sealed partial class ServerInstallerService(
         if ((long)totalLimitMb * 1024 * 1024 > totalMemory * options.Value.MemoryAllocationFraction)
             throw new PanelException(400, "MEMORY_LIMIT_EXCEEDED", "The selected memory exceeds the host allocation limit.");
 
+        CustomJarService.ClaimedCustomJar? customJarClaim = null;
+        if (request.Kind == ServerKind.CustomJar)
+            customJarClaim = await customJars!.ClaimAsync(request.CustomJarImportToken!, cancellationToken);
         var entity = new ServerEntity
         {
             Id = Guid.NewGuid(), Name = request.Name.Trim(), Kind = request.Kind, Version = request.Version,
@@ -55,17 +63,32 @@ public sealed partial class ServerInstallerService(
             State = ServerState.Installing, EulaAcceptedAt = DateTimeOffset.UtcNow
         };
         var pending = OperationQueue.CreatePending("Install", entity.Id, clientRequestId);
-        db.Servers.Add(entity);
-        db.Jobs.Add(pending);
-        await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
+        try
         {
-            await db.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
+            db.Servers.Add(entity);
+            db.Jobs.Add(pending);
+            await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
+            {
+                await db.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+            }
+            var claim = customJarClaim;
+            var job = await operations.HandoffCommittedAsync(pending,
+                request.Kind == ServerKind.CustomJar
+                    ? (_, jobId, token) => InstallCustomJarAsync(entity.Id, jobId, claim!, token)
+                    : (_, jobId, token) => InstallAsync(entity.Id, jobId, request.IncludeExperimental, token), cancellationToken);
+            if (job.State == JobState.Failed)
+            {
+                customJarClaim?.Dispose();
+                await MarkHandoffFailureAsync(entity.Id);
+            }
+            return (entity, job);
         }
-        var job = await operations.HandoffCommittedAsync(pending,
-            (_, jobId, token) => InstallAsync(entity.Id, jobId, request.IncludeExperimental, token), cancellationToken);
-        if (job.State == JobState.Failed) await MarkHandoffFailureAsync(entity.Id);
-        return (entity, job);
+        catch
+        {
+            customJarClaim?.Dispose();
+            throw;
+        }
     }
 
     public async Task<(ServerEntity Server, JobDto Job)> CreateModpackAsync(
@@ -137,7 +160,9 @@ public sealed partial class ServerInstallerService(
             ?? throw PanelProblems.NotFound("Server");
         return kind == ServerKind.Gate
             ? await gate.QueueUpdateAsync(id, false, cancellationToken)
-            : await operations.EnqueueAsync("Update", id, (_, jobId, token) => UpdateAsync(id, jobId, token), cancellationToken);
+            : kind == ServerKind.CustomJar
+                ? throw PanelProblems.Conflict("CUSTOM_JAR_UPDATE_UNSUPPORTED", "Change Custom JAR software from the Software page.")
+                : await operations.EnqueueAsync("Update", id, (_, jobId, token) => UpdateAsync(id, jobId, token), cancellationToken);
     }
 
     public async Task<(ServerEntity Server, JobDto Job)> CreateGateAsync(
@@ -292,6 +317,7 @@ public sealed partial class ServerInstallerService(
             var destination = paths.Instance(id);
             if (Directory.Exists(destination)) throw PanelProblems.Conflict("SERVER_BUSY", "The managed server directory already exists.");
             Directory.Move(stage, destination);
+            if (permissions is not null) await permissions.NormalizeAsync(id, cancellationToken);
             server.State = ServerState.Stopped; server.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(cancellationToken);
             await console.AppendAsync(id, "system", $"Installed {server.Kind} {server.Version} from verified official metadata.", cancellationToken);
@@ -310,6 +336,65 @@ public sealed partial class ServerInstallerService(
             throw;
         }
         finally { if (Directory.Exists(stage)) Directory.Delete(stage, true); }
+    }
+
+    private async Task InstallCustomJarAsync(
+        Guid id, Guid jobId, CustomJarService.ClaimedCustomJar claim, CancellationToken cancellationToken)
+    {
+        using (claim)
+        using (await keyedLock.AcquireAsync(id, cancellationToken))
+        {
+            var stage = Path.Combine(paths.Staging, $"install-{id:N}-{jobId:N}");
+            try
+            {
+                if (Directory.Exists(stage)) Directory.Delete(stage, true);
+                Directory.CreateDirectory(stage);
+                await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+                var server = await db.Servers.FindAsync([id], cancellationToken) ?? throw PanelProblems.NotFound("Server");
+                var runtime = await db.JavaRuntimes.AsNoTracking().SingleOrDefaultAsync(
+                    x => x.Id == server.JavaRuntimeId, cancellationToken)
+                    ?? throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
+                var requiredJava = MinecraftJavaVersion.Required(server.Version);
+                if (runtime.Major < requiredJava)
+                    throw new PanelException(400, "JAVA_VERSION_INCOMPATIBLE", $"Minecraft {server.Version} requires Java {requiredJava} or newer.");
+                await operations.ProgressAsync(jobId, 30, "Validating the uploaded executable JAR", cancellationToken);
+                CustomJarService.ValidateExecutableJar(claim.JarPath);
+                File.Copy(claim.JarPath, Path.Combine(stage, "custom-server.jar"), false);
+                await operations.ProgressAsync(jobId, 70, "Writing initial configuration", cancellationToken);
+                await File.WriteAllTextAsync(Path.Combine(stage, "eula.txt"),
+                    $"# Accepted through MC Panel at {server.EulaAcceptedAt:O}{Environment.NewLine}eula=true{Environment.NewLine}",
+                    new UTF8Encoding(false), cancellationToken);
+                var properties = PropertiesDocument.Empty();
+                properties.Set("server-port", server.Port.ToString()); properties.Set("motd", server.Name);
+                properties.Set("max-players", "20"); properties.Set("online-mode", "true");
+                await File.WriteAllTextAsync(Path.Combine(stage, "server.properties"), properties.ToString(), new UTF8Encoding(false), cancellationToken);
+                var destination = paths.Instance(id);
+                if (Directory.Exists(destination)) throw PanelProblems.Conflict("SERVER_BUSY", "The managed server directory already exists.");
+                Directory.Move(stage, destination);
+                server.LaunchMode = LaunchMode.Jar;
+                server.LaunchTarget = "custom-server.jar";
+                server.RequiredJavaMajor = requiredJava;
+                server.IsExperimental = false;
+                server.State = ServerState.Stopped;
+                server.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(cancellationToken);
+                if (permissions is not null) await permissions.NormalizeAsync(id, cancellationToken);
+                await console.AppendAsync(id, "system", $"Installed custom JAR {claim.FileName} for Minecraft {server.Version}.", cancellationToken);
+                await operations.ProgressAsync(jobId, 95, "Custom JAR installation complete", cancellationToken);
+            }
+            catch
+            {
+                try
+                {
+                    await using var failureDb = await stateFactory.CreateDbContextAsync(CancellationToken.None);
+                    var server = await failureDb.Servers.FindAsync([id], CancellationToken.None);
+                    if (server is not null) { server.State = ServerState.Error; server.UpdatedAt = DateTimeOffset.UtcNow; await failureDb.SaveChangesAsync(); }
+                }
+                catch (Exception exception) { logger.LogWarning(exception, "Could not record custom JAR installation failure"); }
+                throw;
+            }
+            finally { if (Directory.Exists(stage)) Directory.Delete(stage, true); }
+        }
     }
 
     private async Task InstallModpackAsync(
@@ -376,6 +461,7 @@ public sealed partial class ServerInstallerService(
                 var destination = paths.Instance(id);
                 if (Directory.Exists(destination)) throw PanelProblems.Conflict("SERVER_BUSY", "The managed server directory already exists.");
                 Directory.Move(stage, destination);
+                if (permissions is not null) await permissions.NormalizeAsync(id, cancellationToken);
                 server.State = ServerState.Stopped;
                 server.UpdatedAt = DateTimeOffset.UtcNow;
                 await db.SaveChangesAsync(cancellationToken);
@@ -444,6 +530,7 @@ public sealed partial class ServerInstallerService(
             server.IsExperimental = plan.Experimental;
             server.State = ServerState.Stopped; server.RestartRequired = false; server.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(cancellationToken);
+            if (permissions is not null) await permissions.NormalizeAsync(id, cancellationToken);
             await console.AppendAsync(id, "system", $"Updated {server.Kind} for Minecraft {server.Version}.", cancellationToken);
         }
         catch
@@ -453,7 +540,7 @@ public sealed partial class ServerInstallerService(
         finally { if (Directory.Exists(stage)) Directory.Delete(stage, true); }
     }
 
-    private async Task<(LaunchMode Mode, string Target)> RunLoaderInstallerAsync(
+    internal async Task<(LaunchMode Mode, string Target)> RunLoaderInstallerAsync(
         ServerEntity server,
         string javaPath,
         InstallPlan plan,
@@ -544,13 +631,17 @@ public sealed partial class ServerInstallerService(
         foreach (var directory in Directory.EnumerateDirectories(source)) CopyDirectory(directory, Path.Combine(destination, Path.GetFileName(directory)));
     }
 
-    private static bool IsModLoader(ServerKind kind) => kind is ServerKind.Fabric or ServerKind.Forge or ServerKind.NeoForge;
+    internal static bool IsModLoader(ServerKind kind) => kind is ServerKind.Fabric or ServerKind.Forge or ServerKind.NeoForge;
 
     private static void Validate(CreateServerRequest request)
     {
         if (request is null) throw PanelProblems.Validation("A server request is required.");
         if (request.Kind == ServerKind.Gate)
             throw PanelProblems.Validation("Create Gate through the Gate Proxy server type workflow.");
+        if (request.Kind == ServerKind.CustomJar && string.IsNullOrWhiteSpace(request.CustomJarImportToken))
+            throw PanelProblems.Validation("Upload an executable custom JAR before creating the server.");
+        if (request.Kind != ServerKind.CustomJar && !string.IsNullOrWhiteSpace(request.CustomJarImportToken))
+            throw PanelProblems.Validation("A custom JAR import token is only valid for Custom JAR servers.");
         ValidateCommon(request.Name, request.Version, request.JavaRuntimeId, request.MemoryMb,
             request.Port, request.EulaAccepted);
         if (request.Version.Length > 64 || request.Build?.Length > 64 || request.LoaderVersion?.Length > 64 || request.InstallerVersion?.Length > 64)

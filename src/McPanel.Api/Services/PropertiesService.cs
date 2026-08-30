@@ -94,7 +94,8 @@ public sealed class PropertiesService(
     IOptions<PanelOptions> options,
     AsyncKeyedLock keyedLock,
     IServerProcessStatus processStatus,
-    GateProxyService gate)
+    GateProxyService gate,
+    InstancePermissionService? permissions = null)
 {
     private const int MaxMotdLength = 512;
     private const int MaxWorldNameLength = 128;
@@ -171,6 +172,7 @@ public sealed class PropertiesService(
         if (portChanged) await gate.MarkBackendChangedAsync(db, id, cancellationToken);
         if (changed) await SaveWithAtomicPropertiesAsync(db, file, updatedText, fileExists, cancellationToken);
         else await db.SaveChangesAsync(cancellationToken);
+        if (permissions is not null) await permissions.NormalizeAsync(id, cancellationToken);
         var updatedBytes = new UTF8Encoding(false).GetBytes(updatedText);
         return PropertiesDto(updatedText, Revision(updatedBytes), server.Version);
     }
@@ -284,6 +286,7 @@ public sealed class PropertiesService(
         if (portChanged) await gate.MarkBackendChangedAsync(db, id, cancellationToken);
         if (changedProperties) await SaveWithAtomicPropertiesAsync(db, file, updatedText, fileExists, cancellationToken);
         else await db.SaveChangesAsync(cancellationToken);
+        if (permissions is not null) await permissions.NormalizeAsync(id, cancellationToken);
         return dto;
     }
 

@@ -89,6 +89,7 @@ builder.Services.AddHttpClient("minecraft-profile", client =>
 }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, AutomaticDecompression = System.Net.DecompressionMethods.All });
 
 builder.Services.AddSingleton<AsyncKeyedLock>(); builder.Services.AddSingleton<SafePathResolver>(); builder.Services.AddSingleton<SessionAudience>();
+builder.Services.AddSingleton<InstancePermissionService>(); builder.Services.AddSingleton<CustomJarService>();
 builder.Services.AddSingleton<CgroupMemoryService>();
 builder.Services.AddSingleton<ValidatedDownloadClient>(); builder.Services.AddSingleton<DistributionCatalogService>();
 builder.Services.AddSingleton<JavaDiscoveryService>(); builder.Services.AddSingleton<ConsoleService>();
@@ -105,6 +106,7 @@ builder.Services.AddSingleton<HostMetricsService>(); builder.Services.AddHostedS
 builder.Services.AddSingleton<SchedulerService>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<SchedulerService>());
 builder.Services.AddSingleton<ModrinthService>(); builder.Services.AddSingleton<ModpackService>(); builder.Services.AddSingleton<ModrinthModInstallerService>();
 builder.Services.AddSingleton<ServerInstallerService>(); builder.Services.AddSingleton<PropertiesService>(); builder.Services.AddSingleton<ServerIconService>(); builder.Services.AddSingleton<FileManagerService>(); builder.Services.AddSingleton<ModMetadataService>();
+builder.Services.AddSingleton<ServerSoftwareService>();
 builder.Services.AddSingleton<BackupService>(); builder.Services.AddSingleton<PlayerService>(); builder.Services.AddSingleton<PlayerInventoryService>(); builder.Services.AddSingleton<ServerQueryService>(); builder.Services.AddSingleton<AdminAuthService>();
 builder.Services.AddSingleton<IPasswordHasher<AdminEntity>, PasswordHasher<AdminEntity>>();
 
@@ -186,6 +188,8 @@ static async Task InitializeAsync(IServiceProvider services)
     }
     services.GetRequiredService<SessionAudience>().Initialize(sessionStamp);
     services.GetRequiredService<ModpackService>().CleanupExpiredImports();
+    services.GetRequiredService<CustomJarService>().CleanupExpiredImports();
+    await scope.ServiceProvider.GetRequiredService<InstancePermissionService>().NormalizeAllAsync(CancellationToken.None);
     await scope.ServiceProvider.GetRequiredService<ServerIconService>().BackfillAsync(CancellationToken.None);
     await using (var console = await consoleFactory.CreateDbContextAsync())
     {

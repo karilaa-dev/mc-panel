@@ -30,6 +30,7 @@ All paths below use the `/api/v1` prefix.
 | `/servers` | Server creation, settings, lifecycle, console, and deletion |
 | `/servers/{id}/properties` | Versioned `server.properties` editing |
 | `/servers/{id}/runtime` | Java, memory, JVM arguments, and recovery settings |
+| `/servers/{id}/software` | Regular-server software metadata and stopped-only core changes |
 | `/servers/{id}/players` | Player actions and saved inventory access |
 | `/servers/{id}/files` | Confined file listing, editing, upload, and download |
 | `/servers/{id}/backups` | Backup creation, download, restore, and deletion |
@@ -40,6 +41,7 @@ All paths below use the `/api/v1` prefix.
 | `/modrinth` | Project search, versions, and modpack imports |
 | `/java` | Runtime discovery and custom executable validation |
 | `/catalog` | Minecraft distributions, versions, and builds |
+| `/server-jars/imports` | Single-use executable Custom JAR uploads |
 | `/jobs` | Status for queued operations |
 | `/system` | Host metrics, panel information, and global settings |
 
@@ -47,6 +49,13 @@ Server creation and lifecycle operations return `202 Accepted` with a durable
 job. A client may give creation requests a UUID named `clientRequestId`.
 Repeating the UUID returns the first server and job instead of creating another
 server.
+
+`CustomJar` is a regular server kind. A custom creation consumes one upload
+token from `POST /server-jars/imports`; tokens expire after one hour. A software
+change accepts either one upload token or one safe in-instance JAR path, never
+both. `POST /servers/{id}/software/change` requires a stopped non-Gate server,
+can create a backup before staging, and returns a durable `ChangeSoftware` job.
+Manual changes preserve instance content and clear Modrinth pack linkage.
 
 Writes that can race with another browser or filesystem change use an expected
 revision. A stale revision returns a conflict instead of overwriting newer

@@ -16,7 +16,8 @@ public sealed class BackupService(
     OperationQueue operations,
     AsyncKeyedLock keyedLock,
     SafePathResolver resolver,
-    IOptions<PanelOptions> options)
+    IOptions<PanelOptions> options,
+    InstancePermissionService? permissions = null)
 {
     public async Task<IReadOnlyList<BackupDto>> ListAsync(Guid serverId, CancellationToken cancellationToken)
     {
@@ -67,7 +68,7 @@ public sealed class BackupService(
         await CreateLockedAsync(serverId, jobId, reason, cancellationToken);
     }
 
-    private async Task<BackupEntity> CreateLockedAsync(Guid serverId, Guid jobId, string reason, CancellationToken cancellationToken)
+    internal async Task<BackupEntity> CreateLockedAsync(Guid serverId, Guid jobId, string reason, CancellationToken cancellationToken)
     {
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var server = await db.Servers.FindAsync([serverId], cancellationToken) ?? throw PanelProblems.NotFound("Server");
@@ -165,6 +166,7 @@ public sealed class BackupService(
             try { Directory.Move(stage, current); }
             catch { Directory.Move(old, current); throw; }
             Directory.Delete(old, true);
+            if (permissions is not null) await permissions.NormalizeAsync(serverId, cancellationToken);
             server.RestartRequired = false; server.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(cancellationToken);
             await console.AppendAsync(serverId, "system", $"Restored backup {backup.FileName}.", cancellationToken);

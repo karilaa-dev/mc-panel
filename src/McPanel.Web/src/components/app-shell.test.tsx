@@ -121,6 +121,7 @@ describe("AppShell", () => {
     expect(screen.queryByRole("link", { name: "Connection" })).not.toBeInTheDocument()
     expect(screen.getByRole("link", { name: "Server icon" })).toBeVisible()
     expect(screen.getByRole("link", { name: "Runtime" })).toBeVisible()
+    expect(screen.getByRole("link", { name: "Software" })).toHaveAttribute("href", "/servers/server-1/software")
     expect(screen.queryByRole("link", { name: "Mods" })).not.toBeInTheDocument()
     expect(screen.getByRole("link", { name: "Plugins" })).toHaveAttribute("href", "/servers/server-1/plugins")
 
@@ -155,5 +156,6 @@ describe("AppShell", () => {
     expect(screen.getByRole("link", { name: "Gate settings" })).toHaveAttribute("href", "/servers/gate-1/gate")
     expect(screen.queryByRole("link", { name: "Server properties" })).not.toBeInTheDocument()
     expect(screen.queryByRole("link", { name: "Players" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("link", { name: "Software" })).not.toBeInTheDocument()
   })
 })

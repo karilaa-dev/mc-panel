@@ -1,0 +1,350 @@
+using McPanel.Api.Configuration;
+using McPanel.Api.Contracts;
+using McPanel.Api.Data;
+using McPanel.Api.Infrastructure;
+using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
+
+namespace McPanel.Api.Services;
+
+public sealed class ServerSoftwareService(
+    PanelPaths paths,
+    IDbContextFactory<StateDbContext> stateFactory,
+    DistributionCatalogService catalog,
+    ValidatedDownloadClient downloads,
+    ServerInstallerService installer,
+    CustomJarService customJars,
+    BackupService backups,
+    OperationQueue operations,
+    ConsoleService console,
+    AsyncKeyedLock keyedLock,
+    IServerProcessStatus processStatus,
+    InstancePermissionService permissions,
+    ModpackService modpacks,
+    ILogger<ServerSoftwareService> logger)
+{
+    public async Task<ServerSoftwareDto> GetAsync(Guid serverId, CancellationToken cancellationToken)
+    {
+        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+        var server = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == serverId, cancellationToken)
+            ?? throw PanelProblems.NotFound("Server");
+        EnsureRegular(server);
+        return new ServerSoftwareDto(
+            server.Kind, server.Version, server.DistributionBuild, server.LoaderVersion, server.InstallerVersion,
+            server.LaunchMode, server.LaunchTarget, server.JavaRuntimeId, server.RequiredJavaMajor,
+            server.IsExperimental, customJars.Candidates(paths.Instance(serverId)));
+    }
+
+    public async Task<JobDto> QueueChangeAsync(Guid serverId, ChangeServerSoftwareRequest request, CancellationToken cancellationToken)
+    {
+        Validate(request);
+        var requestId = NormalizeRequestId(request.ClientRequestId);
+        await using (var db = await stateFactory.CreateDbContextAsync(cancellationToken))
+        {
+            if (requestId is not null && await db.Jobs.AsNoTracking()
+                    .SingleOrDefaultAsync(x => x.ClientRequestId == requestId, cancellationToken) is { } existing)
+                return await operations.GetAsync(existing.Id, cancellationToken)
+                    ?? throw new PanelException(500, "OPERATION_FAILED", "The existing software change job could not be loaded.");
+            var server = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == serverId, cancellationToken)
+                ?? throw PanelProblems.NotFound("Server");
+            EnsureRegular(server);
+            EnsureStopped(server);
+            if (request.Kind == ServerKind.CustomJar && request.CustomJarImportToken is { Length: > 0 } token)
+                await customJars.InspectAsync(token, cancellationToken);
+        }
+        return await operations.EnqueueAsync("ChangeSoftware", serverId,
+            (_, jobId, token) => ChangeAsync(serverId, jobId, request, token), cancellationToken, requestId);
+    }
+
+    private async Task ChangeAsync(Guid serverId, Guid jobId, ChangeServerSoftwareRequest request, CancellationToken cancellationToken)
+    {
+        using var serverLock = await keyedLock.AcquireAsync(serverId, cancellationToken);
+        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+        var server = await db.Servers.FindAsync([serverId], cancellationToken) ?? throw PanelProblems.NotFound("Server");
+        EnsureRegular(server);
+        EnsureStopped(server);
+        var original = SoftwareMetadataSnapshot.Capture(server);
+        var runtime = await db.JavaRuntimes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == request.JavaRuntimeId, cancellationToken)
+            ?? throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
+
+        if (request.CreateBackup)
+        {
+            await operations.ProgressAsync(jobId, 5, "Creating the pre-change backup", cancellationToken);
+            await backups.CreateLockedAsync(serverId, jobId, "Before software change", cancellationToken);
+            await db.Entry(server).ReloadAsync(cancellationToken);
+            EnsureStopped(server);
+        }
+
+        server.State = ServerState.Updating;
+        await db.SaveChangesAsync(cancellationToken);
+        var stage = Path.Combine(paths.Staging, $"software-{serverId:N}-{jobId:N}");
+        var rollback = Path.Combine(paths.Staging, $"software-rollback-{serverId:N}-{jobId:N}");
+        CustomJarService.ClaimedCustomJar? claim = null;
+        ActivationOverlay? activation = null;
+        var committed = false;
+        try
+        {
+            Directory.CreateDirectory(stage);
+            var launchMode = LaunchMode.Jar;
+            string launchTarget;
+            string? build = null;
+            string? loader = null;
+            string? installerVersion = null;
+            bool experimental = false;
+            int requiredJava;
+
+            if (request.Kind == ServerKind.CustomJar)
+            {
+                requiredJava = MinecraftJavaVersion.Required(request.Version);
+                EnsureJava(runtime.Major, requiredJava, request.Kind, request.Version);
+                if (request.CustomJarImportToken is { Length: > 0 } token)
+                {
+                    await operations.ProgressAsync(jobId, 25, "Validating the uploaded custom JAR", cancellationToken);
+                    claim = await customJars.ClaimAsync(token, cancellationToken);
+                    File.Copy(claim.JarPath, Path.Combine(stage, "custom-server.jar"), false);
+                    launchTarget = "custom-server.jar";
+                }
+                else
+                {
+                    launchTarget = customJars.ResolveExisting(paths.Instance(serverId), request.ExistingJarPath!);
+                }
+            }
+            else
+            {
+                await operations.ProgressAsync(jobId, 15, "Resolving official software metadata", cancellationToken);
+                var plan = await catalog.ResolveAsync(request.Kind, request.Version, request.Build,
+                    request.LoaderVersion, request.InstallerVersion, request.IncludeExperimental, cancellationToken);
+                requiredJava = plan.RequiredJavaMajor;
+                EnsureJava(runtime.Major, requiredJava, request.Kind, request.Version);
+                var artifact = Path.Combine(stage, plan.Artifact.FileName);
+                await operations.ProgressAsync(jobId, 30, "Downloading and verifying server software", cancellationToken);
+                await downloads.DownloadAsync(plan.Artifact, artifact, cancellationToken);
+                if (ServerInstallerService.IsModLoader(request.Kind))
+                {
+                    var target = new ServerEntity
+                    {
+                        Id = server.Id, Name = server.Name, Kind = request.Kind, Version = request.Version,
+                        JavaRuntimeId = runtime.Id
+                    };
+                    await operations.ProgressAsync(jobId, 50, $"Running the verified {request.Kind} installer", cancellationToken);
+                    var launch = await installer.RunLoaderInstallerAsync(target, runtime.Path, plan, artifact, stage, cancellationToken);
+                    File.Delete(artifact);
+                    Directory.CreateDirectory(Path.Combine(stage, "mods"));
+                    launchMode = launch.Mode;
+                    launchTarget = launch.Target;
+                    loader = plan.LoaderVersion;
+                    installerVersion = plan.InstallerVersion;
+                }
+                else
+                {
+                    File.Move(artifact, Path.Combine(stage, "server.jar"));
+                    launchTarget = "server.jar";
+                    build = plan.Build;
+                }
+                experimental = plan.Experimental;
+            }
+
+            await operations.ProgressAsync(jobId, 70, "Activating the new launch files", cancellationToken);
+            activation = new ActivationOverlay(stage, paths.Instance(serverId), rollback);
+            activation.Activate();
+            server.Kind = request.Kind;
+            server.Version = request.Version.Trim();
+            server.DistributionBuild = build;
+            server.LoaderVersion = loader;
+            server.InstallerVersion = installerVersion;
+            server.LaunchMode = launchMode;
+            server.LaunchTarget = launchTarget.Replace(Path.DirectorySeparatorChar, '/');
+            server.JavaRuntimeId = runtime.Id;
+            server.RequiredJavaMajor = requiredJava;
+            server.IsExperimental = experimental;
+            server.ModpackName = null;
+            server.ModpackVersion = null;
+            server.ModrinthProjectId = null;
+            server.ModrinthVersionId = null;
+            server.ModpackSource = null;
+            server.RestartRequired = false;
+            server.State = ServerState.Stopped;
+            server.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(cancellationToken);
+            await permissions.NormalizeAsync(serverId, cancellationToken);
+            activation.Commit();
+            committed = true;
+            try { modpacks.Delete(serverId); }
+            catch (Exception exception) { logger.LogWarning(exception, "Could not remove stale modpack baseline for {ServerId}", serverId); }
+            try
+            {
+                await console.AppendAsync(serverId, "system",
+                    $"Changed server software to {(request.Kind == ServerKind.CustomJar ? "Custom JAR" : request.Kind)} for Minecraft {server.Version}. Existing worlds and content were preserved.",
+                    cancellationToken);
+            }
+            catch (Exception exception) { logger.LogWarning(exception, "Could not append software change log for {ServerId}", serverId); }
+            await operations.ProgressAsync(jobId, 95, "Software change complete", cancellationToken);
+        }
+        catch
+        {
+            if (!committed)
+            {
+                try { activation?.Rollback(); } catch { }
+                original.Restore(server);
+                try { await db.SaveChangesAsync(CancellationToken.None); } catch { }
+            }
+            throw;
+        }
+        finally
+        {
+            claim?.Dispose();
+            try { if (Directory.Exists(stage)) Directory.Delete(stage, true); } catch { }
+            try { if (Directory.Exists(rollback)) Directory.Delete(rollback, true); } catch { }
+        }
+    }
+
+    private void EnsureStopped(ServerEntity server)
+    {
+        if (server.State != ServerState.Stopped || processStatus.IsRunning(server.Id))
+            throw PanelProblems.Conflict("SERVER_NOT_STOPPED", "Stop the server before changing its software.");
+    }
+
+    private static void EnsureRegular(ServerEntity server)
+    {
+        if (server.Kind == ServerKind.Gate)
+            throw PanelProblems.Conflict("GATE_SOFTWARE_UNSUPPORTED", "Gate proxy software is managed from the Gate page.");
+    }
+
+    private static void EnsureJava(int actual, int required, ServerKind kind, string version)
+    {
+        if (actual < required || kind == ServerKind.Forge && required == 8 && actual != 8)
+            throw new PanelException(400, "JAVA_VERSION_INCOMPATIBLE", $"Minecraft {version} requires Java {required}{(kind == ServerKind.Forge && required == 8 ? " exactly" : " or newer")}.");
+    }
+
+    private static void Validate(ChangeServerSoftwareRequest request)
+    {
+        if (request is null) throw PanelProblems.Validation("A software change request is required.");
+        if (request.Kind == ServerKind.Gate) throw PanelProblems.Validation("Gate is not regular server software.");
+        if (string.IsNullOrWhiteSpace(request.Version) || request.Version.Length > 64 || string.IsNullOrWhiteSpace(request.JavaRuntimeId))
+            throw PanelProblems.Validation("Minecraft version and Java runtime are required.");
+        var upload = !string.IsNullOrWhiteSpace(request.CustomJarImportToken);
+        var existing = !string.IsNullOrWhiteSpace(request.ExistingJarPath);
+        if (request.Kind == ServerKind.CustomJar && upload == existing)
+            throw PanelProblems.Validation("Choose exactly one custom JAR source: a new upload or an existing JAR.");
+        if (request.Kind != ServerKind.CustomJar && (upload || existing))
+            throw PanelProblems.Validation("Custom JAR sources are only valid for Custom JAR software.");
+        if (request.Build?.Length > 64 || request.LoaderVersion?.Length > 64 || request.InstallerVersion?.Length > 64)
+            throw PanelProblems.Validation("Software metadata values are too long.");
+    }
+
+    private static string? NormalizeRequestId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (!Guid.TryParse(value, out var id)) throw PanelProblems.Validation("The client request identifier must be a UUID.");
+        return id.ToString("N");
+    }
+
+    private sealed record SoftwareMetadataSnapshot(
+        ServerKind Kind, string Version, string? Build, string? Loader, string? Installer,
+        LaunchMode LaunchMode, string LaunchTarget, string JavaRuntimeId, int RequiredJava,
+        bool Experimental, string? ModpackName, string? ModpackVersion, string? ProjectId,
+        string? VersionId, string? ModpackSource, bool RestartRequired)
+    {
+        public static SoftwareMetadataSnapshot Capture(ServerEntity server) => new(
+            server.Kind, server.Version, server.DistributionBuild, server.LoaderVersion, server.InstallerVersion,
+            server.LaunchMode, server.LaunchTarget, server.JavaRuntimeId, server.RequiredJavaMajor,
+            server.IsExperimental, server.ModpackName, server.ModpackVersion, server.ModrinthProjectId,
+            server.ModrinthVersionId, server.ModpackSource, server.RestartRequired);
+
+        public void Restore(ServerEntity server)
+        {
+            server.Kind = Kind; server.Version = Version; server.DistributionBuild = Build;
+            server.LoaderVersion = Loader; server.InstallerVersion = Installer; server.LaunchMode = LaunchMode;
+            server.LaunchTarget = LaunchTarget; server.JavaRuntimeId = JavaRuntimeId;
+            server.RequiredJavaMajor = RequiredJava; server.IsExperimental = Experimental;
+            server.ModpackName = ModpackName; server.ModpackVersion = ModpackVersion;
+            server.ModrinthProjectId = ProjectId; server.ModrinthVersionId = VersionId;
+            server.ModpackSource = ModpackSource; server.RestartRequired = RestartRequired;
+            server.State = ServerState.Stopped; server.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+    }
+
+    private sealed class ActivationOverlay(string source, string destination, string rollback)
+    {
+        private readonly List<string> _installed = [];
+        private readonly List<(string Backup, string Target)> _replaced = [];
+        private readonly List<string> _createdDirectories = [];
+        private bool _committed;
+
+        private string ManifestPath => Path.Combine(rollback, "activation-manifest.json");
+
+        public void Activate()
+        {
+            Directory.CreateDirectory(destination);
+            var files = Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories).ToList();
+            foreach (var file in files)
+            {
+                var relative = Path.GetRelativePath(source, file);
+                var target = Path.Combine(destination, relative);
+                if (Directory.Exists(target)) throw PanelProblems.Conflict("SOFTWARE_ACTIVATION_CONFLICT", $"A directory blocks {relative}.");
+                var parent = Path.GetDirectoryName(target)!;
+                CreateParents(parent);
+                if (File.Exists(target))
+                {
+                    var backup = Path.Combine(rollback, relative);
+                    Directory.CreateDirectory(Path.GetDirectoryName(backup)!);
+                    File.Move(target, backup);
+                    _replaced.Add((backup, target));
+                }
+                File.Move(file, target);
+                _installed.Add(target);
+                WriteManifest();
+            }
+        }
+
+        public void Commit()
+        {
+            _committed = true;
+            try { if (Directory.Exists(rollback)) Directory.Delete(rollback, true); } catch { }
+        }
+
+        public void Rollback()
+        {
+            if (_committed) return;
+            foreach (var target in _installed.AsEnumerable().Reverse())
+                if (File.Exists(target)) File.Delete(target);
+            foreach (var item in _replaced.AsEnumerable().Reverse())
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(item.Target)!);
+                if (File.Exists(item.Backup)) File.Move(item.Backup, item.Target, true);
+            }
+            foreach (var directory in _createdDirectories.AsEnumerable().Reverse())
+                if (Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any()) Directory.Delete(directory);
+        }
+
+        private void CreateParents(string directory)
+        {
+            var missing = new Stack<string>();
+            var current = directory;
+            while (!Directory.Exists(current))
+            {
+                if (File.Exists(current)) throw PanelProblems.Conflict("SOFTWARE_ACTIVATION_CONFLICT", "A file blocks a required software directory.");
+                missing.Push(current);
+                current = Path.GetDirectoryName(current)!;
+            }
+            while (missing.TryPop(out var item))
+            {
+                Directory.CreateDirectory(item);
+                _createdDirectories.Add(item);
+            }
+        }
+
+        private void WriteManifest()
+        {
+            Directory.CreateDirectory(rollback);
+            var temporary = ManifestPath + ".tmp";
+            File.WriteAllText(temporary, JsonSerializer.Serialize(new
+            {
+                installed = _installed,
+                replaced = _replaced.Select(item => new { backup = item.Backup, target = item.Target }),
+                createdDirectories = _createdDirectories
+            }));
+            File.Move(temporary, ManifestPath, true);
+        }
+    }
+}

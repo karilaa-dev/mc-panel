@@ -39,6 +39,15 @@ public static partial class ApiEndpoints
             var (_, job) = await installer.CreateGateAsync(request, token);
             return Results.Accepted($"/api/v1/jobs/{job.Id}", job);
         });
+        api.MapPost("/server-jars/imports", PrepareCustomJarUploadAsync);
+        api.MapGet("/servers/{id:guid}/software", (Guid id, ServerSoftwareService software, CancellationToken token) =>
+            software.GetAsync(id, token));
+        api.MapPost("/servers/{id:guid}/software/change", async (
+            Guid id, ChangeServerSoftwareRequest request, ServerSoftwareService software, CancellationToken token) =>
+        {
+            var job = await software.QueueChangeAsync(id, request, token);
+            return Results.Accepted($"/api/v1/jobs/{job.Id}", job);
+        });
         api.MapDelete("/servers/{id:guid}", DeleteServerAsync);
         api.MapPost("/servers/{id:guid}/actions/{action}", HandleActionAsync);
         foreach (var action in new[] { "start", "stop", "restart", "update" })
@@ -326,6 +335,20 @@ public static partial class ApiEndpoints
         catch (InvalidDataException) { throw PanelProblems.Validation("The multipart form data is invalid."); }
         var file = form.Files.GetFile("file") ?? throw PanelProblems.Validation("Multipart field 'file' is required.");
         return await service.PrepareUploadAsync(file, token);
+    }
+
+    private static async Task<CustomJarImportDto> PrepareCustomJarUploadAsync(
+        HttpRequest request, CustomJarService service, CancellationToken token)
+    {
+        if (!request.HasFormContentType) throw PanelProblems.Validation("Custom JAR upload must use multipart/form-data.");
+        IFormCollection form;
+        try { form = await request.ReadFormAsync(token); }
+        catch (InvalidDataException exception) when (exception.Message.Contains("length limit", StringComparison.OrdinalIgnoreCase))
+        { throw new PanelException(413, "UPLOAD_TOO_LARGE", "The uploaded JAR exceeds the configured limit."); }
+        catch (InvalidDataException) { throw PanelProblems.Validation("The multipart form data is invalid."); }
+        if (form.Files.Count != 1) throw PanelProblems.Validation("Upload exactly one JAR file.");
+        var file = form.Files.GetFile("file") ?? throw PanelProblems.Validation("Multipart field 'file' is required.");
+        return await service.PrepareAsync(file, token);
     }
 
     private static async Task<IResult> UploadAsync(Guid id, string? path, HttpRequest request, FileManagerService files, CancellationToken token)

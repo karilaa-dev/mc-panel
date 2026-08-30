@@ -15,7 +15,8 @@ public sealed class ModrinthModInstallerService(
     AsyncKeyedLock keyedLock,
     IDbContextFactory<StateDbContext> stateFactory,
     IServerProcessStatus processStatus,
-    ConsoleService console)
+    ConsoleService console,
+    InstancePermissionService? permissions = null)
 {
     private const long MaximumCombinedArtifactBytes = 1_073_741_824;
 
@@ -225,6 +226,7 @@ public sealed class ModrinthModInstallerService(
                 server.RestartRequired |= server.State == ServerState.Running;
                 server.UpdatedAt = DateTimeOffset.UtcNow;
                 await db.SaveChangesAsync(cancellationToken);
+                if (permissions is not null) await permissions.NormalizeAsync(serverId, cancellationToken);
             }
             catch
             {

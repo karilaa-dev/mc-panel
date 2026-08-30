@@ -1,7 +1,7 @@
 # MC Panel
 
 MC Panel manages Minecraft servers from a web browser. It supports Vanilla,
-Paper, Fabric, Forge, NeoForge, Modrinth packs, and Minekube Gate proxies. The
+Paper, Fabric, Forge, NeoForge, custom executable JARs, Modrinth packs, and Minekube Gate proxies. The
 panel handles installs, Java selection, console access, files, players,
 backups, schedules, mods, and plugins.
 
@@ -15,7 +15,7 @@ Java itself.
 
 ## Requirements
 
-- Debian or Ubuntu with systemd and cgroup v2
+- Debian or Ubuntu with systemd 247 or newer and cgroup v2
 - An x86-64 or ARM64 processor
 - `curl`, GNU `tar`, and `sha256sum`
 - Passwordless `sudo` for the installer
@@ -61,11 +61,22 @@ same network and use that token to create the administrator account. Root can
 read the token again before setup:
 
 ```bash
-sudo cat /etc/mcpanel/setup-token
+sudo cat /etc/credstore/mcpanel.setup-token
 ```
 
-The panel has one administrator account. The setup token stops working after
+The token is stored as a protected systemd credential rather than in the
+environment file. The panel has one administrator account. The setup token stops working after
 that account exists.
+
+The installer adds the invoking account to the `mcpanel` group. Sign out and
+back in once after install or update. That group membership lets the regular
+account read and edit regular server instance files without opening panel
+databases, backups, Gate instances, keys, or runtime state.
+
+When creating a server, choose `Regular server` or `Proxy`. Regular servers can
+use verified official software, a Modrinth pack, or an uploaded executable
+Custom JAR. A regular server also has a Software page for changing its core,
+Minecraft version, loader or build, Java runtime, or launch JAR while stopped.
 
 ## Import an existing server
 
@@ -117,7 +128,8 @@ restored.
 ```
 
 `update` downloads the newest build from the selected release and replaces the
-installed application. It does nothing when that commit is already installed.
+installed application. When that commit is already installed, it still repairs
+credentials, group membership, permissions, and systemd units.
 Running Minecraft servers stay online during a normal panel update. You can
 rerun the saved installer without downloading it again:
 
@@ -140,7 +152,8 @@ The default installation paths are:
 | Path | Contents |
 | --- | --- |
 | `/opt/mcpanel` | Application files |
-| `/etc/mcpanel` | Service configuration and setup token |
+| `/etc/mcpanel` | Root-owned, generally readable service configuration (no secrets) |
+| `/etc/credstore/mcpanel.setup-token` | Root-only systemd setup credential |
 | `/var/lib/mcpanel` | Databases, server instances, logs, and backups |
 
 See [deploy/README.md](deploy/README.md) for Java discovery, service commands,

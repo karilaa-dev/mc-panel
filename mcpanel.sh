@@ -16,6 +16,7 @@ readonly RELEASE_METADATA_NAME=".mcpanel-release"
 readonly GITHUB_RELEASE_BASE_URL="${MCPANEL_RELEASE_BASE_URL:-https://github.com/$GITHUB_REPOSITORY/releases/download}"
 readonly PANEL_USER="mcpanel"
 readonly PANEL_GROUP="mcpanel"
+readonly CREDENTIAL_STORE_DIR="/etc/credstore"
 
 script_path="$(realpath -e -- "${BASH_SOURCE[0]}")"
 repo_root="$(dirname -- "$script_path")"
@@ -179,6 +180,7 @@ validate_service_name() {
 }
 
 validate_host() {
+  local systemd_version
   [[ -r /etc/os-release ]] || die "cannot identify this operating system"
   # shellcheck disable=SC1091
   source /etc/os-release
@@ -186,7 +188,72 @@ validate_host() {
     debian|ubuntu) ;;
     *) die "only Debian and Ubuntu systemd hosts are supported (detected ${ID:-unknown})" ;;
   esac
+  systemd_version="$(systemctl --version | awk 'NR == 1 { print $2; exit }')"
+  [[ "$systemd_version" =~ ^[0-9]+$ ]] || die "could not determine the systemd version"
+  ((systemd_version >= 247)) || die "systemd 247 or newer is required (detected $systemd_version)"
   detect_rid >/dev/null
+}
+
+validate_access_user() {
+  local access_user="$1" passwd_entry uid
+  [[ "$access_user" =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ ]] || die "invalid invoking user"
+  passwd_entry="$(getent passwd "$access_user")" || die "invoking user does not exist: $access_user"
+  IFS=: read -r _ _ uid _ _ _ _ <<< "$passwd_entry"
+  [[ "$uid" =~ ^[0-9]+$ && "$uid" -ne 0 ]] || die "the invoking account must be a regular user"
+}
+
+credential_file_for() {
+  printf '%s/%s.setup-token\n' "$CREDENTIAL_STORE_DIR" "$1"
+}
+
+repair_access_layout() {
+  local config_dir="$1" data_dir="$2" service_name="$3" access_user="$4"
+  local environment_file setup_token_file credential_file token="" environment_tmp state_dir credential_tmp
+
+  validate_access_user "$access_user"
+  install -d -o root -g root -m 0755 -- "$config_dir"
+  install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 0750 -- "$data_dir"
+  install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 2770 -- "$data_dir/instances"
+  for state_dir in staging backups logs runtime runtime/state keys icons modpacks modpack-imports custom-jar-imports gate; do
+    install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 0700 -- "$data_dir/$state_dir"
+  done
+  find "$data_dir" -mindepth 1 -maxdepth 1 -type d ! -path "$data_dir/instances" \
+    -exec chown "$PANEL_USER:$PANEL_GROUP" {} + -exec chmod 0700 {} +
+
+  environment_file="$config_dir/mcpanel.env"
+  setup_token_file="$config_dir/setup-token"
+  credential_file="$(credential_file_for "$service_name")"
+  [[ ! -L "$CREDENTIAL_STORE_DIR" ]] || die "unsafe credential store: $CREDENTIAL_STORE_DIR"
+  install -d -o root -g root -m 0700 -- "$CREDENTIAL_STORE_DIR"
+  if [[ -e "$credential_file" ]]; then
+    [[ -f "$credential_file" && ! -L "$credential_file" ]] || die "unsafe setup credential: $credential_file"
+    token="$(tr -d '\r\n' < "$credential_file")"
+  elif [[ -e "$setup_token_file" ]]; then
+    [[ -f "$setup_token_file" && ! -L "$setup_token_file" ]] || die "unsafe existing setup token"
+    token="$(tr -d '\r\n' < "$setup_token_file")"
+  elif [[ -e "$environment_file" ]]; then
+    [[ -f "$environment_file" && ! -L "$environment_file" ]] || die "unsafe existing environment file: $environment_file"
+    token="$(awk -F= '$1 == "MCPANEL_SETUP_TOKEN" { print substr($0, index($0, "=") + 1); exit }' "$environment_file")"
+  fi
+  if [[ -z "$token" ]]; then token="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"; fi
+  [[ "$token" =~ ^[A-Fa-f0-9]{64}$ ]] || die "existing setup token has an unexpected format"
+
+  credential_tmp="$(mktemp "$CREDENTIAL_STORE_DIR/.${service_name}.setup-token.XXXXXX")"
+  printf '%s\n' "$token" > "$credential_tmp"
+  chown root:root "$credential_tmp"; chmod 0600 "$credential_tmp"
+  mv -- "$credential_tmp" "$credential_file"
+
+  if [[ -e "$environment_file" ]]; then
+    [[ -f "$environment_file" && ! -L "$environment_file" ]] || die "unsafe existing environment file: $environment_file"
+    environment_tmp="$(mktemp "$config_dir/.mcpanel.env.XXXXXX")"
+    sed '/^MCPANEL_SETUP_TOKEN=/d' "$environment_file" > "$environment_tmp"
+    chown root:root "$environment_tmp"; chmod 0644 "$environment_tmp"
+    mv -- "$environment_tmp" "$environment_file"
+  fi
+  rm -f -- "$setup_token_file"
+  chown root:root "$config_dir"; chmod 0755 "$config_dir"
+  usermod -a -G "$PANEL_GROUP" "$access_user"
+  REPAIRED_SETUP_TOKEN="$token"
 }
 
 validate_artifact() {
@@ -438,6 +505,8 @@ User=$PANEL_USER
 Group=$PANEL_GROUP
 WorkingDirectory=$data_dir
 EnvironmentFile=$config_dir/mcpanel.env
+LoadCredential=$service_name.setup-token
+Environment=MCPANEL_SETUP_TOKEN_FILE=%d/$service_name.setup-token
 ExecStart=$install_dir/McPanel.Api
 
 Restart=on-failure
@@ -508,7 +577,7 @@ SendSIGKILL=yes
 Delegate=memory
 MemoryAccounting=yes
 
-UMask=0077
+UMask=0007
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
@@ -625,9 +694,9 @@ wait_for_http() {
 root_install() {
   require_root
   local artifact_dir="$1" install_dir="$2" config_dir="$3" data_dir="$4"
-  local service_name="$5" listen_address="$6" port="$7"
+  local service_name="$5" listen_address="$6" port="$7" access_user="$8"
   local stage_dir="" install_started=0 install_activated=0 panel_unit_created=0 runtime_unit_created=0 install_succeeded=0
-  local setup_token_file environment_file generated_token="" environment_tmp url_host
+  local credential_file environment_file generated_token="" environment_tmp url_host credential_tmp
   local install_parent service_unit runtime_service_name runtime_unit unit_tmp="" runtime_unit_tmp=""
 
   install_cleanup() {
@@ -653,9 +722,10 @@ root_install() {
   }
   trap install_cleanup EXIT
 
-  require_commands awk chmod chown cp curl find getent grep groupadd install mktemp mv od realpath sed sleep systemctl tr useradd
+  require_commands awk chmod chown cp curl find getent grep groupadd install mktemp mv od realpath sed sleep systemctl tr useradd usermod
   validate_host
   validate_service_name "$service_name"
+  validate_access_user "$access_user"
   [[ "$listen_address" =~ ^[][A-Za-z0-9._:-]+$ ]] || die "invalid listen address"
   [[ "$port" =~ ^[0-9]+$ ]] || die "port must be an integer"
   ((port >= 1 && port <= 65535)) || die "port must be between 1 and 65535"
@@ -703,29 +773,23 @@ root_install() {
     useradd --system --gid "$PANEL_GROUP" --home-dir "$data_dir" --shell "$nologin_shell" --no-create-home "$PANEL_USER"
   fi
 
-  install -d -o root -g "$PANEL_GROUP" -m 0750 -- "$config_dir"
+  install -d -o root -g root -m 0755 -- "$config_dir"
   install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 0750 -- "$data_dir"
   local state_dir
-  for state_dir in instances staging backups logs runtime runtime/state keys; do
-    install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 0750 -- "$data_dir/$state_dir"
+  install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 2770 -- "$data_dir/instances"
+  for state_dir in staging backups logs runtime runtime/state keys icons modpacks modpack-imports custom-jar-imports gate; do
+    install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 0700 -- "$data_dir/$state_dir"
   done
 
-  setup_token_file="$config_dir/setup-token"
+  credential_file="$(credential_file_for "$service_name")"
   environment_file="$config_dir/mcpanel.env"
   if [[ -e "$environment_file" ]]; then
     [[ -f "$environment_file" && ! -L "$environment_file" ]] || die "unsafe existing environment file: $environment_file"
     chown root:root "$environment_file"
-    chmod 0600 "$environment_file"
+    chmod 0644 "$environment_file"
     info "Preserving existing $environment_file; listen and port options were not applied."
   else
-    if [[ -e "$setup_token_file" ]]; then
-      [[ -f "$setup_token_file" && ! -L "$setup_token_file" ]] || die "unsafe existing setup token"
-      generated_token="$(tr -d '\r\n' < "$setup_token_file")"
-      [[ "$generated_token" =~ ^[A-Fa-f0-9]{64}$ ]] || die "existing setup token has an unexpected format"
-    else
-      generated_token="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
-      printf '%s\n' "$generated_token" > "$setup_token_file"
-    fi
+    generated_token="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
     url_host="$listen_address"
     if [[ "$url_host" == *:* && "$url_host" != \[*\] ]]; then url_host="[$url_host]"; fi
     environment_tmp="$(mktemp "$config_dir/.mcpanel.env.XXXXXX")"
@@ -734,13 +798,13 @@ root_install() {
       printf 'ASPNETCORE_URLS=http://%s:%s\n' "$url_host" "$port"
       printf 'MCPANEL_DATA_DIR=%s\n' "$data_dir"
       printf 'MCPANEL_CONFIG_DIR=%s\n' "$config_dir"
-      printf 'MCPANEL_SETUP_TOKEN=%s\n' "$generated_token"
     } > "$environment_tmp"
     chown root:root "$environment_tmp"
-    chmod 0600 "$environment_tmp"
+    chmod 0644 "$environment_tmp"
     mv -- "$environment_tmp" "$environment_file"
   fi
-  if [[ -e "$setup_token_file" ]]; then chown root:root "$setup_token_file"; chmod 0600 "$setup_token_file"; fi
+  repair_access_layout "$config_dir" "$data_dir" "$service_name" "$access_user"
+  generated_token="$REPAIRED_SETUP_TOKEN"
 
   unit_tmp="$(mktemp "/etc/systemd/system/.${service_name}.service.XXXXXX")"
   render_panel_unit "$install_dir" "$config_dir" "$data_dir" "$service_name" > "$unit_tmp"
@@ -765,19 +829,30 @@ root_install() {
   info "Panel URL: http://$listen_address:$port/"
   if [[ -n "$generated_token" ]]; then
     info "First-run setup token: $generated_token"
-    info "The root-only copy is $setup_token_file."
+    info "The root-only copy is $credential_file."
   else
     info "Existing configuration and setup state were retained."
   fi
+  info "$access_user was added to the $PANEL_GROUP group; sign out and back in before accessing regular server files."
 }
 
 root_update() {
   require_root
-  local artifact_dir="$1" install_dir="$2" config_dir="$3" data_dir="$4" service_name="$5"
+  local artifact_dir="$1" install_dir="$2" config_dir="$3" data_dir="$4" service_name="$5" access_user="$6"
   local stage_dir="" rollback_dir="" update_swapped=0 update_succeeded=0 was_active=0 was_runtime_active=0 panel_stopped=0
   local old_unit_backup="" old_runtime_unit_backup="" old_memory_dropin_backup=""
+  local old_environment_backup="" old_setup_token_backup="" old_credential_backup="" access_repaired=0
+  local had_environment=0 had_setup_token=0 had_credential=0 credential_file environment_file setup_token_file
   local service_unit runtime_service_name runtime_unit memory_dropin_dir memory_dropin install_parent
   local unit_tmp="" runtime_unit_tmp="" failed_dir="" runtime_socket old_runtime_pid="0" current_runtime_pid="0" runtime_upgrade_result=""
+
+  restore_access_state() {
+    if ((had_environment)); then rm -f -- "$environment_file"; cp -- "$old_environment_backup" "$environment_file"; else rm -f -- "$environment_file"; fi
+    if ((had_setup_token)); then rm -f -- "$setup_token_file"; cp -- "$old_setup_token_backup" "$setup_token_file"; else rm -f -- "$setup_token_file"; fi
+    if ((had_credential)); then rm -f -- "$credential_file"; cp -- "$old_credential_backup" "$credential_file"; else rm -f -- "$credential_file"; fi
+    chown root:root "$config_dir" >/dev/null 2>&1 || true
+    access_repaired=0
+  }
 
   update_cleanup() {
     local rc=$?
@@ -802,6 +877,7 @@ root_update() {
       else
         rm -f -- "$memory_dropin"
       fi
+      if ((access_repaired)); then restore_access_state; fi
       systemctl daemon-reload >/dev/null 2>&1 || true
       if ((was_runtime_active)); then systemctl enable --now "$runtime_service_name.service" >/dev/null 2>&1 || warn "the old runtime service could not be restarted"; fi
       if ((was_active)); then systemctl start "$service_name.service" >/dev/null 2>&1 || warn "the old panel service could not be restarted"; fi
@@ -809,11 +885,21 @@ root_update() {
     elif ((rc != 0 && panel_stopped && was_active)); then
       systemctl start "$service_name.service" >/dev/null 2>&1 || warn "the unchanged panel service could not be restarted"
     fi
+    if ((rc != 0 && access_repaired)); then
+      restore_access_state
+      if ((!update_swapped)) && [[ -n "$old_unit_backup" ]]; then
+        cp -- "$old_unit_backup" "$service_unit"
+        if [[ -n "$old_runtime_unit_backup" ]]; then cp -- "$old_runtime_unit_backup" "$runtime_unit"; fi
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        if ((was_active)); then systemctl start "$service_name.service" >/dev/null 2>&1 || warn "the old panel service could not be restarted"; fi
+      fi
+    fi
     if [[ -n "$stage_dir" && -d "$stage_dir" ]]; then rm -rf -- "$stage_dir"; fi
     if [[ -n "$unit_tmp" && -f "$unit_tmp" ]]; then rm -f -- "$unit_tmp"; fi
     if [[ -n "$runtime_unit_tmp" && -f "$runtime_unit_tmp" ]]; then rm -f -- "$runtime_unit_tmp"; fi
     local backup
-    for backup in "$old_unit_backup" "$old_runtime_unit_backup" "$old_memory_dropin_backup"; do
+    for backup in "$old_unit_backup" "$old_runtime_unit_backup" "$old_memory_dropin_backup" \
+      "$old_environment_backup" "$old_setup_token_backup" "$old_credential_backup"; do
       if [[ -n "$backup" && -f "$backup" ]]; then rm -f -- "$backup"; fi
     done
     trap - EXIT
@@ -821,9 +907,10 @@ root_update() {
   }
   trap update_cleanup EXIT
 
-  require_commands awk chmod chown cp curl date env find grep mkdir mktemp mv realpath rm rmdir runuser sleep systemctl
+  require_commands awk chmod chown cp curl date env find getent grep groupadd install mkdir mktemp mv od realpath rm rmdir runuser sed sleep systemctl tr usermod
   validate_host
   validate_service_name "$service_name"
+  validate_access_user "$access_user"
   install_dir="$(normalize_managed_path "$install_dir")"
   config_dir="$(normalize_managed_path "$config_dir")"
   data_dir="$(normalize_managed_path "$data_dir")"
@@ -834,6 +921,9 @@ root_update() {
   runtime_socket="$data_dir/runtime/control.sock"
   memory_dropin_dir="/etc/systemd/system/$service_name.service.d"
   memory_dropin="$memory_dropin_dir/50-mcpanel-memory.conf"
+  environment_file="$config_dir/mcpanel.env"
+  setup_token_file="$config_dir/setup-token"
+  credential_file="$(credential_file_for "$service_name")"
   [[ -d "$install_dir" && ! -L "$install_dir" ]] || die "installation is missing or unsafe: $install_dir"
   [[ -f "$install_dir/McPanel.Api" && ! -L "$install_dir/McPanel.Api" ]] || die "current executable is missing"
   [[ -f "$service_unit" && ! -L "$service_unit" ]] || die "systemd unit is missing or unsafe: $service_unit"
@@ -843,11 +933,48 @@ root_update() {
   validate_artifact "$artifact_dir"
   [[ "$artifact_dir" != "$install_dir" && "$artifact_dir" != "$install_dir/"* ]] || die "artifact must be outside the active installation"
 
+  if ! getent group "$PANEL_GROUP" >/dev/null; then groupadd --system "$PANEL_GROUP"; fi
+  getent passwd "$PANEL_USER" >/dev/null || die "service account is missing: $PANEL_USER"
+  old_unit_backup="$(mktemp)"; cp -- "$service_unit" "$old_unit_backup"
+  if [[ -e "$runtime_unit" ]]; then old_runtime_unit_backup="$(mktemp)"; cp -- "$runtime_unit" "$old_runtime_unit_backup"; fi
+  if [[ -e "$memory_dropin" ]]; then old_memory_dropin_backup="$(mktemp)"; cp -- "$memory_dropin" "$old_memory_dropin_backup"; fi
+  if [[ -e "$environment_file" ]]; then had_environment=1; old_environment_backup="$(mktemp)"; cp -- "$environment_file" "$old_environment_backup"; fi
+  if [[ -e "$setup_token_file" ]]; then had_setup_token=1; old_setup_token_backup="$(mktemp)"; cp -- "$setup_token_file" "$old_setup_token_backup"; fi
+  if [[ -e "$credential_file" ]]; then had_credential=1; old_credential_backup="$(mktemp)"; cp -- "$credential_file" "$old_credential_backup"; fi
+  if systemctl is-active --quiet "$service_name.service"; then was_active=1; fi
+  if systemctl is-active --quiet "$runtime_service_name.service"; then
+    was_runtime_active=1
+    old_runtime_pid="$(runtime_service_pid "$runtime_service_name.service")"
+    [[ "$old_runtime_pid" =~ ^[1-9][0-9]*$ ]] || die "could not determine the active runtime process"
+  fi
+
+  access_repaired=1
+  repair_access_layout "$config_dir" "$data_dir" "$service_name" "$access_user"
+
   if installed_release_matches "$artifact_dir" "$install_dir"; then
     parse_release_metadata "$artifact_dir/$RELEASE_METADATA_NAME"
+    unit_tmp="$(mktemp "/etc/systemd/system/.${service_name}.service.XXXXXX")"
+    render_panel_unit "$install_dir" "$config_dir" "$data_dir" "$service_name" > "$unit_tmp"
+    chown root:root "$unit_tmp"; chmod 0644 "$unit_tmp"; mv -- "$unit_tmp" "$service_unit"; unit_tmp=""
+    runtime_unit_tmp="$(mktemp "/etc/systemd/system/.${runtime_service_name}.service.XXXXXX")"
+    render_runtime_unit "$install_dir" "$config_dir" "$data_dir" > "$runtime_unit_tmp"
+    chown root:root "$runtime_unit_tmp"; chmod 0644 "$runtime_unit_tmp"; mv -- "$runtime_unit_tmp" "$runtime_unit"; runtime_unit_tmp=""
+    systemctl daemon-reload
+    systemctl enable --now "$runtime_service_name.service" >/dev/null
+    if ((was_active)); then
+      systemctl restart "$service_name.service"
+      wait_for_active "$service_name.service" || die "$service_name.service did not remain active"
+      wait_for_http "$config_dir" || die "the panel HTTP endpoint did not become ready"
+    fi
     update_succeeded=1
+    local repair_backup
+    for repair_backup in "$old_unit_backup" "$old_runtime_unit_backup" "$old_memory_dropin_backup" \
+      "$old_environment_backup" "$old_setup_token_backup" "$old_credential_backup"; do
+      if [[ -n "$repair_backup" && -f "$repair_backup" ]]; then rm -f -- "$repair_backup"; fi
+    done
     trap - EXIT
-    info "MC Panel is already at $metadata_release commit $metadata_commit for $metadata_rid."
+    info "MC Panel is already at $metadata_release commit $metadata_commit for $metadata_rid; access and credentials were repaired."
+    info "$access_user was added to the $PANEL_GROUP group; sign out and back in before accessing regular server files."
     return 0
   fi
 
@@ -860,16 +987,6 @@ root_update() {
   find "$stage_dir" -type f -exec chmod 0644 {} +
   chmod 0755 "$stage_dir/McPanel.Api"
   chown -R root:root "$stage_dir"
-
-  old_unit_backup="$(mktemp)"; cp -- "$service_unit" "$old_unit_backup"
-  if [[ -e "$runtime_unit" ]]; then old_runtime_unit_backup="$(mktemp)"; cp -- "$runtime_unit" "$old_runtime_unit_backup"; fi
-  if [[ -e "$memory_dropin" ]]; then old_memory_dropin_backup="$(mktemp)"; cp -- "$memory_dropin" "$old_memory_dropin_backup"; fi
-  if systemctl is-active --quiet "$service_name.service"; then was_active=1; fi
-  if systemctl is-active --quiet "$runtime_service_name.service"; then
-    was_runtime_active=1
-    old_runtime_pid="$(runtime_service_pid "$runtime_service_name.service")"
-    [[ "$old_runtime_pid" =~ ^[1-9][0-9]*$ ]] || die "could not determine the active runtime process"
-  fi
 
   rollback_dir="${install_dir}.rollback-$(date -u +%Y%m%dT%H%M%SZ)-$$"
   [[ ! -e "$rollback_dir" ]] || die "rollback destination already exists: $rollback_dir"
@@ -924,20 +1041,22 @@ root_update() {
   fi
   update_succeeded=1
   local successful_backup
-  for successful_backup in "$old_unit_backup" "$old_runtime_unit_backup" "$old_memory_dropin_backup"; do
+  for successful_backup in "$old_unit_backup" "$old_runtime_unit_backup" "$old_memory_dropin_backup" \
+    "$old_environment_backup" "$old_setup_token_backup" "$old_credential_backup"; do
     if [[ -n "$successful_backup" && -f "$successful_backup" ]]; then rm -f -- "$successful_backup"; fi
   done
   trap - EXIT
   info "MC Panel binaries were updated successfully."
   if ((was_active)); then info "The panel service is active."; else info "The panel service was left stopped."; fi
   info "Previous binaries were retained at $rollback_dir."
-  info "Configuration and data were not modified."
+  info "Configuration and data were preserved; access permissions and the setup credential were repaired."
+  info "$access_user was added to the $PANEL_GROUP group; sign out and back in before accessing regular server files."
 }
 
 root_uninstall() {
   require_root
   local install_dir="$1" config_dir="$2" data_dir="$3" service_name="$4" purge="$5"
-  local service_unit runtime_service_name runtime_unit memory_dropin_dir memory_dropin managed_path
+  local service_unit runtime_service_name runtime_unit memory_dropin_dir memory_dropin managed_path credential_file
 
   require_commands getent groupdel realpath rm rmdir systemctl userdel
   validate_service_name "$service_name"
@@ -958,6 +1077,7 @@ root_uninstall() {
   runtime_unit="/etc/systemd/system/$runtime_service_name.service"
   memory_dropin_dir="/etc/systemd/system/$service_name.service.d"
   memory_dropin="$memory_dropin_dir/50-mcpanel-memory.conf"
+  credential_file="$(credential_file_for "$service_name")"
   for managed_path in "$service_unit" "$runtime_unit"; do
     [[ ! -e "$managed_path" || -f "$managed_path" && ! -L "$managed_path" ]] || die "unsafe unit file: $managed_path"
   done
@@ -977,6 +1097,10 @@ root_uninstall() {
 
   if ((purge)); then
     info "Permanently deleting $config_dir and $data_dir."
+    if [[ -e "$credential_file" ]]; then
+      [[ -f "$credential_file" && ! -L "$credential_file" ]] || die "unsafe setup credential"
+      rm -f -- "$credential_file"
+    fi
     if [[ -d "$config_dir" ]]; then rm -rf --one-file-system -- "$config_dir"; fi
     if [[ -d "$data_dir" ]]; then rm -rf --one-file-system -- "$data_dir"; fi
     if getent passwd "$PANEL_USER" >/dev/null; then userdel "$PANEL_USER"; fi
@@ -987,6 +1111,7 @@ root_uninstall() {
   else
     info "MC Panel binaries and systemd units were removed."
     info "Preserved configuration: $config_dir"
+    info "Preserved setup credential: $credential_file"
     info "Preserved instances, worlds, databases, keys, logs, and backups: $data_dir"
     info "The $PANEL_USER account was retained."
   fi
@@ -1136,9 +1261,10 @@ root_import_server() {
 build_for_system_command() {
   local action="$1" install_dir="$2" config_dir="$3" data_dir="$4" service_name="$5"
   local listen_address="${6:-}" port="${7:-}"
-  local build_root artifact rid
+  local build_root artifact rid access_user
   require_regular_user
   require_passwordless_sudo
+  access_user="$(id -un)"
   rid="$(detect_rid)"
   build_root="$(mktemp -d /tmp/mcpanel-system-build.XXXXXX)"
   cleanup_system_build() { local rc=$?; rm -rf -- "$build_root"; trap - EXIT; exit "$rc"; }
@@ -1146,9 +1272,9 @@ build_for_system_command() {
   artifact="$build_root/artifact"
   publish_artifact "$rid" "$artifact"
   if [[ "$action" == "install" ]]; then
-    sudo -n -- "$script_path" __install "$artifact" "$install_dir" "$config_dir" "$data_dir" "$service_name" "$listen_address" "$port"
+    sudo -n -- "$script_path" __install "$artifact" "$install_dir" "$config_dir" "$data_dir" "$service_name" "$listen_address" "$port" "$access_user"
   else
-    sudo -n -- "$script_path" __update "$artifact" "$install_dir" "$config_dir" "$data_dir" "$service_name"
+    sudo -n -- "$script_path" __update "$artifact" "$install_dir" "$config_dir" "$data_dir" "$service_name" "$access_user"
   fi
   rm -rf -- "$build_root"
   trap - EXIT
@@ -1163,10 +1289,11 @@ invoke_prepared_installer() {
 run_remote_system_command() {
   local action="$1" release="$2" install_dir="$3" config_dir="$4" data_dir="$5" service_name="$6"
   local listen_address="${7:-}" port="${8:-}"
-  local work_root prepared_dir rid commit installer artifact
+  local work_root prepared_dir rid commit installer artifact access_user
 
   require_regular_user
   require_passwordless_sudo
+  access_user="$(id -un)"
   require_commands basename chmod curl find grep mkdir mktemp realpath sha256sum tar tr uname
   validate_release_ref "$release"
   rid="$(detect_rid)"
@@ -1186,7 +1313,7 @@ run_remote_system_command() {
   installer="$prepared_dir/mcpanel-$commit.sh"
   artifact="$prepared_dir/artifact"
   invoke_prepared_installer "$installer" "$action" "$artifact" "$release" "$commit" "$rid" \
-    "$install_dir" "$config_dir" "$data_dir" "$service_name" "$listen_address" "$port"
+    "$install_dir" "$config_dir" "$data_dir" "$service_name" "$listen_address" "$port" "$access_user"
   rm -rf -- "$work_root"
   trap - EXIT
 }
@@ -1194,7 +1321,7 @@ run_remote_system_command() {
 apply_prepared_system_command() {
   local action="$1" artifact="$2" release="$3" commit="$4" rid="$5"
   local install_dir="$6" config_dir="$7" data_dir="$8" service_name="$9"
-  local listen_address="${10}" port="${11}"
+  local listen_address="${10}" port="${11}" access_user="${12:-$(id -un)}"
 
   require_regular_user
   require_passwordless_sudo
@@ -1207,10 +1334,10 @@ apply_prepared_system_command() {
   case "$action" in
     install)
       sudo -n -- "$script_path" __install "$artifact" "$install_dir" "$config_dir" "$data_dir" \
-        "$service_name" "$listen_address" "$port"
+        "$service_name" "$listen_address" "$port" "$access_user"
       ;;
     update)
-      sudo -n -- "$script_path" __update "$artifact" "$install_dir" "$config_dir" "$data_dir" "$service_name"
+      sudo -n -- "$script_path" __update "$artifact" "$install_dir" "$config_dir" "$data_dir" "$service_name" "$access_user"
       ;;
     *) die "invalid prepared release action: $action" ;;
   esac
@@ -1383,9 +1510,9 @@ case "$command" in
   build) command_build "$@" ;;
   status) command_status "$@" ;;
   help|-h|--help) usage ;;
-  __apply-prepared) [[ $# -eq 11 ]] || die "invalid prepared release invocation"; apply_prepared_system_command "$@" ;;
-  __install) [[ $# -eq 7 ]] || die "invalid internal install invocation"; root_install "$@" ;;
-  __update) [[ $# -eq 5 ]] || die "invalid internal update invocation"; root_update "$@" ;;
+  __apply-prepared) [[ $# -eq 11 || $# -eq 12 ]] || die "invalid prepared release invocation"; apply_prepared_system_command "$@" ;;
+  __install) [[ $# -eq 8 ]] || die "invalid internal install invocation"; root_install "$@" ;;
+  __update) [[ $# -eq 6 ]] || die "invalid internal update invocation"; root_update "$@" ;;
   __import-server) (($# >= 5)) || die "invalid internal import invocation"; root_import_server "$@" ;;
   __uninstall) [[ $# -eq 5 ]] || die "invalid internal uninstall invocation"; root_uninstall "$@" ;;
   __probe-url) [[ $# -eq 1 ]] || die "invalid internal probe invocation"; require_root; http_probe_url "$1" ;;
