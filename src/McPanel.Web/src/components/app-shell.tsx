@@ -33,7 +33,6 @@ const dashboardItem = { label: "Dashboard", path: "/", icon: PanelsTopLeftIcon }
 const serverItems = [
   { label: "Overview", path: "", icon: CircleGaugeIcon },
   { label: "Console", path: "/console", icon: TerminalSquareIcon },
-  { label: "Software", path: "/software", icon: PackageIcon, minecraftOnly: true },
   { label: "Backends", path: "/backends", icon: RouteIcon, gateOnly: true },
   { label: "Gate settings", path: "/gate", icon: NetworkIcon, gateOnly: true },
   { label: "Server properties", path: "/properties", icon: Settings2Icon, minecraftOnly: true },

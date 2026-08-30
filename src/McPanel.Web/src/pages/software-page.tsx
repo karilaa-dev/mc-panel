@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useParams } from "react-router-dom"
 import { AlertTriangleIcon, BoxIcon, CheckIcon, UploadIcon } from "lucide-react"
 import { toast } from "sonner"
-import { Page } from "@/components/page"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -27,7 +26,7 @@ import { serverKindLabel } from "@/lib/server-kind"
 
 type OfficialKind = "Vanilla" | "Paper" | "Fabric" | "Forge" | "NeoForge"
 
-export function SoftwarePage() {
+export function SoftwareSettingsSection() {
   const { serverId = "" } = useParams()
   const queryClient = useQueryClient()
   const server = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
@@ -65,6 +64,7 @@ export function SoftwarePage() {
     if (changeJob.data.state === "Completed") {
       void queryClient.invalidateQueries({ queryKey: ["server", serverId] })
       void queryClient.invalidateQueries({ queryKey: ["software", serverId] })
+      void queryClient.invalidateQueries({ queryKey: ["runtime", serverId] })
     } else toast.error("Software change failed", { description: changeJob.data.error ?? changeJob.data.message })
   }, [changeJob.data, changeJobId, queryClient, serverId])
 
@@ -157,10 +157,10 @@ export function SoftwarePage() {
     } finally { setUploading(false) }
   }
 
-  if (server.isLoading || software.isLoading) return <Page title="Software"><Skeleton className="h-96" /></Page>
-  if (!server.data || !software.data) return <Page title="Software"><Alert variant="destructive"><AlertTitle>Software details unavailable</AlertTitle><AlertDescription>{software.error instanceof Error ? software.error.message : "The server could not be loaded."}</AlertDescription></Alert></Page>
+  if (server.isLoading || software.isLoading) return <Skeleton className="h-96" />
+  if (!server.data || !software.data) return <Alert variant="destructive"><AlertTitle>Software details unavailable</AlertTitle><AlertDescription>{software.error instanceof Error ? software.error.message : "The server could not be loaded."}</AlertDescription></Alert>
 
-  return <Page title="Software" description="Change the server core, Minecraft version, launcher, and Java runtime while preserving server content.">
+  return <>
     {!stopped && <Alert variant="destructive"><AlertTriangleIcon /><AlertTitle>Stop the server first</AlertTitle><AlertDescription>Software changes are disabled until the server is fully stopped.</AlertDescription></Alert>}
     <Card><CardHeader><CardTitle>Current software</CardTitle><CardDescription>The active launcher recorded by MC Panel.</CardDescription></CardHeader><CardContent className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4"><div><p className="text-xs text-muted-foreground">Core</p><p className="font-medium">{serverKindLabel(software.data.kind)}</p></div><div><p className="text-xs text-muted-foreground">Minecraft</p><p className="font-medium">{software.data.version}</p></div><div><p className="text-xs text-muted-foreground">Launcher</p><p className="break-all font-mono text-sm">{software.data.launchTarget}</p></div><div><p className="text-xs text-muted-foreground">Java</p><p className="font-medium">{java.data?.find((item) => item.id === software.data?.javaRuntimeId)?.version ?? software.data.javaRuntimeId}</p></div></CardContent></Card>
     <Card><CardHeader><CardTitle>Choose replacement software</CardTitle><CardDescription>Official cores are downloaded from verified catalogs. Custom JARs must contain an executable manifest.</CardDescription></CardHeader><CardContent><FieldGroup>
@@ -171,8 +171,8 @@ export function SoftwarePage() {
       <Alert><BoxIcon /><AlertTitle>Existing server content stays in place</AlertTitle><AlertDescription>Worlds, properties, plugins, mods, and unused launch files are preserved. A manual change clears the Modrinth pack link.</AlertDescription></Alert>
       <Button className="self-start" disabled={!stopped || !selectionsReady || uploading} onClick={() => setConfirmOpen(true)}>Review software change</Button>
     </FieldGroup></CardContent></Card>
-    <Dialog open={confirmOpen} onOpenChange={(open) => !change.isPending && setConfirmOpen(open)}><DialogContent className="sm:max-w-lg"><DialogHeader><DialogTitle>Change to {serverKindLabel(targetKind)}?</DialogTitle><DialogDescription>Minecraft {selectedVersion} · Java {compatibleJava.find((item) => item.id === selectedJava)?.major ?? requiredJava}{targetDetail ? ` · ${targetDetail}` : ""}</DialogDescription></DialogHeader><div className="space-y-3"><Alert><AlertTitle>{createBackup ? "Backup required before activation" : "No backup selected"}</AlertTitle><AlertDescription>{createBackup ? "The backup must complete successfully before any launch files change." : "The change will start without creating a new recovery point."}</AlertDescription></Alert><p className="text-sm text-muted-foreground">MC Panel stages new launch files outside the instance, rolls activation back on failure, and preserves worlds and other existing content.</p></div><DialogFooter><DialogClose render={<Button variant="outline" disabled={change.isPending} />}>Cancel</DialogClose><Button disabled={change.isPending} onClick={() => change.mutate()}>{change.isPending ? <Spinner data-icon="inline-start" /> : <UploadIcon data-icon="inline-start" />}Change software</Button></DialogFooter></DialogContent></Dialog>
-  </Page>
+    <Dialog open={confirmOpen} onOpenChange={(open) => !change.isPending && setConfirmOpen(open)}><DialogContent className="sm:max-w-lg"><DialogHeader><DialogTitle>Change to {serverKindLabel(targetKind)}?</DialogTitle><DialogDescription>Minecraft {selectedVersion} · Java {compatibleJava.find((item) => item.id === selectedJava)?.major ?? requiredJava}{targetDetail ? ` · ${targetDetail}` : ""}</DialogDescription></DialogHeader><div className="flex flex-col gap-3"><Alert><AlertTitle>{createBackup ? "Backup required before activation" : "No backup selected"}</AlertTitle><AlertDescription>{createBackup ? "The backup must complete successfully before any launch files change." : "The change will start without creating a new recovery point."}</AlertDescription></Alert><p className="text-sm text-muted-foreground">MC Panel stages new launch files outside the instance, rolls activation back on failure, and preserves worlds and other existing content.</p></div><DialogFooter><DialogClose render={<Button variant="outline" disabled={change.isPending} />}>Cancel</DialogClose><Button disabled={change.isPending} onClick={() => change.mutate()}>{change.isPending ? <Spinner data-icon="inline-start" /> : <UploadIcon data-icon="inline-start" />}Change software</Button></DialogFooter></DialogContent></Dialog>
+  </>
 }
 
 function Choice({ label, value, choices, onChange, placeholder = "Choose a value" }: {

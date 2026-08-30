@@ -3,7 +3,8 @@ import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { SoftwarePage } from "@/pages/software-page"
+import { LegacySoftwareRedirect } from "@/App"
+import { RuntimeSettingsPage } from "@/pages/core-pages"
 import { api } from "@/lib/api"
 
 vi.mock("@/lib/api", () => ({
@@ -12,6 +13,9 @@ vi.mock("@/lib/api", () => ({
     software: vi.fn(),
     catalog: vi.fn(),
     java: vi.fn(),
+    runtime: vi.fn(),
+    saveRuntime: vi.fn(),
+    systemInfo: vi.fn(),
     job: vi.fn(),
     changeSoftware: vi.fn(),
     uploadCustomJar: vi.fn(),
@@ -22,10 +26,10 @@ const mockedApi = vi.mocked(api)
 
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<MemoryRouter initialEntries={["/servers/server-1/software"]}><QueryClientProvider client={client}><Routes><Route path="servers/:serverId/software" element={<SoftwarePage />} /></Routes></QueryClientProvider></MemoryRouter>)
+  return render(<MemoryRouter initialEntries={["/servers/server-1/runtime"]}><QueryClientProvider client={client}><Routes><Route path="servers/:serverId/runtime" element={<RuntimeSettingsPage />} /></Routes></QueryClientProvider></MemoryRouter>)
 }
 
-describe("SoftwarePage", () => {
+describe("Runtime software settings", () => {
   beforeEach(() => {
     mockedApi.server.mockResolvedValue({
       id: "server-1", name: "Survival", kind: "Paper", version: "1.21.8", state: "Stopped", port: 25565,
@@ -46,6 +50,15 @@ describe("SoftwarePage", () => {
       fetchedAt: new Date().toISOString(),
     })
     mockedApi.java.mockResolvedValue([{ id: "java-21", path: "/usr/bin/java", version: "21.0.7", major: 21, vendor: "OpenJDK", architecture: "x64", isCustom: false }])
+    mockedApi.runtime.mockResolvedValue({
+      initialMemoryMb: 4096, maximumMemoryMb: 4096, totalMemoryMb: 5120, javaRuntimeId: "java-21",
+      jvmArguments: "", useAikarFlags: false, startOnBoot: false, crashRecovery: true,
+    })
+    mockedApi.saveRuntime.mockImplementation(async (_id, value) => value)
+    mockedApi.systemInfo.mockResolvedValue({
+      version: "1.0.0", dataDirectory: "/var/lib/mcpanel", instancesDirectory: "/var/lib/mcpanel/instances",
+      memoryAllocationLimitBytes: 8 * 1024 ** 3,
+    })
     mockedApi.changeSoftware.mockResolvedValue({ id: "change-job", type: "ChangeSoftware", state: "Queued", progress: 0, serverId: "server-1" })
     mockedApi.job.mockResolvedValue({ id: "change-job", type: "ChangeSoftware", state: "Completed", progress: 100, serverId: "server-1" })
   })
@@ -109,5 +122,14 @@ describe("SoftwarePage", () => {
 
     await waitFor(() => expect(mockedApi.job).toHaveBeenCalledWith("change-job"))
     await waitFor(() => expect(mockedApi.software.mock.calls.length).toBeGreaterThan(1))
+  })
+
+  it("redirects old software URLs to Runtime", async () => {
+    render(<MemoryRouter initialEntries={["/servers/server-1/software"]}><Routes>
+      <Route path="servers/:serverId/software" element={<LegacySoftwareRedirect />} />
+      <Route path="servers/:serverId/runtime" element={<p>Runtime destination</p>} />
+    </Routes></MemoryRouter>)
+
+    expect(await screen.findByText("Runtime destination")).toBeVisible()
   })
 })
