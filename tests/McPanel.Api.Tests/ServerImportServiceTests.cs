@@ -94,6 +94,17 @@ public sealed class ServerImportServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Discovers_top_level_launchers_with_an_uppercase_jar_extension()
+    {
+        var source = CreateVanillaSource("uppercase-launcher-source", 25583);
+        File.Move(Path.Combine(source, "server.jar"), Path.Combine(source, "server.JAR"));
+
+        var inspection = await _service.InspectAsync(source, CancellationToken.None);
+
+        Assert.Contains(inspection.Launchers, launcher => launcher.Path == "server.JAR");
+    }
+
+    [Fact]
     public async Task Directory_staging_preserves_owner_execute_without_group_or_other_permissions()
     {
         if (OperatingSystem.IsWindows()) return;
@@ -290,6 +301,52 @@ public sealed class ServerImportServiceTests : IAsyncLifetime
 
         var exception = await Assert.ThrowsAsync<ServerImportException>(() =>
             ServerImportSource.StageAsync(source, Path.Combine(_paths.Staging, "hard-link-stage"), CancellationToken.None));
+
+        Assert.Equal("IMPORT_HARD_LINK", exception.Code);
+    }
+
+    [Fact]
+    public void Directory_copy_opener_rejects_a_file_replaced_by_a_symbolic_link()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var source = CreateVanillaSource("file-swap-source", 25584);
+        var outside = Path.Combine(_root, "outside.jar");
+        File.WriteAllText(outside, "outside");
+        File.Delete(Path.Combine(source, "server.jar"));
+        File.CreateSymbolicLink(Path.Combine(source, "server.jar"), outside);
+
+        var exception = Assert.Throws<ServerImportException>(() =>
+            ServerImportSource.OpenDirectoryFile(source, "server.jar"));
+
+        Assert.Equal("IMPORT_SOURCE_CHANGED", exception.Code);
+    }
+
+    [Fact]
+    public void Directory_copy_opener_rejects_a_parent_replaced_by_a_symbolic_link()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var source = CreateVanillaSource("parent-swap-source", 25585);
+        var outside = Path.Combine(_root, "outside-world");
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "level.dat"), "outside");
+        Directory.Delete(Path.Combine(source, "world"), true);
+        Directory.CreateSymbolicLink(Path.Combine(source, "world"), outside);
+
+        var exception = Assert.Throws<ServerImportException>(() =>
+            ServerImportSource.OpenDirectoryFile(source, Path.Combine("world", "level.dat")));
+
+        Assert.Equal("IMPORT_SOURCE_CHANGED", exception.Code);
+    }
+
+    [Fact]
+    public void Directory_copy_opener_verifies_the_opened_file_link_count()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var source = CreateVanillaSource("opened-hard-link-source", 25586);
+        Assert.Equal(0, Link(Path.Combine(source, "server.jar"), Path.Combine(source, "server-copy.jar")));
+
+        var exception = Assert.Throws<ServerImportException>(() =>
+            ServerImportSource.OpenDirectoryFile(source, "server.jar"));
 
         Assert.Equal("IMPORT_HARD_LINK", exception.Code);
     }

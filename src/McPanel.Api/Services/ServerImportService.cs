@@ -11,6 +11,7 @@ using McPanel.Api.Data;
 using McPanel.Api.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Microsoft.Win32.SafeHandles;
 
 namespace McPanel.Api.Services;
 
@@ -133,6 +134,7 @@ public static class ServerImportSource
         long byteLimit,
         CancellationToken cancellationToken)
     {
+        using var sourceRoot = OperatingSystem.IsLinux() ? OpenDirectoryHandle(source, source) : null;
         var entries = new List<(string Source, string Relative, bool Directory, long Length, DateTime LastWriteUtc, bool Executable)>();
         var pending = new Stack<(string Path, string Relative)>();
         pending.Push((source, ""));
@@ -193,7 +195,9 @@ public static class ServerImportSource
             cancellationToken.ThrowIfCancellationRequested();
             var target = ResolveDestination(destination, entry.Relative);
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            await using var input = new FileStream(entry.Source, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            await using var input = sourceRoot is null
+                ? OpenPortableDirectoryFile(entry.Source)
+                : OpenDirectoryFile(sourceRoot, entry.Relative);
             await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
             copiedBytes = await CopyLimitedAsync(input, output, copiedBytes, byteLimit, cancellationToken);
             File.SetLastWriteTimeUtc(target, entry.LastWriteUtc);
@@ -384,11 +388,119 @@ public static class ServerImportSource
         { throw Invalid("IMPORT_SOURCE_UNREADABLE", $"The source file link count could not be inspected: {path}", exception); }
     }
 
+    private static FileStream OpenPortableDirectoryFile(string path)
+    {
+        RejectLink(path);
+        RejectHardLink(path);
+        return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+    }
+
+    internal static FileStream OpenDirectoryFile(string sourceRoot, string relative)
+    {
+        if (!OperatingSystem.IsLinux())
+            return OpenPortableDirectoryFile(ResolveDestination(sourceRoot, relative));
+        using var root = OpenDirectoryHandle(sourceRoot, sourceRoot);
+        return OpenDirectoryFile(root, relative);
+    }
+
+    private static FileStream OpenDirectoryFile(SafeFileHandle sourceRoot, string relative)
+    {
+        if (string.IsNullOrWhiteSpace(relative) || Path.IsPathRooted(relative))
+            throw Invalid("IMPORT_SOURCE_CHANGED", "The source file path changed while the import was being staged.");
+        var segments = relative.Split(Path.DirectorySeparatorChar);
+        if (segments.Any(segment => segment is "" or "." or ".."))
+            throw Invalid("IMPORT_SOURCE_CHANGED", "The source file path changed while the import was being staged.");
+
+        SafeFileHandle? parent = null;
+        try
+        {
+            var parentDescriptor = sourceRoot.DangerousGetHandle().ToInt32();
+            for (var index = 0; index < segments.Length - 1; index++)
+            {
+                var next = OpenNoFollow(parentDescriptor, segments[index],
+                    NativeMethods.ReadOnly | NativeMethods.CloseOnExec | NativeMethods.NoFollowOpen | NativeMethods.Directory,
+                    NativeMethods.DirectoryType, relative);
+                parent?.Dispose();
+                parent = next;
+                parentDescriptor = next.DangerousGetHandle().ToInt32();
+            }
+
+            var file = OpenNoFollow(parentDescriptor, segments[^1],
+                NativeMethods.ReadOnly | NativeMethods.CloseOnExec | NativeMethods.NoFollowOpen,
+                NativeMethods.RegularFileType, relative);
+            try { return new FileStream(file, FileAccess.Read, 128 * 1024, isAsync: false); }
+            catch
+            {
+                file.Dispose();
+                throw;
+            }
+        }
+        finally
+        {
+            parent?.Dispose();
+        }
+    }
+
+    private static SafeFileHandle OpenDirectoryHandle(string path, string displayPath) =>
+        OpenNoFollow(NativeMethods.AtCurrentWorkingDirectory, path,
+            NativeMethods.ReadOnly | NativeMethods.CloseOnExec | NativeMethods.NoFollowOpen | NativeMethods.Directory,
+            NativeMethods.DirectoryType, displayPath);
+
+    private static SafeFileHandle OpenNoFollow(int parentDescriptor, string path, int flags, ushort expectedType, string displayPath)
+    {
+        var descriptor = NativeMethods.OpenAt(parentDescriptor, path, flags);
+        if (descriptor < 0)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            throw Invalid("IMPORT_SOURCE_CHANGED",
+                $"The source path changed or became unsafe while the import was being staged: {displayPath}",
+                new Win32Exception(error));
+        }
+
+        var handle = new SafeFileHandle((IntPtr)descriptor, ownsHandle: true);
+        try
+        {
+            if (NativeMethods.Statx(descriptor, "", NativeMethods.EmptyPath | NativeMethods.NoFollow,
+                    NativeMethods.FileType | NativeMethods.LinkCount, out var status) != 0)
+                throw new Win32Exception(Marshal.GetLastPInvokeError());
+            if ((status.Mask & NativeMethods.FileType) == 0 ||
+                (status.Mode & NativeMethods.FileTypeMask) != expectedType)
+                throw Invalid("IMPORT_SPECIAL_FILE", $"The source contains an unsupported file: {displayPath}");
+            if (expectedType == NativeMethods.RegularFileType &&
+                ((status.Mask & NativeMethods.LinkCount) == 0 || status.LinkCountValue != 1))
+                throw Invalid("IMPORT_HARD_LINK", $"The source contains a hard-linked file: {displayPath}");
+            return handle;
+        }
+        catch (ServerImportException)
+        {
+            handle.Dispose();
+            throw;
+        }
+        catch (Exception exception) when (exception is Win32Exception or EntryPointNotFoundException)
+        {
+            handle.Dispose();
+            throw Invalid("IMPORT_SOURCE_UNREADABLE", $"The opened source path could not be verified: {displayPath}", exception);
+        }
+    }
+
     private static class NativeMethods
     {
         public const int AtCurrentWorkingDirectory = -100;
         public const int NoFollow = 0x100;
+        public const int EmptyPath = 0x1000;
+        public const int ReadOnly = 0;
+        public const int Directory = 0x10000;
+        public const int NoFollowOpen = 0x20000;
+        public const int CloseOnExec = 0x80000;
+        public const ushort FileTypeMask = 0xF000;
+        public const ushort DirectoryType = 0x4000;
+        public const ushort RegularFileType = 0x8000;
+        public const uint FileType = 0x00000001;
         public const uint LinkCount = 0x00000004;
+
+        [DllImport("libc", EntryPoint = "openat", SetLastError = true, CharSet = CharSet.Ansi)]
+        public static extern int OpenAt(int directoryFileDescriptor, string path, int flags);
 
         [DllImport("libc", EntryPoint = "statx", SetLastError = true, CharSet = CharSet.Ansi)]
         public static extern int Statx(int directoryFileDescriptor, string path, int flags, uint mask, out StatxBuffer buffer);
@@ -733,7 +845,9 @@ public sealed partial class ServerImportService(
     private static List<ServerImportLauncher> FindLaunchers(string root)
     {
         var launchers = new List<ServerImportLauncher>();
-        foreach (var file in Directory.EnumerateFiles(root, "*.jar", SearchOption.TopDirectoryOnly).OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
+        foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.TopDirectoryOnly)
+                     .Where(file => Path.GetExtension(file).Equals(".jar", StringComparison.OrdinalIgnoreCase))
+                     .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
         {
             RejectManagedLink(file, root);
             var name = Path.GetFileName(file);

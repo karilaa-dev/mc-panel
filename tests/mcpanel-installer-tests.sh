@@ -226,6 +226,23 @@ test_import_option_parsing() {
   )
 }
 
+test_import_wrapper_flag_detection() {
+  assert_equal "0 0" \
+    "$(detect_import_wrapper_flags --jvm-args --dry-run --name --json)" \
+    "import flags used as option values"
+  assert_equal "1 1" \
+    "$(detect_import_wrapper_flags --accept-eula --dry-run --json)" \
+    "standalone import wrapper flags"
+}
+
+test_import_restart_json() {
+  local result='{"ok":true,"serverId":"server-123","name":"Imported world","instanceDirectory":"/var/lib/mcpanel/instances/server-123"}'
+  assert_equal \
+    '{"ok":false,"code":"IMPORT_PANEL_RESTART_FAILED","message":"The import command finished, but the web panel did not become ready.","committed":true,"importResult":{"ok":true,"serverId":"server-123","name":"Imported world","instanceDirectory":"/var/lib/mcpanel/instances/server-123"}}' \
+    "$(print_import_json_result "$result" 0 5)" \
+    "restart failure preserves committed import details"
+}
+
 test_runtime_generation_wait() {
   (
     local pid_reads="$test_root/runtime-pid-reads"
@@ -251,7 +268,9 @@ test_service_security_contract() {
   [[ "$panel_unit" == *"LoadCredential=mcpanel.setup-token"* ]] || fail "panel unit does not load the setup credential"
   [[ "$panel_unit" == *'Environment=MCPANEL_SETUP_TOKEN_FILE=%d/mcpanel.setup-token'* ]] || fail "panel unit does not expose the credential file"
   [[ "$panel_unit" == *"UMask=0077"* ]] || fail "panel private umask changed"
+  [[ "$panel_unit" != *"RestrictSUIDSGID=yes"* ]] || fail "panel unit blocks regular-instance setgid permission repair"
   [[ "$runtime_unit" == *"UMask=0007"* ]] || fail "runtime group-writable umask is missing"
+  [[ "$runtime_unit" == *"RestrictSUIDSGID=yes"* ]] || fail "runtime setuid/setgid restriction is missing"
   [[ "$runtime_unit" != *"LoadCredential="* ]] || fail "runtime service should not receive the setup credential"
   # Match the literal installer variable, not its value in this test process.
   # shellcheck disable=SC2016
@@ -262,13 +281,13 @@ test_service_security_contract() {
 test_systemd_minimum() {
   (
     # validate_host invokes this test stub indirectly.
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     systemctl() { printf 'systemd 246 (246.1)\n'; }
     assert_fails "systemd 246" validate_host
   )
   (
     # validate_host invokes this test stub indirectly.
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     systemctl() { printf 'systemd 247 (247.1)\n'; }
     validate_host >/dev/null || fail "systemd 247 was rejected"
   )
@@ -281,6 +300,8 @@ test_unsafe_archive
 test_retry_and_handoff
 test_release_identity
 test_import_option_parsing
+test_import_wrapper_flag_detection
+test_import_restart_json
 test_runtime_generation_wait
 test_service_security_contract
 test_systemd_minimum

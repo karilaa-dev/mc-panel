@@ -136,6 +136,7 @@ public sealed class SoftwareActivationService(
         {
             if (_source is null) throw new InvalidOperationException("A recovered activation cannot be started again.");
             Directory.CreateDirectory(_destination);
+            WriteManifest();
             foreach (var file in Directory.EnumerateFiles(_source, "*", SearchOption.AllDirectories).ToList())
             {
                 var relative = NormalizeRelative(Path.GetRelativePath(_source, file));

@@ -65,6 +65,40 @@ public sealed class SoftwareActivationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Startup_recovery_restores_metadata_after_an_empty_activation_stage()
+    {
+        var (service, paths, options) = await CreateAsync(ServerState.Updating);
+        var serverId = await ServerIdAsync(options);
+        var stage = Path.Combine(paths.Staging, "software-stage");
+        var rollback = Path.Combine(paths.Staging, $"software-rollback-{serverId:N}-job");
+        Directory.CreateDirectory(stage);
+
+        service.Begin(serverId, stage, rollback, await MetadataAsync(options)).Activate();
+        Assert.True(File.Exists(Path.Combine(rollback, "activation-manifest.json")));
+
+        await using (var db = new StateDbContext(options))
+        {
+            var server = await db.Servers.SingleAsync();
+            server.Kind = ServerKind.CustomJar;
+            server.Version = "1.21.8";
+            server.LaunchTarget = "existing.JAR";
+            server.State = ServerState.Stopped;
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = new StateDbContext(options))
+            await service.RecoverInterruptedAsync(db, CancellationToken.None);
+
+        await using var verification = new StateDbContext(options);
+        var restored = await verification.Servers.SingleAsync();
+        Assert.Equal(ServerKind.Paper, restored.Kind);
+        Assert.Equal("1.21.7", restored.Version);
+        Assert.Equal("server.jar", restored.LaunchTarget);
+        Assert.Equal(ServerState.Stopped, restored.State);
+        Assert.False(Directory.Exists(rollback));
+    }
+
+    [Fact]
     public async Task Staging_cleanup_preserves_unrecovered_activation_journals()
     {
         var (service, paths, _) = await CreateAsync(ServerState.Stopped);

@@ -533,7 +533,6 @@ ProtectClock=yes
 ProtectHostname=yes
 ProtectProc=invisible
 RestrictRealtime=yes
-RestrictSUIDSGID=yes
 RestrictNamespaces=yes
 LockPersonality=yes
 RemoveIPC=yes
@@ -1118,6 +1117,42 @@ root_uninstall() {
   info "Review dated rollback directories beside $install_dir separately."
 }
 
+detect_import_wrapper_flags() {
+  local argument expect_value=0 dry_run=0 json=0
+  for argument in "$@"; do
+    if ((expect_value)); then
+      expect_value=0
+      continue
+    fi
+    case "$argument" in
+      --install-dir|--config-dir|--data-dir|--service-name|--name|--kind|--version|--loader-version|--launch-target|--java-runtime|--memory-mb|--port|--jvm-args)
+        expect_value=1
+        ;;
+      --dry-run) dry_run=1 ;;
+      --json) json=1 ;;
+    esac
+  done
+  printf '%s %s\n' "$dry_run" "$json"
+}
+
+print_import_json_result() {
+  local json_result="$1" import_rc="$2" restart_rc="$3" committed=false
+  if ((restart_rc != 0)); then
+    if [[ -n "$json_result" ]]; then
+      ((import_rc == 0)) && committed=true
+      printf '{"ok":false,"code":"IMPORT_PANEL_RESTART_FAILED","message":"The import command finished, but the web panel did not become ready.","committed":%s,"importResult":%s}\n' \
+        "$committed" "$json_result"
+    else
+      printf '{"ok":false,"code":"IMPORT_PANEL_RESTART_FAILED","message":"The import command finished, but the web panel did not become ready.","committed":false}\n'
+    fi
+  elif [[ -n "$json_result" ]]; then
+    printf '%s\n' "$json_result"
+  else
+    printf '{"ok":false,"code":"IMPORT_FAILED","message":"The import command did not return a result."}\n'
+    return 5
+  fi
+}
+
 root_import_server() {
   require_root
   local raw_source="$1" install_dir="$2" config_dir="$3" data_dir="$4" service_name="$5"
@@ -1127,12 +1162,7 @@ root_import_server() {
   local source stage_dir="" content result_file="" source_label json_result=""
   local environment_file environment_line environment_key environment_value
   local service_unit panel_was_active=0 panel_stopped=0 dry_run=0 json=0 import_rc=0 restart_rc=0
-  local option
-
-  for option in "${import_options[@]}"; do
-    [[ "$option" == "--dry-run" ]] && dry_run=1
-    [[ "$option" == "--json" ]] && json=1
-  done
+  read -r dry_run json < <(detect_import_wrapper_flags "${import_options[@]}")
 
   import_cleanup() {
     local rc=$?
@@ -1242,14 +1272,7 @@ root_import_server() {
   fi
 
   if ((json)); then
-    if ((restart_rc != 0)); then
-      printf '{"ok":false,"code":"IMPORT_PANEL_RESTART_FAILED","message":"The import command finished, but the web panel did not become ready."}\n'
-    elif [[ -n "$json_result" ]]; then
-      printf '%s\n' "$json_result"
-    else
-      printf '{"ok":false,"code":"IMPORT_FAILED","message":"The import command did not return a result."}\n'
-      import_rc=5
-    fi
+    if print_import_json_result "$json_result" "$import_rc" "$restart_rc"; then :; else import_rc=$?; fi
   elif ((restart_rc != 0)); then
     warn "the import command finished, but the web panel did not become ready"
   fi
@@ -1398,9 +1421,10 @@ command_update() {
 
 command_import_server() {
   local install_dir="$DEFAULT_INSTALL_DIR" config_dir="$DEFAULT_CONFIG_DIR" data_dir="$DEFAULT_DATA_DIR"
-  local service_name="$DEFAULT_SERVICE_NAME" source="" json=0 argument
+  local service_name="$DEFAULT_SERVICE_NAME" source="" json=0 wrapper_flags
   local -a import_options=()
-  for argument in "$@"; do [[ "$argument" == "--json" ]] && json=1; done
+  wrapper_flags="$(detect_import_wrapper_flags "$@")"
+  json="${wrapper_flags#* }"
   if (($#)) && [[ "$1" != --* ]]; then source="$1"; shift; fi
   while (($#)); do
     case "$1" in
