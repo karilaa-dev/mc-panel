@@ -181,7 +181,7 @@ public sealed class BackupService(
         var originalMetadata = SoftwareActivationService.SoftwareMetadataSnapshot.Capture(server);
         var modpackBackup = BackupModpackState(serverId, backupId);
         var restoreModpack = backupMetadata?.ModpackName is not null && Directory.Exists(modpackBackup);
-        var targetMetadata = backupMetadata ?? (originalMetadata with { RestartRequired = false });
+        var targetMetadata = (backupMetadata ?? originalMetadata) with { RestartRequired = false };
         if (backupMetadata?.ModpackName is not null && !restoreModpack)
             targetMetadata = WithoutModpack(targetMetadata);
         var archivePath = Path.Combine(paths.ServerBackups(serverId), backup.FileName);

@@ -65,6 +65,19 @@ public sealed class CustomJarServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Upload_rejects_a_manifest_with_noncanonical_entry_casing()
+    {
+        var (service, _) = CreateService();
+        var jar = CreateJar("Manifest-Version: 1.0\r\nMain-Class: example.Main\r\n", "meta-inf/manifest.mf");
+        await using var stream = new MemoryStream(jar);
+
+        var exception = await Assert.ThrowsAsync<PanelException>(() => service.PrepareAsync(
+            new FormFile(stream, 0, jar.Length, "file", "server.jar"), CancellationToken.None));
+
+        Assert.Equal("VALIDATION_FAILED", exception.Code);
+    }
+
+    [Fact]
     public void Candidates_include_executable_jars_with_uppercase_extensions()
     {
         var (service, paths) = CreateService();
@@ -205,12 +218,12 @@ public sealed class CustomJarServiceTests : IDisposable
     private static byte[] CreateJar(bool executable) => CreateJar(
         executable ? "Manifest-Version: 1.0\r\nMain-Class: example.Main\r\n" : "Manifest-Version: 1.0\r\n");
 
-    private static byte[] CreateJar(string manifestText)
+    private static byte[] CreateJar(string manifestText, string manifestPath = "META-INF/MANIFEST.MF")
     {
         using var output = new MemoryStream();
         using (var archive = new ZipArchive(output, ZipArchiveMode.Create, true))
         {
-            var manifest = archive.CreateEntry("META-INF/MANIFEST.MF");
+            var manifest = archive.CreateEntry(manifestPath);
             using var writer = new StreamWriter(manifest.Open());
             writer.Write(manifestText);
         }

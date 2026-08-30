@@ -174,7 +174,7 @@ public sealed class CustomJarService(
         {
             using var archive = ZipFile.OpenRead(path);
             var manifest = archive.Entries.FirstOrDefault(x =>
-                x.FullName.Equals("META-INF/MANIFEST.MF", StringComparison.OrdinalIgnoreCase));
+                x.FullName.Equals("META-INF/MANIFEST.MF", StringComparison.Ordinal));
             if (manifest is null || manifest.Length > 1024 * 1024)
                 throw PanelProblems.Validation("The JAR does not contain a valid executable manifest.");
             using var reader = new StreamReader(manifest.Open());

@@ -77,6 +77,62 @@ public sealed class InstancePermissionServiceTests : IDisposable
         Assert.Equal(expected, File.GetUnixFileMode(paths.Instances));
     }
 
+    [Fact]
+    public async Task One_shot_repair_uses_database_kinds_without_starting_the_panel()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var data = Path.Combine(_root, "command-data");
+        var paths = new PanelPaths(new PanelOptions
+        {
+            DataDirectory = data,
+            ConfigDirectory = Path.Combine(_root, "command-config")
+        });
+        paths.EnsureCreated();
+        var options = new DbContextOptionsBuilder<StateDbContext>()
+            .UseSqlite($"Data Source={paths.StateDatabase}").Options;
+        var regularId = Guid.NewGuid();
+        var gateId = Guid.NewGuid();
+        await using (var db = new StateDbContext(options))
+        {
+            await db.Database.EnsureCreatedAsync();
+            db.Servers.AddRange(
+                new ServerEntity
+                {
+                    Id = regularId, Name = "Regular", Kind = ServerKind.Paper,
+                    Version = "1.21.8", JavaRuntimeId = "java", State = ServerState.Stopped
+                },
+                new ServerEntity
+                {
+                    Id = gateId, Name = "Gate", Kind = ServerKind.Gate,
+                    Version = "latest", JavaRuntimeId = "", State = ServerState.Stopped
+                });
+            await db.SaveChangesAsync();
+        }
+        var regularFile = CreatePrivateFile(paths.Instance(regularId), "server.jar");
+        var gateFile = CreatePrivateFile(paths.Instance(gateId), "secret");
+
+        var exitCode = await InstancePermissionRepairCommand.RunAsync(
+            [InstancePermissionRepairCommand.Argument, data]);
+
+        Assert.Equal(0, exitCode);
+        Assert.True(File.GetUnixFileMode(paths.Instance(regularId)).HasFlag(UnixFileMode.SetGroup));
+        Assert.True(File.GetUnixFileMode(regularFile).HasFlag(UnixFileMode.GroupWrite));
+        Assert.False(File.GetUnixFileMode(paths.Instance(gateId)).HasFlag(UnixFileMode.GroupRead));
+        Assert.False(File.GetUnixFileMode(gateFile).HasFlag(UnixFileMode.GroupRead));
+    }
+
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    private static string CreatePrivateFile(string directory, string name)
+    {
+        Directory.CreateDirectory(directory);
+        var file = Path.Combine(directory, name);
+        File.WriteAllText(file, "fixture");
+        File.SetUnixFileMode(directory,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        return file;
+    }
+
     private async Task<(InstancePermissionService Service, PanelPaths Paths, Guid ServerId)> CreateAsync(ServerKind kind)
     {
         var paths = new PanelPaths(new PanelOptions

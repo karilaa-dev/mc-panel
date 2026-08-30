@@ -87,7 +87,9 @@ public sealed class SoftwareActivationService(
         if (!Directory.Exists(paths.Staging)) return;
         foreach (var directory in Directory.EnumerateDirectories(paths.Staging))
         {
-            if (Path.GetFileName(directory).StartsWith("software-rollback-", StringComparison.Ordinal)) continue;
+            var name = Path.GetFileName(directory);
+            if (name.StartsWith("software-rollback-", StringComparison.Ordinal) ||
+                name.StartsWith("backup-restore-", StringComparison.Ordinal)) continue;
             try { Directory.Delete(directory, true); }
             catch (Exception exception) { logger.LogWarning(exception, "Could not remove stale staging directory {StagingDirectory}", directory); }
         }

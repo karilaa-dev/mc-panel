@@ -260,6 +260,16 @@ repair_access_layout() {
   REPAIRED_SETUP_TOKEN="$token"
 }
 
+repair_instance_permissions() {
+  local install_dir="$1" data_dir="$2" state_database="$2/state.db"
+  [[ ! -e "$state_database" ]] ||
+    [[ -f "$state_database" && ! -L "$state_database" ]] || die "unsafe state database: $state_database"
+  [[ -f "$state_database" ]] || return 0
+  runuser --user "$PANEL_USER" -- "$install_dir/McPanel.Api" \
+    --mcpanel-repair-instance-permissions "$data_dir" ||
+    die "existing server instance permissions could not be repaired"
+}
+
 validate_artifact() {
   local artifact_dir="$1"
   [[ -d "$artifact_dir" ]] || die "publish artifact is not a directory: $artifact_dir"
@@ -725,7 +735,7 @@ root_install() {
   }
   trap install_cleanup EXIT
 
-  require_commands awk chmod chown cp curl find getent grep groupadd install mktemp mv od realpath sed sleep systemctl tr useradd usermod
+  require_commands awk chmod chown cp curl find getent grep groupadd install mktemp mv od realpath runuser sed sleep systemctl tr useradd usermod
   validate_host
   validate_service_name "$service_name"
   validate_access_user "$access_user"
@@ -817,6 +827,7 @@ root_install() {
   chown root:root "$runtime_unit_tmp"; chmod 0644 "$runtime_unit_tmp"
 
   mv -- "$stage_dir" "$install_dir"; stage_dir=""; install_activated=1
+  repair_instance_permissions "$install_dir" "$data_dir"
   mv -- "$unit_tmp" "$service_unit"; panel_unit_created=1
   mv -- "$runtime_unit_tmp" "$runtime_unit"; runtime_unit_created=1
   systemctl daemon-reload
@@ -955,6 +966,7 @@ root_update() {
   repair_access_layout "$config_dir" "$data_dir" "$service_name" "$access_user"
 
   if installed_release_matches "$artifact_dir" "$install_dir"; then
+    repair_instance_permissions "$install_dir" "$data_dir"
     parse_release_metadata "$artifact_dir/$RELEASE_METADATA_NAME"
     unit_tmp="$(mktemp "/etc/systemd/system/.${service_name}.service.XXXXXX")"
     render_panel_unit "$install_dir" "$config_dir" "$data_dir" "$service_name" > "$unit_tmp"
@@ -998,6 +1010,7 @@ root_update() {
   mv -- "$install_dir" "$rollback_dir"
   update_swapped=1
   mv -- "$stage_dir" "$install_dir"; stage_dir=""
+  repair_instance_permissions "$install_dir" "$data_dir"
 
   rm -f -- "$memory_dropin"
   rmdir --ignore-fail-on-non-empty -- "$memory_dropin_dir" 2>/dev/null || true

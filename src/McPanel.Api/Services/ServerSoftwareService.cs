@@ -186,7 +186,12 @@ public sealed class ServerSoftwareService(
                     cancellationToken);
             }
             catch (Exception exception) { logger.LogWarning(exception, "Could not append server core change log for {ServerId}", serverId); }
-            await operations.ProgressAsync(jobId, 95, "Server core change complete", cancellationToken);
+            try { await operations.ProgressAsync(jobId, 95, "Server core change complete", cancellationToken); }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception,
+                    "Server core change committed for {ServerId}, but final progress could not be recorded", serverId);
+            }
         }
         catch (Exception exception)
         {

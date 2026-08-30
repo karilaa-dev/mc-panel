@@ -22,6 +22,7 @@ if (PersistentRuntimeHost.IsInvocation(args)) return await PersistentRuntimeHost
 if (PersistentRuntimeUpgradeCommand.IsInvocation(args)) return await PersistentRuntimeUpgradeCommand.RunAsync();
 if (ServerImportCommand.IsStageInvocation(args)) return await ServerImportCommand.RunStageAsync(args);
 if (ServerImportCommand.IsImportInvocation(args)) return await ServerImportCommand.RunImportAsync(args);
+if (InstancePermissionRepairCommand.IsInvocation(args)) return await InstancePermissionRepairCommand.RunAsync(args);
 
 // systemd intentionally uses the writable data directory as its working directory.
 // Anchor configuration and bundled web assets to the executable instead of the CWD.

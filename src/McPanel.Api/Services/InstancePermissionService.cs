@@ -9,7 +9,7 @@ public sealed class InstancePermissionService(
     IDbContextFactory<StateDbContext> stateFactory,
     ILogger<InstancePermissionService> logger)
 {
-    public async Task NormalizeAllAsync(CancellationToken cancellationToken)
+    public async Task NormalizeAllAsync(CancellationToken cancellationToken, bool tolerateFailures = true)
     {
         if (OperatingSystem.IsWindows()) return;
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
@@ -18,7 +18,10 @@ public sealed class InstancePermissionService(
         {
             try { NormalizeTree(paths.Instance(server.Id), server.Kind == ServerKind.Gate, tolerateMissing: true); }
             catch (Exception exception) when (exception is not OperationCanceledException)
-            { logger.LogWarning(exception, "Could not normalize permissions for {ServerId}", server.Id); }
+            {
+                logger.LogWarning(exception, "Could not normalize permissions for {ServerId}", server.Id);
+                if (!tolerateFailures) throw;
+            }
         }
     }
 

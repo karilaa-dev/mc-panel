@@ -1257,6 +1257,14 @@ END;
     [Fact]
     public async Task Backup_restore_uses_the_software_metadata_captured_before_a_core_change()
     {
+        await using (var scope = _factory!.Services.CreateAsyncScope())
+        {
+            var stateFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+            await using var db = await stateFactory.CreateDbContextAsync();
+            var server = await db.Servers.SingleAsync(x => x.Id == _serverId);
+            server.RestartRequired = true;
+            await db.SaveChangesAsync();
+        }
         using (var response = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/backups", "{}"))
         {
             Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
@@ -1293,6 +1301,7 @@ END;
         Assert.Equal(ServerKind.Paper, restored.Kind);
         Assert.Equal("1.20.4", restored.Version);
         Assert.Equal("server.jar", restored.LaunchTarget);
+        Assert.False(restored.RestartRequired);
         Assert.False(File.Exists(Path.Combine(_paths.Instance(_serverId), "custom-server.jar")));
         Assert.True(File.Exists(Path.Combine(_paths.Instance(_serverId), "server.jar")));
     }

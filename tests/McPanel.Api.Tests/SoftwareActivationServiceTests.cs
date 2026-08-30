@@ -104,14 +104,18 @@ public sealed class SoftwareActivationServiceTests : IDisposable
         var (service, paths, _) = await CreateAsync(ServerState.Stopped);
         var stage = Path.Combine(paths.Staging, "software-orphan");
         var rollback = Path.Combine(paths.Staging, "software-rollback-corrupt");
+        var restore = Path.Combine(paths.Staging, "backup-restore-old-corrupt");
         Directory.CreateDirectory(stage);
         Directory.CreateDirectory(rollback);
+        Directory.CreateDirectory(restore);
         await File.WriteAllTextAsync(Path.Combine(rollback, "activation-manifest.json"), "not-json");
+        await File.WriteAllTextAsync(Path.Combine(restore, "server.jar"), "displaced");
 
         service.CleanupOrphanedStaging();
 
         Assert.False(Directory.Exists(stage));
         Assert.True(Directory.Exists(rollback));
+        Assert.True(Directory.Exists(restore));
     }
 
     [Fact]
