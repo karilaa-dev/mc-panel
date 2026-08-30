@@ -443,11 +443,11 @@ test_sudo_access() {
     assert_equal "1" "$prompts" "sudo prompt count"
   )
   (
-    # shellcheck disable=SC2329 # These stubs are invoked through assert_fails.
+    # shellcheck disable=SC2317,SC2329 # These stubs are invoked through assert_fails.
     require_commands() { :; }
-    # shellcheck disable=SC2329
+    # shellcheck disable=SC2317,SC2329
     interactive_terminal_available() { return 1; }
-    # shellcheck disable=SC2329
+    # shellcheck disable=SC2317,SC2329
     sudo() { return 1; }
     assert_fails "headless sudo authentication" require_sudo_access
   )
