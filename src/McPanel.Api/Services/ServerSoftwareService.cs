@@ -3,7 +3,6 @@ using McPanel.Api.Contracts;
 using McPanel.Api.Data;
 using McPanel.Api.Infrastructure;
 using Microsoft.EntityFrameworkCore;
-using System.Text.Json;
 
 namespace McPanel.Api.Services;
 
@@ -20,6 +19,7 @@ public sealed class ServerSoftwareService(
     AsyncKeyedLock keyedLock,
     IServerProcessStatus processStatus,
     InstancePermissionService permissions,
+    SoftwareActivationService activations,
     ModpackService modpacks,
     ILogger<ServerSoftwareService> logger)
 {
@@ -80,7 +80,7 @@ public sealed class ServerSoftwareService(
         var stage = Path.Combine(paths.Staging, $"software-{serverId:N}-{jobId:N}");
         var rollback = Path.Combine(paths.Staging, $"software-rollback-{serverId:N}-{jobId:N}");
         CustomJarService.ClaimedCustomJar? claim = null;
-        ActivationOverlay? activation = null;
+        SoftwareActivationService.ActivationTransaction? activation = null;
         var committed = false;
         try
         {
@@ -145,7 +145,7 @@ public sealed class ServerSoftwareService(
             }
 
             await operations.ProgressAsync(jobId, 70, "Activating the new launch files", cancellationToken);
-            activation = new ActivationOverlay(stage, paths.Instance(serverId), rollback);
+            activation = activations.Begin(serverId, stage, rollback);
             activation.Activate();
             server.Kind = request.Kind;
             server.Version = request.Version.Trim();
@@ -264,87 +264,4 @@ public sealed class ServerSoftwareService(
         }
     }
 
-    private sealed class ActivationOverlay(string source, string destination, string rollback)
-    {
-        private readonly List<string> _installed = [];
-        private readonly List<(string Backup, string Target)> _replaced = [];
-        private readonly List<string> _createdDirectories = [];
-        private bool _committed;
-
-        private string ManifestPath => Path.Combine(rollback, "activation-manifest.json");
-
-        public void Activate()
-        {
-            Directory.CreateDirectory(destination);
-            var files = Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories).ToList();
-            foreach (var file in files)
-            {
-                var relative = Path.GetRelativePath(source, file);
-                var target = Path.Combine(destination, relative);
-                if (Directory.Exists(target)) throw PanelProblems.Conflict("SOFTWARE_ACTIVATION_CONFLICT", $"A directory blocks {relative}.");
-                var parent = Path.GetDirectoryName(target)!;
-                CreateParents(parent);
-                if (File.Exists(target))
-                {
-                    var backup = Path.Combine(rollback, relative);
-                    Directory.CreateDirectory(Path.GetDirectoryName(backup)!);
-                    File.Move(target, backup);
-                    _replaced.Add((backup, target));
-                }
-                File.Move(file, target);
-                _installed.Add(target);
-                WriteManifest();
-            }
-        }
-
-        public void Commit()
-        {
-            _committed = true;
-            try { if (Directory.Exists(rollback)) Directory.Delete(rollback, true); } catch { }
-        }
-
-        public void Rollback()
-        {
-            if (_committed) return;
-            foreach (var target in _installed.AsEnumerable().Reverse())
-                if (File.Exists(target)) File.Delete(target);
-            foreach (var item in _replaced.AsEnumerable().Reverse())
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(item.Target)!);
-                if (File.Exists(item.Backup)) File.Move(item.Backup, item.Target, true);
-            }
-            foreach (var directory in _createdDirectories.AsEnumerable().Reverse())
-                if (Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any()) Directory.Delete(directory);
-        }
-
-        private void CreateParents(string directory)
-        {
-            var missing = new Stack<string>();
-            var current = directory;
-            while (!Directory.Exists(current))
-            {
-                if (File.Exists(current)) throw PanelProblems.Conflict("SOFTWARE_ACTIVATION_CONFLICT", "A file blocks a required software directory.");
-                missing.Push(current);
-                current = Path.GetDirectoryName(current)!;
-            }
-            while (missing.TryPop(out var item))
-            {
-                Directory.CreateDirectory(item);
-                _createdDirectories.Add(item);
-            }
-        }
-
-        private void WriteManifest()
-        {
-            Directory.CreateDirectory(rollback);
-            var temporary = ManifestPath + ".tmp";
-            File.WriteAllText(temporary, JsonSerializer.Serialize(new
-            {
-                installed = _installed,
-                replaced = _replaced.Select(item => new { backup = item.Backup, target = item.Target }),
-                createdDirectories = _createdDirectories
-            }));
-            File.Move(temporary, ManifestPath, true);
-        }
-    }
 }

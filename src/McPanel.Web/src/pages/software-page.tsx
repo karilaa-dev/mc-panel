@@ -21,7 +21,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { api } from "@/lib/api"
 import { createClientRequestId } from "@/lib/client-request-id"
-import type { CustomJarImportDto, ServerKind } from "@/lib/contracts"
+import type { ChangeServerSoftwareRequest, CustomJarImportDto, ServerKind } from "@/lib/contracts"
 import { recommendedJavaMajor } from "@/lib/java-version"
 import { serverKindLabel } from "@/lib/server-kind"
 
@@ -94,22 +94,30 @@ export function SoftwarePage() {
   const selectionsReady = Boolean(selectedVersion && selectedJava) && (mode === "CustomJar" ? customReady
     : kind === "Fabric" ? Boolean(selectedLoader && selectedInstaller)
     : kind === "Forge" || kind === "NeoForge" ? Boolean(selectedLoader) : true)
+  const changeIntent: Omit<ChangeServerSoftwareRequest, "clientRequestId"> = {
+    kind: targetKind,
+    version: selectedVersion,
+    javaRuntimeId: selectedJava,
+    includeExperimental: experimental,
+    createBackup,
+    ...(kind === "Paper" && mode === "Official" && selectedBuild ? { build: selectedBuild } : {}),
+    ...(kind === "Fabric" && mode === "Official" ? { loaderVersion: selectedLoader, installerVersion: selectedInstaller } : {}),
+    ...((kind === "Forge" || kind === "NeoForge") && mode === "Official" ? { loaderVersion: selectedLoader } : {}),
+    ...(mode === "CustomJar" && customSource === "upload" && customJar ? { customJarImportToken: customJar.token } : {}),
+    ...(mode === "CustomJar" && customSource === "existing" ? { existingJarPath: existingJar } : {}),
+  }
+  const changeIntentKey = JSON.stringify(changeIntent)
+  const [requestIdentity, setRequestIdentity] = useState(() => ({ key: changeIntentKey, id: createClientRequestId() }))
+  if (requestIdentity.key !== changeIntentKey)
+    setRequestIdentity({ key: changeIntentKey, id: createClientRequestId() })
 
   const change = useMutation({
     mutationFn: () => api.changeSoftware(serverId, {
-      kind: targetKind,
-      version: selectedVersion,
-      javaRuntimeId: selectedJava,
-      includeExperimental: experimental,
-      createBackup,
-      ...(kind === "Paper" && mode === "Official" && selectedBuild ? { build: selectedBuild } : {}),
-      ...(kind === "Fabric" && mode === "Official" ? { loaderVersion: selectedLoader, installerVersion: selectedInstaller } : {}),
-      ...((kind === "Forge" || kind === "NeoForge") && mode === "Official" ? { loaderVersion: selectedLoader } : {}),
-      ...(mode === "CustomJar" && customSource === "upload" && customJar ? { customJarImportToken: customJar.token } : {}),
-      ...(mode === "CustomJar" && customSource === "existing" ? { existingJarPath: existingJar } : {}),
-      clientRequestId: createClientRequestId(),
+      ...changeIntent,
+      clientRequestId: requestIdentity.id,
     }),
     onSuccess: (job) => {
+      setRequestIdentity({ key: changeIntentKey, id: createClientRequestId() })
       setConfirmOpen(false)
       toast.success("Software change queued", { description: `Job ${job.id.slice(0, 8)}` })
       void queryClient.invalidateQueries({ queryKey: ["server", serverId] })

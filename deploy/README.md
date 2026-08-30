@@ -111,8 +111,10 @@ Install and update add the invoking account to the `mcpanel` group. Sign out
 and back in before using the new membership. Regular instance directories are
 setgid and group-readable and writable, so that account can work in
 `/var/lib/mcpanel/instances/<id>` without root. Gate instance trees remain
-owner-only. Databases, keys, backups, staging, logs, Modrinth baselines, and
-runtime internals remain private below the mode-`0750` data root.
+owner-only. The instances parent is mode `2750`, so group members cannot
+rename, delete, or replace its child directories. Databases, keys, backups,
+staging, logs, Modrinth baselines, and runtime internals remain private below
+the mode-`0750` data root.
 
 All Minecraft servers, plugins, mods, and Gate proxies run under the same Unix
 account. They cannot normally write outside `/var/lib/mcpanel`, but they can

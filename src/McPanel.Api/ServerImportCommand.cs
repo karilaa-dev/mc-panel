@@ -425,7 +425,9 @@ internal static class ServerImportCommand
                     case "--name": options.Name = Value(); break;
                     case "--kind":
                         var kindValue = Value();
-                        if (!Enum.TryParse<ServerKind>(kindValue, true, out var kind) || kind == ServerKind.Gate)
+                        if (!Enum.TryParse<ServerKind>(kindValue, true, out var kind) ||
+                            !Enum.IsDefined(kind) ||
+                            kind is not (ServerKind.Vanilla or ServerKind.Paper or ServerKind.Fabric or ServerKind.Forge or ServerKind.NeoForge))
                             throw new ServerImportException(ServerImportFailureKind.Usage, "IMPORT_KIND_INVALID", "--kind must be vanilla, paper, fabric, forge, or neoforge.");
                         options.Kind = kind;
                         break;

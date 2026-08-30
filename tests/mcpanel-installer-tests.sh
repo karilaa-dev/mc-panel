@@ -245,7 +245,7 @@ test_runtime_generation_wait() {
 }
 
 test_service_security_contract() {
-  local panel_unit runtime_unit
+  local panel_unit runtime_unit instances_mode_count
   panel_unit="$(render_panel_unit /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel)"
   runtime_unit="$(render_runtime_unit /opt/mcpanel /etc/mcpanel /var/lib/mcpanel)"
   [[ "$panel_unit" == *"LoadCredential=mcpanel.setup-token"* ]] || fail "panel unit does not load the setup credential"
@@ -253,6 +253,8 @@ test_service_security_contract() {
   [[ "$panel_unit" == *"UMask=0077"* ]] || fail "panel private umask changed"
   [[ "$runtime_unit" == *"UMask=0007"* ]] || fail "runtime group-writable umask is missing"
   [[ "$runtime_unit" != *"LoadCredential="* ]] || fail "runtime service should not receive the setup credential"
+  instances_mode_count="$(grep -c -- '-m 2750 -- "$data_dir/instances"' "$test_repo_root/mcpanel.sh")"
+  [[ "$instances_mode_count" -eq 2 ]] || fail "instances parent must be setgid and group-readable, but not group-writable"
 }
 
 test_systemd_minimum() {

@@ -213,7 +213,7 @@ repair_access_layout() {
   validate_access_user "$access_user"
   install -d -o root -g root -m 0755 -- "$config_dir"
   install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 0750 -- "$data_dir"
-  install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 2770 -- "$data_dir/instances"
+  install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 2750 -- "$data_dir/instances"
   for state_dir in staging backups logs runtime runtime/state keys icons modpacks modpack-imports custom-jar-imports gate; do
     install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 0700 -- "$data_dir/$state_dir"
   done
@@ -776,7 +776,7 @@ root_install() {
   install -d -o root -g root -m 0755 -- "$config_dir"
   install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 0750 -- "$data_dir"
   local state_dir
-  install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 2770 -- "$data_dir/instances"
+  install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 2750 -- "$data_dir/instances"
   for state_dir in staging backups logs runtime runtime/state keys icons modpacks modpack-imports custom-jar-imports gate; do
     install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 0700 -- "$data_dir/$state_dir"
   done

@@ -89,7 +89,8 @@ builder.Services.AddHttpClient("minecraft-profile", client =>
 }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, AutomaticDecompression = System.Net.DecompressionMethods.All });
 
 builder.Services.AddSingleton<AsyncKeyedLock>(); builder.Services.AddSingleton<SafePathResolver>(); builder.Services.AddSingleton<SessionAudience>();
-builder.Services.AddSingleton<InstancePermissionService>(); builder.Services.AddSingleton<CustomJarService>();
+builder.Services.AddSingleton<InstancePermissionService>(); builder.Services.AddHostedService<InstancePermissionRepairService>();
+builder.Services.AddSingleton<CustomJarService>(); builder.Services.AddSingleton<SoftwareActivationService>();
 builder.Services.AddSingleton<CgroupMemoryService>();
 builder.Services.AddSingleton<ValidatedDownloadClient>(); builder.Services.AddSingleton<DistributionCatalogService>();
 builder.Services.AddSingleton<JavaDiscoveryService>(); builder.Services.AddSingleton<ConsoleService>();
@@ -172,11 +173,15 @@ static async Task InitializeAsync(IServiceProvider services)
         await state.EnsureCompatibleSchemaAsync();
         await scope.ServiceProvider.GetRequiredService<LegacyGateMigrationService>().MigrateAsync(state, CancellationToken.None);
         await state.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
+        await scope.ServiceProvider.GetRequiredService<SoftwareActivationService>()
+            .RecoverInterruptedAsync(state, CancellationToken.None);
         var staleJobs = await state.Jobs.Where(x => x.State == JobState.Running || x.State == JobState.Queued).ToListAsync();
         foreach (var job in staleJobs) { job.State = JobState.Failed; job.Progress = 100; job.Message = "Interrupted"; job.Error = "The panel restarted before this operation completed."; }
+        var interruptedUpdates = await state.Servers.Where(x => x.State == ServerState.Updating).ToListAsync();
+        foreach (var server in interruptedUpdates) { server.State = ServerState.Stopped; server.ProcessId = null; }
         if (!services.GetRequiredService<PersistentRuntimeClient>().Enabled)
         {
-            var staleServers = await state.Servers.Where(x => x.State == ServerState.Running || x.State == ServerState.Starting || x.State == ServerState.Stopping || x.State == ServerState.BackingUp || x.State == ServerState.Updating).ToListAsync();
+            var staleServers = await state.Servers.Where(x => x.State == ServerState.Running || x.State == ServerState.Starting || x.State == ServerState.Stopping || x.State == ServerState.BackingUp).ToListAsync();
             foreach (var server in staleServers) { server.State = ServerState.Stopped; server.ProcessId = null; server.StartedAt = null; }
         }
         var interruptedInstalls = await state.Servers.Where(x => x.State == ServerState.Installing).ToListAsync();
@@ -189,7 +194,6 @@ static async Task InitializeAsync(IServiceProvider services)
     services.GetRequiredService<SessionAudience>().Initialize(sessionStamp);
     services.GetRequiredService<ModpackService>().CleanupExpiredImports();
     services.GetRequiredService<CustomJarService>().CleanupExpiredImports();
-    await scope.ServiceProvider.GetRequiredService<InstancePermissionService>().NormalizeAllAsync(CancellationToken.None);
     await scope.ServiceProvider.GetRequiredService<ServerIconService>().BackfillAsync(CancellationToken.None);
     await using (var console = await consoleFactory.CreateDbContextAsync())
     {
@@ -203,8 +207,7 @@ static async Task InitializeAsync(IServiceProvider services)
     }
     var consoleService = scope.ServiceProvider.GetRequiredService<ConsoleService>();
     foreach (var serverId in serverIds) await consoleService.PruneAsync(serverId, CancellationToken.None);
-    var panelPaths = scope.ServiceProvider.GetRequiredService<PanelPaths>();
-    try { foreach (var directory in Directory.EnumerateDirectories(panelPaths.Staging)) Directory.Delete(directory, true); } catch { }
+    scope.ServiceProvider.GetRequiredService<SoftwareActivationService>().CleanupOrphanedStaging();
 }
 
 public partial class Program { }

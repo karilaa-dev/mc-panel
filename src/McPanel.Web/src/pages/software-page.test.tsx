@@ -73,4 +73,26 @@ describe("SoftwarePage", () => {
     expect(await screen.findByText("Stop the server first")).toBeVisible()
     expect(screen.getByRole("button", { name: "Review software change" })).toBeDisabled()
   })
+
+  it("reuses the client request ID when a software change is retried", async () => {
+    const user = userEvent.setup()
+    mockedApi.changeSoftware
+      .mockRejectedValueOnce(new Error("The response was lost."))
+      .mockResolvedValueOnce({ id: "change-job", type: "ChangeSoftware", state: "Queued", progress: 0, serverId: "server-1" })
+    renderPage()
+
+    const review = await screen.findByRole("button", { name: "Review software change" })
+    await waitFor(() => expect(review).toBeEnabled())
+    await user.click(review)
+    const submit = await screen.findByRole("button", { name: "Change software" })
+    await user.click(submit)
+    await waitFor(() => expect(mockedApi.changeSoftware).toHaveBeenCalledTimes(1))
+    const firstRequest = mockedApi.changeSoftware.mock.calls[0][1]
+
+    await user.click(submit)
+    await waitFor(() => expect(mockedApi.changeSoftware).toHaveBeenCalledTimes(2))
+    const secondRequest = mockedApi.changeSoftware.mock.calls[1][1]
+
+    expect(secondRequest.clientRequestId).toBe(firstRequest.clientRequestId)
+  })
 })

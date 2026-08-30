@@ -82,6 +82,25 @@ public sealed class ServerImportCommandTests : IAsyncLifetime
         Assert.Equal("IMPORT_OPTION_REQUIRED", document.RootElement.GetProperty("code").GetString());
     }
 
+    [Fact]
+    public async Task Numeric_undefined_server_kind_is_rejected()
+    {
+        var source = CreateSource();
+        var output = new StringWriter();
+        Console.SetOut(output);
+
+        var exitCode = await ServerImportCommand.RunImportAsync([
+            "--mcpanel-import-server", source,
+            "--kind", "99",
+            "--json"
+        ]);
+
+        Assert.Equal((int)ServerImportFailureKind.Usage, exitCode);
+        using var document = JsonDocument.Parse(output.ToString());
+        Assert.False(document.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Equal("IMPORT_KIND_INVALID", document.RootElement.GetProperty("code").GetString());
+    }
+
     private string CreateSource()
     {
         var source = Path.Combine(_root, "staged-" + Guid.NewGuid().ToString("N"));
