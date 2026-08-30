@@ -133,7 +133,7 @@ public static class ServerImportSource
         long byteLimit,
         CancellationToken cancellationToken)
     {
-        var entries = new List<(string Source, string Relative, bool Directory, long Length, DateTime LastWriteUtc)>();
+        var entries = new List<(string Source, string Relative, bool Directory, long Length, DateTime LastWriteUtc, bool Executable)>();
         var pending = new Stack<(string Path, string Relative)>();
         pending.Push((source, ""));
         long total = 0;
@@ -152,7 +152,7 @@ public static class ServerImportSource
                 if (++total > MaximumEntries) throw Invalid("IMPORT_ENTRY_LIMIT", $"The source contains more than {MaximumEntries:N0} entries.");
                 if (child is DirectoryInfo directory)
                 {
-                    entries.Add((directory.FullName, relative, true, 0, directory.LastWriteTimeUtc));
+                    entries.Add((directory.FullName, relative, true, 0, directory.LastWriteTimeUtc, false));
                     pending.Push((directory.FullName, relative));
                 }
                 else if (child is FileInfo file)
@@ -162,7 +162,9 @@ public static class ServerImportSource
                     try { length = file.Length; }
                     catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                     { throw Invalid("IMPORT_SOURCE_UNREADABLE", $"The source file could not be read: {file.FullName}", exception); }
-                    entries.Add((file.FullName, relative, false, length, file.LastWriteTimeUtc));
+                    var executable = !OperatingSystem.IsWindows() &&
+                        (File.GetUnixFileMode(file.FullName) & UnixFileMode.UserExecute) != 0;
+                    entries.Add((file.FullName, relative, false, length, file.LastWriteTimeUtc, executable));
                 }
                 else throw Invalid("IMPORT_SPECIAL_FILE", $"The source contains an unsupported file: {relative}");
             }
@@ -195,7 +197,7 @@ public static class ServerImportSource
             await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
             copiedBytes = await CopyLimitedAsync(input, output, copiedBytes, byteLimit, cancellationToken);
             File.SetLastWriteTimeUtc(target, entry.LastWriteUtc);
-            SetFileMode(target);
+            SetFileMode(target, entry.Executable);
         }
     }
 
@@ -247,7 +249,9 @@ public static class ServerImportSource
                 await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
                 extractedBytes = await CopyLimitedAsync(input, output, extractedBytes, byteLimit, cancellationToken);
                 if (entry.LastWriteTime != default) File.SetLastWriteTimeUtc(target, entry.LastWriteTime.UtcDateTime);
-                SetFileMode(target);
+                var executable = !OperatingSystem.IsWindows() &&
+                    ((entry.ExternalAttributes >> 16) & 0x40) != 0;
+                SetFileMode(target, executable);
             }
         }
         catch (ServerImportException) { throw; }
@@ -298,7 +302,9 @@ public static class ServerImportSource
                     await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
                     extractedBytes = await CopyLimitedAsync(entry.DataStream ?? Stream.Null, output, extractedBytes, byteLimit, cancellationToken);
                     if (entry.ModificationTime != default) File.SetLastWriteTimeUtc(target, entry.ModificationTime.UtcDateTime);
-                    SetFileMode(target);
+                    var executable = !OperatingSystem.IsWindows() &&
+                        (entry.Mode & UnixFileMode.UserExecute) != 0;
+                    SetFileMode(target, executable);
                 }
             }
         }
@@ -473,9 +479,12 @@ public static class ServerImportSource
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
-    private static void SetFileMode(string path)
+    private static void SetFileMode(string path, bool executable)
     {
-        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        if (OperatingSystem.IsWindows()) return;
+        var mode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        if (executable) mode |= UnixFileMode.UserExecute;
+        File.SetUnixFileMode(path, mode);
     }
 
     private static ServerImportException Invalid(string code, string message, Exception? inner = null) =>
@@ -491,15 +500,7 @@ public sealed partial class ServerImportService(
     public async Task<ServerImportInspection> InspectAsync(string root, CancellationToken cancellationToken)
     {
         root = ValidateRoot(root);
-        var propertiesPath = Path.Combine(root, "server.properties");
-        if (!File.Exists(propertiesPath))
-            throw Invalid("IMPORT_PROPERTIES_MISSING", "The source root must contain server.properties. Archives with a containing folder are not supported.");
-        RejectManagedLink(propertiesPath, root);
-        PropertiesDocument properties;
-        try { properties = PropertiesDocument.Parse(await File.ReadAllTextAsync(propertiesPath, cancellationToken)); }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or DecoderFallbackException)
-        { throw Invalid("IMPORT_PROPERTIES_INVALID", "server.properties could not be read as text.", exception); }
-        int? port = int.TryParse(properties.Get("server-port"), out var parsedPort) && parsedPort is >= 1024 and <= 65535 ? parsedPort : null;
+        var port = await ReadPropertiesPortAsync(root, cancellationToken);
 
         var launchers = FindLaunchers(root);
         if (launchers.Count == 0)
@@ -516,8 +517,8 @@ public sealed partial class ServerImportService(
         CancellationToken cancellationToken)
     {
         root = ValidateRoot(root);
-        _ = await InspectAsync(root, cancellationToken);
         if (request is null) throw Usage("IMPORT_REQUEST_REQUIRED", "Import settings are required.");
+        _ = await ReadPropertiesPortAsync(root, cancellationToken);
         var name = request.Name?.Trim() ?? "";
         if (!NameRegex().IsMatch(name))
             throw Usage("IMPORT_NAME_INVALID", "Server names may contain letters, numbers, spaces, '-' and '_' and must be 2 to 48 characters.", "name");
@@ -611,6 +612,20 @@ public sealed partial class ServerImportService(
 
         return new(name, request.Kind, version, loaderVersion, launchTarget, launchMode, runtime,
             requiredJava, request.MemoryMb, totalLimitMb, request.Port, request.JvmArguments ?? "");
+    }
+
+    private static async Task<int?> ReadPropertiesPortAsync(string root, CancellationToken cancellationToken)
+    {
+        var propertiesPath = Path.Combine(root, "server.properties");
+        if (!File.Exists(propertiesPath))
+            throw Invalid("IMPORT_PROPERTIES_MISSING", "The source root must contain server.properties. Archives with a containing folder are not supported.");
+        RejectManagedLink(propertiesPath, root);
+        PropertiesDocument properties;
+        try { properties = PropertiesDocument.Parse(await File.ReadAllTextAsync(propertiesPath, cancellationToken)); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or DecoderFallbackException)
+        { throw Invalid("IMPORT_PROPERTIES_INVALID", "server.properties could not be read as text.", exception); }
+        return int.TryParse(properties.Get("server-port"), out var parsedPort) && parsedPort is >= 1024 and <= 65535
+            ? parsedPort : null;
     }
 
     public async Task<ServerImportResult> ImportAsync(

@@ -94,6 +94,25 @@ public sealed class ServerImportServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Directory_staging_preserves_owner_execute_without_group_or_other_permissions()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var source = CreateVanillaSource("executable-source", 25581);
+        var script = Path.Combine(source, "maintenance.sh");
+        await File.WriteAllTextAsync(script, "#!/bin/sh\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite |
+            UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+        var stage = Path.Combine(_paths.Staging, "executable-stage");
+
+        await ServerImportSource.StageAsync(source, stage, CancellationToken.None);
+
+        var mode = File.GetUnixFileMode(Path.Combine(stage, "maintenance.sh"));
+        Assert.True(mode.HasFlag(UnixFileMode.UserExecute));
+        Assert.False(mode.HasFlag(UnixFileMode.GroupExecute));
+        Assert.False(mode.HasFlag(UnixFileMode.OtherExecute));
+    }
+
+    [Fact]
     public async Task Rejects_an_archive_with_a_containing_directory()
     {
         var source = CreateVanillaSource("nested-source", 25573);
@@ -178,6 +197,23 @@ public sealed class ServerImportServiceTests : IAsyncLifetime
         Assert.Equal("1.20.1", inspection.SuggestedVersion);
         Assert.Equal("47.3.0", inspection.SuggestedLoaderVersion);
         Assert.Equal(LaunchMode.ArgumentFile, validation.LaunchMode);
+    }
+
+    [Fact]
+    public async Task Validates_an_explicit_nested_jar_without_a_top_level_launcher()
+    {
+        var source = Path.Combine(_root, "nested-launcher-source");
+        Directory.CreateDirectory(Path.Combine(source, "run"));
+        await File.WriteAllTextAsync(Path.Combine(source, "server.properties"), "server-port=25582\n");
+        await File.WriteAllBytesAsync(Path.Combine(source, "run", "server.jar"),
+            [0x50, 0x4b, 0x05, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+
+        var validation = await _service.ValidateAsync(source,
+            Request("Nested launcher", 25582) with { LaunchTarget = Path.Combine("run", "server.jar") },
+            CancellationToken.None);
+
+        Assert.Equal(Path.Combine("run", "server.jar"), validation.LaunchTarget);
+        Assert.Equal(LaunchMode.Jar, validation.LaunchMode);
     }
 
     [Fact]

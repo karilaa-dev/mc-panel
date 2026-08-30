@@ -63,6 +63,7 @@ public sealed partial class ServerInstallerService(
             State = ServerState.Installing, EulaAcceptedAt = DateTimeOffset.UtcNow
         };
         var pending = OperationQueue.CreatePending("Install", entity.Id, clientRequestId);
+        var creationCommitted = false;
         try
         {
             db.Servers.Add(entity);
@@ -71,6 +72,7 @@ public sealed partial class ServerInstallerService(
             {
                 await db.SaveChangesAsync(cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
+                creationCommitted = true;
             }
             var claim = customJarClaim;
             var job = await operations.HandoffCommittedAsync(pending,
@@ -84,9 +86,18 @@ public sealed partial class ServerInstallerService(
             }
             return (entity, job);
         }
-        catch
+        catch (Exception exception)
         {
-            customJarClaim?.Dispose();
+            if (customJarClaim is not null && !creationCommitted)
+            {
+                try { customJarClaim.Restore(); }
+                catch (Exception restoreException)
+                {
+                    throw new AggregateException(
+                        "Server creation failed and the custom JAR upload could not be restored.", exception, restoreException);
+                }
+            }
+            else customJarClaim?.Dispose();
             throw;
         }
     }

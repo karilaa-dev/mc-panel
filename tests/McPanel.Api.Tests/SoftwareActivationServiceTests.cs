@@ -1,5 +1,6 @@
 using McPanel.Api.Configuration;
 using McPanel.Api.Data;
+using McPanel.Api.Infrastructure;
 using McPanel.Api.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -22,7 +23,7 @@ public sealed class SoftwareActivationServiceTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(instance, "server.jar"), "old");
         await File.WriteAllTextAsync(Path.Combine(stage, "server.jar"), "new");
 
-        service.Begin(serverId, stage, rollback).Activate();
+        service.Begin(serverId, stage, rollback, await MetadataAsync(options)).Activate();
         Assert.Equal("new", await File.ReadAllTextAsync(Path.Combine(instance, "server.jar")));
 
         await using (var db = new StateDbContext(options))
@@ -45,7 +46,8 @@ public sealed class SoftwareActivationServiceTests : IDisposable
         Directory.CreateDirectory(stage);
         await File.WriteAllTextAsync(Path.Combine(instance, "server.jar"), "old");
         await File.WriteAllTextAsync(Path.Combine(stage, "server.jar"), "new");
-        service.Begin(serverId, stage, rollback).Activate();
+        var activation = service.Begin(serverId, stage, rollback, await MetadataAsync(options));
+        activation.Activate();
         await using (var db = new StateDbContext(options))
         {
             var server = await db.Servers.SingleAsync();
@@ -53,6 +55,7 @@ public sealed class SoftwareActivationServiceTests : IDisposable
             server.Version = "1.21.8";
             await db.SaveChangesAsync();
         }
+        activation.MarkCommitted();
 
         await using (var db = new StateDbContext(options))
             await service.RecoverInterruptedAsync(db, CancellationToken.None);
@@ -88,7 +91,7 @@ public sealed class SoftwareActivationServiceTests : IDisposable
         Directory.CreateDirectory(stage);
         await File.WriteAllTextAsync(Path.Combine(instance, "server.jar"), "old");
         await File.WriteAllTextAsync(Path.Combine(stage, "server.jar"), "new");
-        var activation = service.Begin(serverId, stage, rollback);
+        var activation = service.Begin(serverId, stage, rollback, await MetadataAsync(options));
         activation.Activate();
         File.Delete(Path.Combine(instance, "server.jar"));
         Directory.CreateDirectory(Path.Combine(instance, "server.jar"));
@@ -98,6 +101,40 @@ public sealed class SoftwareActivationServiceTests : IDisposable
         Assert.False(activation.IsFinished);
         Assert.True(File.Exists(Path.Combine(rollback, "server.jar")));
         Assert.True(File.Exists(Path.Combine(rollback, "activation-manifest.json")));
+
+        Directory.Delete(Path.Combine(instance, "server.jar"));
+        await using (var db = new StateDbContext(options))
+        {
+            var server = await db.Servers.SingleAsync();
+            server.State = ServerState.Stopped;
+            await db.SaveChangesAsync();
+            await service.RecoverInterruptedAsync(db, CancellationToken.None);
+        }
+
+        Assert.Equal("old", await File.ReadAllTextAsync(Path.Combine(instance, "server.jar")));
+        Assert.False(Directory.Exists(rollback));
+    }
+
+    [Fact]
+    public async Task Activation_rejects_a_symlinked_destination_parent()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var (service, paths, options) = await CreateAsync(ServerState.Updating);
+        var serverId = await ServerIdAsync(options);
+        var instance = paths.Instance(serverId);
+        var outside = Path.Combine(_root, "outside");
+        var stage = Path.Combine(paths.Staging, "software-stage");
+        var rollback = Path.Combine(paths.Staging, $"software-rollback-{serverId:N}-job");
+        Directory.CreateDirectory(outside);
+        Directory.CreateDirectory(Path.Combine(stage, "libraries"));
+        Directory.CreateSymbolicLink(Path.Combine(instance, "libraries"), outside);
+        await File.WriteAllTextAsync(Path.Combine(stage, "libraries", "launcher.jar"), "new");
+        var activation = service.Begin(serverId, stage, rollback, await MetadataAsync(options));
+
+        var exception = Assert.Throws<PanelException>(() => activation.Activate());
+
+        Assert.Equal("SOFTWARE_ACTIVATION_CONFLICT", exception.Code);
+        Assert.False(File.Exists(Path.Combine(outside, "launcher.jar")));
     }
 
     private async Task<(SoftwareActivationService Service, PanelPaths Paths, DbContextOptions<StateDbContext> Options)> CreateAsync(ServerState state)
@@ -134,6 +171,13 @@ public sealed class SoftwareActivationServiceTests : IDisposable
     {
         await using var db = new StateDbContext(options);
         return await db.Servers.Select(x => x.Id).SingleAsync();
+    }
+
+    private static async Task<SoftwareActivationService.SoftwareMetadataSnapshot> MetadataAsync(
+        DbContextOptions<StateDbContext> options)
+    {
+        await using var db = new StateDbContext(options);
+        return SoftwareActivationService.SoftwareMetadataSnapshot.Capture(await db.Servers.SingleAsync());
     }
 
     public void Dispose()

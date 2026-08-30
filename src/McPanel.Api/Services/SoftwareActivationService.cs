@@ -10,8 +10,12 @@ public sealed class SoftwareActivationService(
     PanelPaths paths,
     ILogger<SoftwareActivationService> logger)
 {
-    internal ActivationTransaction Begin(Guid serverId, string source, string rollback) =>
-        new(serverId, source, paths.Instance(serverId), rollback);
+    internal ActivationTransaction Begin(
+        Guid serverId,
+        string source,
+        string rollback,
+        SoftwareMetadataSnapshot originalMetadata) =>
+        new(serverId, source, paths.Instance(serverId), rollback, originalMetadata);
 
     public async Task RecoverInterruptedAsync(StateDbContext state, CancellationToken cancellationToken)
     {
@@ -23,20 +27,19 @@ public sealed class SoftwareActivationService(
             {
                 var activation = ActivationTransaction.Open(paths, rollback);
                 var server = await state.Servers.SingleOrDefaultAsync(x => x.Id == activation.ServerId, cancellationToken);
-                if (server?.State == ServerState.Stopped)
+                if (activation.IsCommitRecorded)
                 {
                     activation.Commit();
                     logger.LogInformation("Finalized interrupted software activation for {ServerId}", activation.ServerId);
                     continue;
                 }
 
-                activation.Rollback();
-                if (server?.State == ServerState.Updating)
+                if (server is not null)
                 {
-                    server.State = ServerState.Stopped;
-                    server.UpdatedAt = DateTimeOffset.UtcNow;
+                    activation.OriginalMetadata.Restore(server);
                     await state.SaveChangesAsync(cancellationToken);
                 }
+                activation.Rollback();
                 logger.LogWarning("Rolled back interrupted software activation for {ServerId}", activation.ServerId);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
@@ -57,15 +60,42 @@ public sealed class SoftwareActivationService(
         }
     }
 
+    internal sealed record SoftwareMetadataSnapshot(
+        ServerKind Kind, string Version, string? Build, string? Loader, string? Installer,
+        LaunchMode LaunchMode, string LaunchTarget, string JavaRuntimeId, int RequiredJava,
+        bool Experimental, string? ModpackName, string? ModpackVersion, string? ProjectId,
+        string? VersionId, string? ModpackSource, bool RestartRequired)
+    {
+        public static SoftwareMetadataSnapshot Capture(ServerEntity server) => new(
+            server.Kind, server.Version, server.DistributionBuild, server.LoaderVersion, server.InstallerVersion,
+            server.LaunchMode, server.LaunchTarget, server.JavaRuntimeId, server.RequiredJavaMajor,
+            server.IsExperimental, server.ModpackName, server.ModpackVersion, server.ModrinthProjectId,
+            server.ModrinthVersionId, server.ModpackSource, server.RestartRequired);
+
+        public void Restore(ServerEntity server)
+        {
+            server.Kind = Kind; server.Version = Version; server.DistributionBuild = Build;
+            server.LoaderVersion = Loader; server.InstallerVersion = Installer; server.LaunchMode = LaunchMode;
+            server.LaunchTarget = LaunchTarget; server.JavaRuntimeId = JavaRuntimeId;
+            server.RequiredJavaMajor = RequiredJava; server.IsExperimental = Experimental;
+            server.ModpackName = ModpackName; server.ModpackVersion = ModpackVersion;
+            server.ModrinthProjectId = ProjectId; server.ModrinthVersionId = VersionId;
+            server.ModpackSource = ModpackSource; server.RestartRequired = RestartRequired;
+            server.State = ServerState.Stopped; server.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+    }
+
     internal sealed class ActivationTransaction
     {
-        private const int ManifestVersion = 1;
+        private const int ManifestVersion = 2;
         private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
         private readonly string? _source;
         private readonly string _destination;
         private readonly string _rollback;
+        private readonly SoftwareMetadataSnapshot _originalMetadata;
         private readonly List<FileMutation> _files;
         private readonly List<string> _createdDirectories;
+        private bool _commitRecorded;
         private bool _finished;
 
         private ActivationTransaction(
@@ -73,6 +103,8 @@ public sealed class SoftwareActivationService(
             string? source,
             string destination,
             string rollback,
+            SoftwareMetadataSnapshot originalMetadata,
+            bool commitRecorded = false,
             List<FileMutation>? files = null,
             List<string>? createdDirectories = null)
         {
@@ -80,14 +112,23 @@ public sealed class SoftwareActivationService(
             _source = source;
             _destination = Path.GetFullPath(destination);
             _rollback = Path.GetFullPath(rollback);
+            _originalMetadata = originalMetadata;
+            _commitRecorded = commitRecorded;
             _files = files ?? [];
             _createdDirectories = createdDirectories ?? [];
         }
 
-        public ActivationTransaction(Guid serverId, string source, string destination, string rollback)
-            : this(serverId, Path.GetFullPath(source), destination, rollback, null, null) { }
+        public ActivationTransaction(
+            Guid serverId,
+            string source,
+            string destination,
+            string rollback,
+            SoftwareMetadataSnapshot originalMetadata)
+            : this(serverId, Path.GetFullPath(source), destination, rollback, originalMetadata, false, null, null) { }
 
         public Guid ServerId { get; }
+        public SoftwareMetadataSnapshot OriginalMetadata => _originalMetadata;
+        public bool IsCommitRecorded => _commitRecorded;
         public bool IsFinished => _finished;
         private string ManifestPath => Path.Combine(_rollback, "activation-manifest.json");
 
@@ -98,7 +139,7 @@ public sealed class SoftwareActivationService(
             foreach (var file in Directory.EnumerateFiles(_source, "*", SearchOption.AllDirectories).ToList())
             {
                 var relative = NormalizeRelative(Path.GetRelativePath(_source, file));
-                var target = ResolveRelative(_destination, relative);
+                var target = ResolveDestination(relative);
                 if (Directory.Exists(target))
                     throw PanelProblems.Conflict("SOFTWARE_ACTIVATION_CONFLICT", $"A directory blocks {relative}.");
                 CreateParents(Path.GetDirectoryName(target)!);
@@ -121,12 +162,31 @@ public sealed class SoftwareActivationService(
             _finished = true;
         }
 
+        public void MarkCommitted()
+        {
+            if (_finished) throw new InvalidOperationException("The activation is already finished.");
+            _commitRecorded = true;
+            try { WriteManifest(); }
+            catch
+            {
+                _commitRecorded = false;
+                throw;
+            }
+        }
+
+        public void PrepareRollback()
+        {
+            if (_finished || !_commitRecorded) return;
+            _commitRecorded = false;
+            WriteManifest();
+        }
+
         public void Rollback()
         {
             if (_finished) return;
             foreach (var mutation in _files.AsEnumerable().Reverse())
             {
-                var target = ResolveRelative(_destination, mutation.RelativePath);
+                var target = ResolveDestination(mutation.RelativePath);
                 if (mutation.Replaced)
                 {
                     var backup = ResolveRelative(_rollback, mutation.RelativePath);
@@ -139,7 +199,7 @@ public sealed class SoftwareActivationService(
             }
             foreach (var relative in _createdDirectories.AsEnumerable().Reverse())
             {
-                var directory = ResolveRelative(_destination, relative);
+                var directory = ResolveDestination(relative);
                 if (Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any())
                     Directory.Delete(directory);
             }
@@ -153,16 +213,17 @@ public sealed class SoftwareActivationService(
             var manifest = JsonSerializer.Deserialize<ActivationManifest>(File.ReadAllText(manifestPath), JsonOptions)
                 ?? throw new InvalidDataException("The activation manifest is empty.");
             if (manifest.Version != ManifestVersion || manifest.ServerId == Guid.Empty ||
-                manifest.Files is null || manifest.CreatedDirectories is null)
+                manifest.OriginalMetadata is null || manifest.Files is null || manifest.CreatedDirectories is null)
                 throw new InvalidDataException("The activation manifest is invalid.");
             foreach (var file in manifest.Files) ResolveRelative(paths.Instance(manifest.ServerId), file.RelativePath);
             foreach (var directory in manifest.CreatedDirectories) ResolveRelative(paths.Instance(manifest.ServerId), directory);
             return new ActivationTransaction(manifest.ServerId, null, paths.Instance(manifest.ServerId), rollback,
-                manifest.Files, manifest.CreatedDirectories);
+                manifest.OriginalMetadata, manifest.CommitRecorded, manifest.Files, manifest.CreatedDirectories);
         }
 
         private void CreateParents(string directory)
         {
+            EnsureNoReparsePoints(_destination, directory);
             var missing = new Stack<string>();
             var current = directory;
             while (!Directory.Exists(current))
@@ -190,7 +251,8 @@ public sealed class SoftwareActivationService(
             using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
             {
                 JsonSerializer.Serialize(stream,
-                    new ActivationManifest(ManifestVersion, ServerId, _files, _createdDirectories), JsonOptions);
+                    new ActivationManifest(ManifestVersion, ServerId, _commitRecorded, _originalMetadata,
+                        _files, _createdDirectories), JsonOptions);
                 stream.Flush(true);
             }
             File.Move(temporary, ManifestPath, true);
@@ -198,6 +260,31 @@ public sealed class SoftwareActivationService(
 
         private static string NormalizeRelative(string relative) =>
             relative.Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/');
+
+        private string ResolveDestination(string relative)
+        {
+            var path = ResolveRelative(_destination, relative);
+            EnsureNoReparsePoints(_destination, path);
+            return path;
+        }
+
+        private static void EnsureNoReparsePoints(string root, string path)
+        {
+            var fullRoot = Path.GetFullPath(root);
+            var relative = Path.GetRelativePath(fullRoot, path);
+            var current = fullRoot;
+            foreach (var segment in relative.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries).Prepend(""))
+            {
+                if (segment.Length > 0) current = Path.Combine(current, segment);
+                FileAttributes attributes;
+                try { attributes = File.GetAttributes(current); }
+                catch (FileNotFoundException) { break; }
+                catch (DirectoryNotFoundException) { break; }
+                if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    throw PanelProblems.Conflict("SOFTWARE_ACTIVATION_CONFLICT",
+                        "A symbolic link blocks a software activation path.");
+            }
+        }
 
         private static string ResolveRelative(string root, string relative)
         {
@@ -214,6 +301,8 @@ public sealed class SoftwareActivationService(
         private sealed record ActivationManifest(
             int Version,
             Guid ServerId,
+            bool CommitRecorded,
+            SoftwareMetadataSnapshot OriginalMetadata,
             List<FileMutation> Files,
             List<string> CreatedDirectories);
 

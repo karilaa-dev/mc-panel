@@ -80,7 +80,7 @@ public sealed class CustomJarService(
         catch (DirectoryNotFoundException) { throw new PanelException(409, "IMPORT_ALREADY_USED", "This uploaded JAR was already used."); }
         var jar = Path.Combine(claimedRoot, "server.jar");
         ValidateExecutableJar(jar);
-        return new ClaimedCustomJar(claimedRoot, jar, metadata.FileName, metadata.Size);
+        return new ClaimedCustomJar(claimedRoot, root, jar, metadata.FileName, metadata.Size);
     }
 
     public IReadOnlyList<CustomJarCandidateDto> Candidates(string instanceRoot)
@@ -192,8 +192,16 @@ public sealed class CustomJarService(
 
     private sealed record ImportMetadata(string FileName, long Size, DateTimeOffset CreatedAt);
 
-    public sealed record ClaimedCustomJar(string Root, string JarPath, string FileName, long Size) : IDisposable
+    public sealed record ClaimedCustomJar(string Root, string ImportRoot, string JarPath, string FileName, long Size) : IDisposable
     {
+        public void Restore()
+        {
+            if (!Directory.Exists(Root)) return;
+            if (Directory.Exists(ImportRoot))
+                throw new IOException("The custom JAR import destination already exists.");
+            Directory.Move(Root, ImportRoot);
+        }
+
         public void Dispose()
         {
             try { if (Directory.Exists(Root)) Directory.Delete(Root, true); } catch { }

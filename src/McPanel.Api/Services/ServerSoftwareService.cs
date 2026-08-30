@@ -39,6 +39,8 @@ public sealed class ServerSoftwareService(
     {
         Validate(request);
         var requestId = NormalizeRequestId(request.ClientRequestId);
+        using var requestLock = requestId is null
+            ? null : await keyedLock.AcquireAsync(Guid.ParseExact(requestId, "N"), cancellationToken);
         await using (var db = await stateFactory.CreateDbContextAsync(cancellationToken))
         {
             if (requestId is not null && await db.Jobs.AsNoTracking()
@@ -63,7 +65,7 @@ public sealed class ServerSoftwareService(
         var server = await db.Servers.FindAsync([serverId], cancellationToken) ?? throw PanelProblems.NotFound("Server");
         EnsureRegular(server);
         EnsureStopped(server);
-        var original = SoftwareMetadataSnapshot.Capture(server);
+        var original = SoftwareActivationService.SoftwareMetadataSnapshot.Capture(server);
         var runtime = await db.JavaRuntimes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == request.JavaRuntimeId, cancellationToken)
             ?? throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
 
@@ -145,8 +147,9 @@ public sealed class ServerSoftwareService(
             }
 
             await operations.ProgressAsync(jobId, 70, "Activating the new launch files", cancellationToken);
-            activation = activations.Begin(serverId, stage, rollback);
+            activation = activations.Begin(serverId, stage, rollback, original);
             activation.Activate();
+            await permissions.NormalizeAsync(serverId, cancellationToken);
             server.Kind = request.Kind;
             server.Version = request.Version.Trim();
             server.DistributionBuild = build;
@@ -166,9 +169,14 @@ public sealed class ServerSoftwareService(
             server.State = ServerState.Stopped;
             server.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(cancellationToken);
-            await permissions.NormalizeAsync(serverId, cancellationToken);
-            activation.Commit();
+            activation.MarkCommitted();
             committed = true;
+            try { activation.Commit(); }
+            catch (Exception cleanupException)
+            {
+                logger.LogWarning(cleanupException,
+                    "Software activation committed for {ServerId}, but rollback cleanup will be retried at startup", serverId);
+            }
             try { modpacks.Delete(serverId); }
             catch (Exception exception) { logger.LogWarning(exception, "Could not remove stale modpack baseline for {ServerId}", serverId); }
             try
@@ -185,7 +193,11 @@ public sealed class ServerSoftwareService(
             Exception? rollbackFailure = null;
             if (!committed)
             {
-                try { activation?.Rollback(); }
+                try
+                {
+                    activation?.PrepareRollback();
+                    activation?.Rollback();
+                }
                 catch (Exception rollbackException)
                 {
                     rollbackFailure = rollbackException;
@@ -252,31 +264,6 @@ public sealed class ServerSoftwareService(
         if (string.IsNullOrWhiteSpace(value)) return null;
         if (!Guid.TryParse(value, out var id)) throw PanelProblems.Validation("The client request identifier must be a UUID.");
         return id.ToString("N");
-    }
-
-    private sealed record SoftwareMetadataSnapshot(
-        ServerKind Kind, string Version, string? Build, string? Loader, string? Installer,
-        LaunchMode LaunchMode, string LaunchTarget, string JavaRuntimeId, int RequiredJava,
-        bool Experimental, string? ModpackName, string? ModpackVersion, string? ProjectId,
-        string? VersionId, string? ModpackSource, bool RestartRequired)
-    {
-        public static SoftwareMetadataSnapshot Capture(ServerEntity server) => new(
-            server.Kind, server.Version, server.DistributionBuild, server.LoaderVersion, server.InstallerVersion,
-            server.LaunchMode, server.LaunchTarget, server.JavaRuntimeId, server.RequiredJavaMajor,
-            server.IsExperimental, server.ModpackName, server.ModpackVersion, server.ModrinthProjectId,
-            server.ModrinthVersionId, server.ModpackSource, server.RestartRequired);
-
-        public void Restore(ServerEntity server)
-        {
-            server.Kind = Kind; server.Version = Version; server.DistributionBuild = Build;
-            server.LoaderVersion = Loader; server.InstallerVersion = Installer; server.LaunchMode = LaunchMode;
-            server.LaunchTarget = LaunchTarget; server.JavaRuntimeId = JavaRuntimeId;
-            server.RequiredJavaMajor = RequiredJava; server.IsExperimental = Experimental;
-            server.ModpackName = ModpackName; server.ModpackVersion = ModpackVersion;
-            server.ModrinthProjectId = ProjectId; server.ModrinthVersionId = VersionId;
-            server.ModpackSource = ModpackSource; server.RestartRequired = RestartRequired;
-            server.State = ServerState.Stopped; server.UpdatedAt = DateTimeOffset.UtcNow;
-        }
     }
 
 }

@@ -32,6 +32,22 @@ public sealed class CustomJarServiceTests : IDisposable
         Assert.Equal("IMPORT_NOT_FOUND", exception.Code);
     }
 
+    [Fact]
+    public async Task Claimed_upload_can_be_restored_before_server_creation_commits()
+    {
+        var (service, _) = CreateService();
+        var jar = CreateJar(true);
+        await using var stream = new MemoryStream(jar);
+        var staged = await service.PrepareAsync(
+            new FormFile(stream, 0, jar.Length, "file", "server.jar"), CancellationToken.None);
+        var claim = await service.ClaimAsync(staged.Token, CancellationToken.None);
+
+        claim.Restore();
+
+        var restored = await service.InspectAsync(staged.Token, CancellationToken.None);
+        Assert.Equal(staged.Token, restored.Token);
+    }
+
     [Theory]
     [InlineData("server.zip", true)]
     [InlineData("server.jar", false)]
