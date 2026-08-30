@@ -335,6 +335,8 @@ test_service_security_contract() {
   # shellcheck disable=SC2016
   instances_mode_count="$(grep -c -- '-m 2750 -- "$data_dir/instances"' "$test_repo_root/mcpanel.sh")"
   [[ "$instances_mode_count" -eq 2 ]] || fail "instances parent must be setgid and group-readable, but not group-writable"
+  # Match the literal installer variables, not their values in this test process.
+  # shellcheck disable=SC2016
   [[ "$(grep -c -- 'repair_instance_permissions "$install_dir" "$data_dir"' "$test_repo_root/mcpanel.sh")" -eq 3 ]] ||
     fail "install, update, and no-op repair must normalize database-classified instances"
 }
