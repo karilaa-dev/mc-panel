@@ -208,7 +208,8 @@ jobs:
             printf 'Rolling build from the `main` branch.\n\n'
             printf 'Commit: [`%s`](https://github.com/%s/commit/%s)\n' "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_SHA"
           } > "$notes_file"
-          gh release edit main --title "MC Panel main" --target "$GITHUB_SHA" \
+          git push --force origin "$GITHUB_SHA:refs/tags/main"
+          gh release edit main --title "MC Panel main" \
             --notes-file "$notes_file" --prerelease
 
           # The manifest is the release pointer. Replace it only after every referenced asset exists.

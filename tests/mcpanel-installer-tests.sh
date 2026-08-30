@@ -243,6 +243,65 @@ test_import_restart_json() {
     "restart failure preserves committed import details"
 }
 
+test_import_stops_panel_after_validation() {
+  local fixture="$test_root/coordinated-import" install_dir config_dir data_dir source unit stop_marker output
+  install_dir="$fixture/install"
+  config_dir="$fixture/config"
+  data_dir="$fixture/data"
+  source="$fixture/source"
+  unit="$fixture/mcpanel.service"
+  stop_marker="$fixture/panel-stopped"
+  mkdir -p -- "$install_dir" "$config_dir" "$data_dir/staging" "$source"
+  printf 'ASPNETCORE_URLS=http://0.0.0.0:6050\n' > "$config_dir/mcpanel.env"
+  printf '[Service]\n' > "$unit"
+  printf 'server-port=25565\n' > "$source/server.properties"
+  # shellcheck disable=SC2016
+  printf '#!/usr/bin/env bash\nif [[ "$1" == "--mcpanel-import-stage" ]]; then mkdir -p -- "$3"; exit 0; fi\nexit 99\n' \
+    > "$install_dir/McPanel.Api"
+  chmod 0755 "$install_dir/McPanel.Api"
+
+  (
+    require_root() { :; }
+    require_commands() { :; }
+    systemd_service_unit() { printf '%s\n' "$unit"; }
+    getent() { [[ "$1" == "passwd" && "$2" == "$PANEL_USER" ]] && printf '%s:x:999:999::/nonexistent:/usr/sbin/nologin\n' "$PANEL_USER"; }
+    # shellcheck disable=SC2032
+    chown() { :; }
+    wait_for_active() { :; }
+    wait_for_http() { :; }
+    systemctl() {
+      case "$1" in
+        is-active) return 0 ;;
+        stop)
+          find "$data_dir/staging" -name import-ready -type f -print -quit | grep -q . || return 1
+          : > "$stop_marker"
+          ;;
+        start) return 0 ;;
+      esac
+    }
+    runuser() {
+      local argument ready="" proceed="" attempt
+      for argument in "$@"; do
+        case "$argument" in
+          MCPANEL_IMPORT_READY_FILE=*) ready="${argument#*=}" ;;
+          MCPANEL_IMPORT_CONTINUE_FILE=*) proceed="${argument#*=}" ;;
+        esac
+      done
+      [[ -n "$ready" && -n "$proceed" ]] || return 90
+      : > "$ready"
+      for attempt in {1..200}; do [[ -f "$proceed" ]] && break; sleep 0.01; done
+      [[ -f "$proceed" && -f "$stop_marker" ]] || return 91
+      printf '{"ok":true,"serverId":"server-123"}\n'
+    }
+
+    output="$(root_import_server "$source" "$install_dir" "$config_dir" "$data_dir" mcpanel \
+      --name Imported --kind vanilla --version 1.21.8 --launch-target server.jar \
+      --java-runtime /usr/bin/java --memory-mb 2048 --port 25565 --accept-eula --non-interactive --json)"
+    assert_equal '{"ok":true,"serverId":"server-123"}' "$output" "coordinated import result"
+    [[ -f "$stop_marker" ]] || fail "panel was not stopped for the import commit window"
+  )
+}
+
 test_runtime_generation_wait() {
   (
     local pid_reads="$test_root/runtime-pid-reads"
@@ -302,6 +361,7 @@ test_release_identity
 test_import_option_parsing
 test_import_wrapper_flag_detection
 test_import_restart_json
+test_import_stops_panel_after_validation
 test_runtime_generation_wait
 test_service_security_contract
 test_systemd_minimum

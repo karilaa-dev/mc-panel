@@ -328,7 +328,7 @@ public sealed partial class ServerInstallerService(
             var destination = paths.Instance(id);
             if (Directory.Exists(destination)) throw PanelProblems.Conflict("SERVER_BUSY", "The managed server directory already exists.");
             Directory.Move(stage, destination);
-            if (permissions is not null) await permissions.NormalizeAsync(id, cancellationToken);
+            if (permissions is not null) await permissions.NormalizeInstanceAsync(id, cancellationToken);
             server.State = ServerState.Stopped; server.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(cancellationToken);
             await console.AppendAsync(id, "system", $"Installed {server.Kind} {server.Version} from verified official metadata.", cancellationToken);
@@ -389,7 +389,7 @@ public sealed partial class ServerInstallerService(
                 server.State = ServerState.Stopped;
                 server.UpdatedAt = DateTimeOffset.UtcNow;
                 await db.SaveChangesAsync(cancellationToken);
-                if (permissions is not null) await permissions.NormalizeAsync(id, cancellationToken);
+                if (permissions is not null) await permissions.NormalizeInstanceAsync(id, cancellationToken);
                 await console.AppendAsync(id, "system", $"Installed custom JAR {claim.FileName} for Minecraft {server.Version}.", cancellationToken);
                 await operations.ProgressAsync(jobId, 95, "Custom JAR installation complete", cancellationToken);
             }
@@ -472,7 +472,7 @@ public sealed partial class ServerInstallerService(
                 var destination = paths.Instance(id);
                 if (Directory.Exists(destination)) throw PanelProblems.Conflict("SERVER_BUSY", "The managed server directory already exists.");
                 Directory.Move(stage, destination);
-                if (permissions is not null) await permissions.NormalizeAsync(id, cancellationToken);
+                if (permissions is not null) await permissions.NormalizeInstanceAsync(id, cancellationToken);
                 server.State = ServerState.Stopped;
                 server.UpdatedAt = DateTimeOffset.UtcNow;
                 await db.SaveChangesAsync(cancellationToken);
@@ -522,26 +522,32 @@ public sealed partial class ServerInstallerService(
             if (server.Kind == ServerKind.Forge && plan.RequiredJavaMajor == 8 && runtime.Major != 8)
                 throw new PanelException(400, "JAVA_VERSION_INCOMPATIBLE", $"Legacy Forge for Minecraft {server.Version} requires Java 8.");
             var artifact = Path.Combine(stage, plan.Artifact.FileName);
+            IReadOnlyList<string> changedPaths;
             await downloads.DownloadAsync(plan.Artifact, artifact, cancellationToken);
             await operations.ProgressAsync(jobId, 60, "Activating verified update", cancellationToken);
             if (IsModLoader(server.Kind))
             {
                 var launch = await RunLoaderInstallerAsync(server, runtime.Path, plan, artifact, stage, cancellationToken);
                 File.Delete(artifact);
+                changedPaths = Directory.EnumerateFileSystemEntries(stage, "*", SearchOption.AllDirectories)
+                    .Select(path => Path.Combine(paths.Instance(id), Path.GetRelativePath(stage, path)))
+                    .ToArray();
                 CopyDirectory(stage, paths.Instance(id));
                 server.LaunchMode = launch.Mode; server.LaunchTarget = launch.Target;
                 server.LoaderVersion = plan.LoaderVersion; server.InstallerVersion = plan.InstallerVersion;
             }
             else
             {
-                File.Move(artifact, Path.Combine(paths.Instance(id), "server.jar"), true);
+                var serverJar = Path.Combine(paths.Instance(id), "server.jar");
+                File.Move(artifact, serverJar, true);
+                changedPaths = [serverJar];
                 server.DistributionBuild = plan.Build;
             }
             server.RequiredJavaMajor = plan.RequiredJavaMajor;
             server.IsExperimental = plan.Experimental;
             server.State = ServerState.Stopped; server.RestartRequired = false; server.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(cancellationToken);
-            if (permissions is not null) await permissions.NormalizeAsync(id, cancellationToken);
+            if (permissions is not null) await permissions.NormalizeMutationsAsync(id, changedPaths, cancellationToken);
             await console.AppendAsync(id, "system", $"Updated {server.Kind} for Minecraft {server.Version}.", cancellationToken);
         }
         catch

@@ -179,6 +179,10 @@ validate_service_name() {
   [[ "$1" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "invalid service name"
 }
 
+systemd_service_unit() {
+  printf '/etc/systemd/system/%s.service\n' "$1"
+}
+
 validate_host() {
   local systemd_version
   [[ -r /etc/os-release ]] || die "cannot identify this operating system"
@@ -735,7 +739,7 @@ root_install() {
   artifact_dir="$(realpath -e -- "$artifact_dir")"
   validate_artifact "$artifact_dir"
 
-  service_unit="/etc/systemd/system/$service_name.service"
+  service_unit="$(systemd_service_unit "$service_name")"
   runtime_service_name="$service_name-runtime"
   runtime_unit="/etc/systemd/system/$runtime_service_name.service"
   [[ ! -e "$install_dir" ]] || die "$install_dir already exists; use ./mcpanel.sh update"
@@ -914,7 +918,7 @@ root_update() {
   config_dir="$(normalize_managed_path "$config_dir")"
   data_dir="$(normalize_managed_path "$data_dir")"
   validate_managed_paths "$install_dir" "$config_dir" "$data_dir"
-  service_unit="/etc/systemd/system/$service_name.service"
+  service_unit="$(systemd_service_unit "$service_name")"
   runtime_service_name="$service_name-runtime"
   runtime_unit="/etc/systemd/system/$runtime_service_name.service"
   runtime_socket="$data_dir/runtime/control.sock"
@@ -1071,7 +1075,7 @@ root_uninstall() {
     [[ -f "$install_dir/McPanel.Api" && ! -L "$install_dir/McPanel.Api" ]] || die "install directory does not contain MC Panel"
   fi
 
-  service_unit="/etc/systemd/system/$service_name.service"
+  service_unit="$(systemd_service_unit "$service_name")"
   runtime_service_name="$service_name-runtime"
   runtime_unit="/etc/systemd/system/$runtime_service_name.service"
   memory_dropin_dir="/etc/systemd/system/$service_name.service.d"
@@ -1160,24 +1164,34 @@ root_import_server() {
   local -a import_options=("$@")
   local -a panel_environment=()
   local source stage_dir="" content result_file="" source_label json_result=""
+  local ready_file="" continue_file="" import_pid=""
   local environment_file environment_line environment_key environment_value
-  local service_unit panel_was_active=0 panel_stopped=0 dry_run=0 json=0 import_rc=0 restart_rc=0
+  local service_unit panel_was_active=0 panel_stopped=0 dry_run=0 json=0 import_rc=0 restart_rc=0 final_rc=0 input_fd_open=0
   read -r dry_run json < <(detect_import_wrapper_flags "${import_options[@]}")
 
-  import_cleanup() {
-    local rc=$?
+  release_import_resources() {
     set +e
+    if [[ -n "$import_pid" ]] && kill -0 "$import_pid" 2>/dev/null; then
+      kill "$import_pid" 2>/dev/null || true
+      wait "$import_pid" 2>/dev/null || true
+    fi
+    if ((input_fd_open)); then exec 3<&- || true; input_fd_open=0; fi
     if ((panel_stopped && panel_was_active)); then
       systemctl start "$service_name.service" >/dev/null 2>&1 || true
     fi
     if [[ -n "$stage_dir" && -d "$stage_dir" ]]; then rm -rf -- "$stage_dir"; fi
+  }
+
+  import_cleanup() {
+    local rc=$?
+    release_import_resources
     trap - EXIT INT TERM
     exit "$rc"
   }
   trap import_cleanup EXIT
   trap 'exit 2' INT TERM
 
-  require_commands basename cat chown curl env find getent grep mktemp realpath rm runuser sleep systemctl
+  require_commands basename cat chown curl env find getent grep mktemp realpath rm runuser sleep systemctl touch
   validate_service_name "$service_name"
   install_dir="$(normalize_managed_path "$install_dir")"
   config_dir="$(normalize_managed_path "$config_dir")"
@@ -1199,7 +1213,7 @@ root_import_server() {
   if [[ -d "$source" && ( "$data_dir" == "$source" || "$data_dir" == "$source/"* ) ]]; then
     die "import source must not contain the panel data directory"
   fi
-  service_unit="/etc/systemd/system/$service_name.service"
+  service_unit="$(systemd_service_unit "$service_name")"
   [[ -f "$service_unit" && ! -L "$service_unit" ]] || die "systemd unit is missing or unsafe: $service_unit"
   environment_file="$config_dir/mcpanel.env"
   [[ -f "$environment_file" && ! -L "$environment_file" ]] || die "panel environment file is missing or unsafe: $environment_file"
@@ -1235,29 +1249,81 @@ root_import_server() {
       else printf '{"ok":false,"code":"IMPORT_STAGE_FAILED","message":"The import source could not be staged."}\n'
       fi
     fi
-    return "$import_rc"
+    final_rc=$import_rc
+    release_import_resources
+    trap - EXIT INT TERM
+    set -e
+    return "$final_rc"
   fi
   chown -R "$PANEL_USER:$PANEL_GROUP" "$stage_dir"
 
-  if ((!dry_run)) && systemctl is-active --quiet "$service_name.service"; then
-    panel_was_active=1
-    systemctl stop "$service_name.service"
-    panel_stopped=1
-  fi
-
   set +e
-  if ((json)); then
-    runuser --user "$PANEL_USER" -- env "${panel_environment[@]}" \
-      MCPANEL_DATA_DIR="$data_dir" MCPANEL_CONFIG_DIR="$config_dir" \
-      "$install_dir/McPanel.Api" --mcpanel-import-server "$content" \
-      --source-label "$source_label" "${import_options[@]}" > "$result_file"
+  if ((dry_run)); then
+    if ((json)); then
+      runuser --user "$PANEL_USER" -- env "${panel_environment[@]}" \
+        MCPANEL_DATA_DIR="$data_dir" MCPANEL_CONFIG_DIR="$config_dir" \
+        "$install_dir/McPanel.Api" --mcpanel-import-server "$content" \
+        --source-label "$source_label" "${import_options[@]}" > "$result_file"
+    else
+      runuser --user "$PANEL_USER" -- env "${panel_environment[@]}" \
+        MCPANEL_DATA_DIR="$data_dir" MCPANEL_CONFIG_DIR="$config_dir" \
+        "$install_dir/McPanel.Api" --mcpanel-import-server "$content" \
+        --source-label "$source_label" "${import_options[@]}"
+    fi
+    import_rc=$?
   else
-    runuser --user "$PANEL_USER" -- env "${panel_environment[@]}" \
-      MCPANEL_DATA_DIR="$data_dir" MCPANEL_CONFIG_DIR="$config_dir" \
-      "$install_dir/McPanel.Api" --mcpanel-import-server "$content" \
-      --source-label "$source_label" "${import_options[@]}"
+    ready_file="$stage_dir/import-ready"
+    continue_file="$stage_dir/import-continue"
+    exec 3<&0
+    input_fd_open=1
+    if ((json)); then
+      runuser --user "$PANEL_USER" -- env "${panel_environment[@]}" \
+        MCPANEL_DATA_DIR="$data_dir" MCPANEL_CONFIG_DIR="$config_dir" \
+        MCPANEL_IMPORT_READY_FILE="$ready_file" MCPANEL_IMPORT_CONTINUE_FILE="$continue_file" \
+        "$install_dir/McPanel.Api" --mcpanel-import-server "$content" \
+        --source-label "$source_label" "${import_options[@]}" <&3 > "$result_file" &
+    else
+      runuser --user "$PANEL_USER" -- env "${panel_environment[@]}" \
+        MCPANEL_DATA_DIR="$data_dir" MCPANEL_CONFIG_DIR="$config_dir" \
+        MCPANEL_IMPORT_READY_FILE="$ready_file" MCPANEL_IMPORT_CONTINUE_FILE="$continue_file" \
+        "$install_dir/McPanel.Api" --mcpanel-import-server "$content" \
+        --source-label "$source_label" "${import_options[@]}" <&3 &
+    fi
+    import_pid=$!
+    while kill -0 "$import_pid" 2>/dev/null && [[ ! -f "$ready_file" ]]; do sleep 0.1; done
+    if [[ -f "$ready_file" ]]; then
+      if systemctl is-active --quiet "$service_name.service"; then
+        panel_was_active=1
+        panel_stopped=1
+        if ! systemctl stop "$service_name.service"; then
+          import_rc=5
+          if ((json)); then
+            printf '{"ok":false,"code":"IMPORT_PANEL_STOP_FAILED","message":"The import was validated, but the web panel could not be stopped. No server was imported."}\n' > "$result_file"
+          else
+            warn "the import was validated, but the web panel could not be stopped; no server was imported"
+          fi
+        fi
+      fi
+      if ((import_rc == 0)) && ! touch -- "$continue_file"; then
+        import_rc=5
+        if ((json)); then
+          printf '{"ok":false,"code":"IMPORT_COORDINATION_FAILED","message":"The import commit window could not be opened. No server was imported."}\n' > "$result_file"
+        else
+          warn "the import commit window could not be opened; no server was imported"
+        fi
+      fi
+    fi
+    if ((import_rc == 0)); then
+      wait "$import_pid"
+      import_rc=$?
+    else
+      kill "$import_pid" 2>/dev/null || true
+      wait "$import_pid" 2>/dev/null || true
+    fi
+    import_pid=""
+    exec 3<&-
+    input_fd_open=0
   fi
-  import_rc=$?
   set -e
   if ((json)) && [[ -s "$result_file" ]]; then json_result="$(cat -- "$result_file")"; fi
 
@@ -1277,8 +1343,11 @@ root_import_server() {
     warn "the import command finished, but the web panel did not become ready"
   fi
 
-  if ((restart_rc != 0)); then return "$restart_rc"; fi
-  return "$import_rc"
+  if ((restart_rc != 0)); then final_rc=$restart_rc; else final_rc=$import_rc; fi
+  release_import_resources
+  trap - EXIT INT TERM
+  set -e
+  return "$final_rc"
 }
 
 build_for_system_command() {

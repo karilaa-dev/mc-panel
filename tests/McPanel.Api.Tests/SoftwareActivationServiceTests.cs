@@ -115,6 +115,25 @@ public sealed class SoftwareActivationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Unreadable_activation_journal_marks_the_affected_server_as_error()
+    {
+        var (service, paths, options) = await CreateAsync(ServerState.Updating);
+        var serverId = await ServerIdAsync(options);
+        var rollback = Path.Combine(paths.Staging, $"software-rollback-{serverId:N}-corrupt");
+        Directory.CreateDirectory(rollback);
+        await File.WriteAllTextAsync(Path.Combine(rollback, "activation-manifest.json"), "not-json");
+
+        IReadOnlySet<Guid> unrecovered;
+        await using (var db = new StateDbContext(options))
+            unrecovered = await service.RecoverInterruptedAsync(db, CancellationToken.None);
+
+        Assert.Contains(serverId, unrecovered);
+        Assert.True(Directory.Exists(rollback));
+        await using var verification = new StateDbContext(options);
+        Assert.Equal(ServerState.Error, (await verification.Servers.SingleAsync()).State);
+    }
+
+    [Fact]
     public async Task Failed_rollback_preserves_the_journal_and_displaced_file()
     {
         var (service, paths, options) = await CreateAsync(ServerState.Updating);

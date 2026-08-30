@@ -17,15 +17,19 @@ public sealed class SoftwareActivationService(
         SoftwareMetadataSnapshot originalMetadata) =>
         new(serverId, source, paths.Instance(serverId), rollback, originalMetadata);
 
-    public async Task RecoverInterruptedAsync(StateDbContext state, CancellationToken cancellationToken)
+    public async Task<IReadOnlySet<Guid>> RecoverInterruptedAsync(StateDbContext state, CancellationToken cancellationToken)
     {
-        if (!Directory.Exists(paths.Staging)) return;
+        var unrecovered = new HashSet<Guid>();
+        if (!Directory.Exists(paths.Staging)) return unrecovered;
         foreach (var rollback in Directory.EnumerateDirectories(paths.Staging, "software-rollback-*", SearchOption.TopDirectoryOnly))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            ActivationTransaction? activation = null;
+            Guid? serverId = TryServerIdFromRollback(rollback);
             try
             {
-                var activation = ActivationTransaction.Open(paths, rollback);
+                activation = ActivationTransaction.Open(paths, rollback);
+                serverId = activation.ServerId;
                 var server = await state.Servers.SingleOrDefaultAsync(x => x.Id == activation.ServerId, cancellationToken);
                 if (activation.IsCommitRecorded)
                 {
@@ -44,9 +48,38 @@ public sealed class SoftwareActivationService(
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
+                if (activation?.IsCommitRecorded != true && serverId is { } id)
+                {
+                    unrecovered.Add(id);
+                    try
+                    {
+                        var server = await state.Servers.SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
+                        if (server is not null)
+                        {
+                            server.State = ServerState.Error;
+                            server.ProcessId = null;
+                            server.UpdatedAt = DateTimeOffset.UtcNow;
+                            await state.SaveChangesAsync(cancellationToken);
+                        }
+                    }
+                    catch (Exception stateException) when (stateException is not OperationCanceledException)
+                    {
+                        logger.LogError(stateException, "Could not block server {ServerId} after activation recovery failed", id);
+                    }
+                }
                 logger.LogError(exception, "Could not recover server core activation journal {RollbackDirectory}; preserving it for recovery", rollback);
             }
         }
+        return unrecovered;
+    }
+
+    private static Guid? TryServerIdFromRollback(string rollback)
+    {
+        const string prefix = "software-rollback-";
+        var name = Path.GetFileName(rollback);
+        if (!name.StartsWith(prefix, StringComparison.Ordinal) || name.Length < prefix.Length + 32)
+            return null;
+        return Guid.TryParseExact(name.AsSpan(prefix.Length, 32), "N", out var serverId) ? serverId : null;
     }
 
     public void CleanupOrphanedStaging()
@@ -130,6 +163,7 @@ public sealed class SoftwareActivationService(
         public SoftwareMetadataSnapshot OriginalMetadata => _originalMetadata;
         public bool IsCommitRecorded => _commitRecorded;
         public bool IsFinished => _finished;
+        public IReadOnlyList<string> ActivatedPaths => _files.Select(file => ResolveDestination(file.RelativePath)).ToArray();
         private string ManifestPath => Path.Combine(_rollback, "activation-manifest.json");
 
         public void Activate()

@@ -166,7 +166,7 @@ public sealed class BackupService(
             try { Directory.Move(stage, current); }
             catch { Directory.Move(old, current); throw; }
             Directory.Delete(old, true);
-            if (permissions is not null) await permissions.NormalizeAsync(serverId, cancellationToken);
+            if (permissions is not null) await permissions.NormalizeInstanceAsync(serverId, cancellationToken);
             server.RestartRequired = false; server.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(cancellationToken);
             await console.AppendAsync(serverId, "system", $"Restored backup {backup.FileName}.", cancellationToken);

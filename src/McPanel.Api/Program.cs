@@ -173,12 +173,13 @@ static async Task InitializeAsync(IServiceProvider services)
         await state.EnsureCompatibleSchemaAsync();
         await scope.ServiceProvider.GetRequiredService<LegacyGateMigrationService>().MigrateAsync(state, CancellationToken.None);
         await state.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
-        await scope.ServiceProvider.GetRequiredService<SoftwareActivationService>()
+        var unrecoveredActivations = await scope.ServiceProvider.GetRequiredService<SoftwareActivationService>()
             .RecoverInterruptedAsync(state, CancellationToken.None);
         var staleJobs = await state.Jobs.Where(x => x.State == JobState.Running || x.State == JobState.Queued).ToListAsync();
         foreach (var job in staleJobs) { job.State = JobState.Failed; job.Progress = 100; job.Message = "Interrupted"; job.Error = "The panel restarted before this operation completed."; }
         var interruptedUpdates = await state.Servers.Where(x => x.State == ServerState.Updating).ToListAsync();
-        foreach (var server in interruptedUpdates) { server.State = ServerState.Stopped; server.ProcessId = null; }
+        foreach (var server in interruptedUpdates.Where(server => !unrecoveredActivations.Contains(server.Id)))
+        { server.State = ServerState.Stopped; server.ProcessId = null; }
         if (!services.GetRequiredService<PersistentRuntimeClient>().Enabled)
         {
             var staleServers = await state.Servers.Where(x => x.State == ServerState.Running || x.State == ServerState.Starting || x.State == ServerState.Stopping || x.State == ServerState.BackingUp).ToListAsync();

@@ -66,7 +66,7 @@ public sealed class FileManagerService(
             File.Move(temporary, target, true);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
-        if (permissions is not null) await permissions.NormalizeAsync(serverId, cancellationToken);
+        if (permissions is not null) await permissions.NormalizeMutationAsync(serverId, target, cancellationToken);
     }
 
     public async Task CreateAsync(Guid serverId, string relativePath, bool directory, CancellationToken cancellationToken)
@@ -78,7 +78,7 @@ public sealed class FileManagerService(
         if (File.Exists(path) || Directory.Exists(path)) throw PanelProblems.Conflict("VALIDATION_FAILED", "The path already exists.");
         if (directory) Directory.CreateDirectory(path);
         else { Directory.CreateDirectory(Path.GetDirectoryName(path)!); using var _ = new FileStream(path, FileMode.CreateNew); }
-        if (permissions is not null) await permissions.NormalizeAsync(serverId, cancellationToken);
+        if (permissions is not null) await permissions.NormalizeMutationAsync(serverId, path, cancellationToken);
     }
 
     public async Task UploadAsync(Guid serverId, string relativeDirectory, IFormFile file, CancellationToken cancellationToken)
@@ -111,7 +111,7 @@ public sealed class FileManagerService(
             File.Move(temporary, target, true);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
-        if (permissions is not null) await permissions.NormalizeAsync(serverId, cancellationToken);
+        if (permissions is not null) await permissions.NormalizeMutationAsync(serverId, target, cancellationToken);
     }
 
     public (string Path, string Name) Download(Guid serverId, string relativePath)
@@ -141,7 +141,7 @@ public sealed class FileManagerService(
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
         if (sourceIsFile) File.Move(source, destination);
         else Directory.Move(source, destination);
-        if (permissions is not null) await permissions.NormalizeAsync(serverId, cancellationToken);
+        if (permissions is not null) await permissions.NormalizeMutationAsync(serverId, destination, cancellationToken);
     }
 
     public async Task DeleteAsync(Guid serverId, string relativePath, CancellationToken cancellationToken)
@@ -194,9 +194,13 @@ public sealed class FileManagerService(
             }
             if (mutation.IsGate) ValidateGateActivation(stage, destination, root);
             ValidateActivation(stage, destination);
+            var changedPaths = Directory.EnumerateFileSystemEntries(stage, "*", SearchOption.AllDirectories)
+                .Select(path => Path.Combine(destination, Path.GetRelativePath(stage, path)))
+                .Append(destination)
+                .ToArray();
             if (!Directory.Exists(destination)) Directory.Move(stage, destination);
             else ActivateDirectory(stage, destination);
-            if (permissions is not null) await permissions.NormalizeAsync(serverId, cancellationToken);
+            if (permissions is not null) await permissions.NormalizeMutationsAsync(serverId, changedPaths, cancellationToken);
         }
         catch (Exception exception) when (exception is InvalidDataException or NotSupportedException)
         {

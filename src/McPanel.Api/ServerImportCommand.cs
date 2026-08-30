@@ -12,6 +12,8 @@ internal static class ServerImportCommand
 {
     private const string StageSwitch = "--mcpanel-import-stage";
     private const string ImportSwitch = "--mcpanel-import-server";
+    private const string ReadyFileEnvironment = "MCPANEL_IMPORT_READY_FILE";
+    private const string ContinueFileEnvironment = "MCPANEL_IMPORT_CONTINUE_FILE";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public static bool IsStageInvocation(string[] args) => args.Length > 0 && args[0] == StageSwitch;
@@ -136,6 +138,7 @@ internal static class ServerImportCommand
                     return 0;
                 }
 
+                await WaitForCommitWindowAsync(cancellationToken);
                 var result = await service.ImportAsync(options.Root, request, cancellationToken);
                 WriteSuccess(options, new
                 {
@@ -156,6 +159,38 @@ internal static class ServerImportCommand
                 Console.Error.WriteLine($"error: {exception.Message}");
                 ClearOption(options, exception.Field);
             }
+        }
+    }
+
+    private static async Task WaitForCommitWindowAsync(CancellationToken cancellationToken)
+    {
+        var readyFile = Environment.GetEnvironmentVariable(ReadyFileEnvironment);
+        var continueFile = Environment.GetEnvironmentVariable(ContinueFileEnvironment);
+        if (readyFile is null && continueFile is null) return;
+        if (string.IsNullOrWhiteSpace(readyFile) || string.IsNullOrWhiteSpace(continueFile) ||
+            !Path.IsPathFullyQualified(readyFile) || !Path.IsPathFullyQualified(continueFile))
+            throw new ServerImportException(ServerImportFailureKind.Operation, "IMPORT_COORDINATION_FAILED",
+                "The privileged import handoff is invalid.");
+
+        try
+        {
+            await using (var ready = new FileStream(readyFile, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                             bufferSize: 1, FileOptions.WriteThrough))
+                await ready.WriteAsync(new byte[] { 1 }, cancellationToken);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromMinutes(2));
+            while (!File.Exists(continueFile)) await Task.Delay(50, timeout.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new ServerImportException(ServerImportFailureKind.Operation, "IMPORT_COORDINATION_FAILED",
+                "The panel was not stopped in time; no server was imported.");
+        }
+        catch (ServerImportException) { throw; }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new ServerImportException(ServerImportFailureKind.Operation, "IMPORT_COORDINATION_FAILED",
+                "The privileged import handoff could not be completed.", innerException: exception);
         }
     }
 

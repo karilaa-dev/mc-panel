@@ -149,7 +149,7 @@ public sealed class ServerSoftwareService(
             await operations.ProgressAsync(jobId, 70, "Activating the new launch files", cancellationToken);
             activation = activations.Begin(serverId, stage, rollback, original);
             activation.Activate();
-            await permissions.NormalizeAsync(serverId, cancellationToken);
+            await permissions.NormalizeMutationsAsync(serverId, activation.ActivatedPaths, cancellationToken);
             server.Kind = request.Kind;
             server.Version = request.Version.Trim();
             server.DistributionBuild = build;

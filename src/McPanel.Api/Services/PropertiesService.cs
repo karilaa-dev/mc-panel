@@ -172,7 +172,7 @@ public sealed class PropertiesService(
         if (portChanged) await gate.MarkBackendChangedAsync(db, id, cancellationToken);
         if (changed) await SaveWithAtomicPropertiesAsync(db, file, updatedText, fileExists, cancellationToken);
         else await db.SaveChangesAsync(cancellationToken);
-        if (permissions is not null) await permissions.NormalizeAsync(id, cancellationToken);
+        if (changed && permissions is not null) await permissions.NormalizeMutationAsync(id, file, cancellationToken);
         var updatedBytes = new UTF8Encoding(false).GetBytes(updatedText);
         return PropertiesDto(updatedText, Revision(updatedBytes), server.Version);
     }
@@ -286,7 +286,7 @@ public sealed class PropertiesService(
         if (portChanged) await gate.MarkBackendChangedAsync(db, id, cancellationToken);
         if (changedProperties) await SaveWithAtomicPropertiesAsync(db, file, updatedText, fileExists, cancellationToken);
         else await db.SaveChangesAsync(cancellationToken);
-        if (permissions is not null) await permissions.NormalizeAsync(id, cancellationToken);
+        if (changedProperties && permissions is not null) await permissions.NormalizeMutationAsync(id, file, cancellationToken);
         return dto;
     }
 

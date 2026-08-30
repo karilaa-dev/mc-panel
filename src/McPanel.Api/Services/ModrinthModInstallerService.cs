@@ -226,7 +226,7 @@ public sealed class ModrinthModInstallerService(
                 server.RestartRequired |= server.State == ServerState.Running;
                 server.UpdatedAt = DateTimeOffset.UtcNow;
                 await db.SaveChangesAsync(cancellationToken);
-                if (permissions is not null) await permissions.NormalizeAsync(serverId, cancellationToken);
+                if (permissions is not null) await permissions.NormalizeMutationsAsync(serverId, moved, cancellationToken);
             }
             catch
             {
