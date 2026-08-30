@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+umask 077
+
+readonly DEFAULT_RELEASE="main"
+readonly GITHUB_REPOSITORY="karilaa-dev/mc-panel"
+readonly RELEASE_MANIFEST_NAME="release-manifest.txt"
+readonly RELEASE_BASE_URL="${MCPANEL_RELEASE_BASE_URL:-https://github.com/$GITHUB_REPOSITORY/releases/download}"
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+warn() {
+  printf 'warning: %s\n' "$*" >&2
+}
+
+require_commands() {
+  local command_name
+  for command_name in "$@"; do
+    command -v "$command_name" >/dev/null 2>&1 || die "required command not found: $command_name"
+  done
+}
+
+validate_release_ref() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die "invalid release tag: $1"
+}
+
+selected_release() {
+  local release="$DEFAULT_RELEASE" argument_index
+  local -a arguments=("$@")
+  for ((argument_index = 0; argument_index < ${#arguments[@]}; argument_index++)); do
+    if [[ "${arguments[argument_index]}" == "--release" ]]; then
+      ((argument_index + 1 < ${#arguments[@]})) || die "--release requires a value"
+      release="${arguments[argument_index + 1]}"
+      argument_index=$((argument_index + 1))
+    fi
+  done
+  validate_release_ref "$release"
+  printf '%s\n' "$release"
+}
+
+download_release_asset() {
+  local release="$1" asset_name="$2" destination="$3"
+  curl --location --fail --silent --show-error \
+    --retry 2 --retry-delay 1 --connect-timeout 15 --max-time 300 \
+    --output "$destination" \
+    "$RELEASE_BASE_URL/$release/$asset_name"
+}
+
+prepare_manager_attempt() {
+  local release="$1" attempt_dir="$2" manifest_file manager_file manager_name actual_checksum
+  local manifest_commit script_checksum x64_checksum arm64_checksum
+  local -a manifest_lines=()
+
+  mkdir -p -- "$attempt_dir"
+  manifest_file="$attempt_dir/$RELEASE_MANIFEST_NAME"
+  download_release_asset "$release" "$RELEASE_MANIFEST_NAME" "$manifest_file" || return 1
+  [[ -f "$manifest_file" && ! -L "$manifest_file" ]] || return 1
+  mapfile -t manifest_lines < "$manifest_file"
+  [[ ${#manifest_lines[@]} -eq 5 ]] || return 1
+  [[ "${manifest_lines[0]}" == "schema=1" ]] || return 1
+  [[ "${manifest_lines[1]}" == commit=* ]] || return 1
+  [[ "${manifest_lines[2]}" == script_sha256=* ]] || return 1
+  [[ "${manifest_lines[3]}" == linux_x64_sha256=* ]] || return 1
+  [[ "${manifest_lines[4]}" == linux_arm64_sha256=* ]] || return 1
+
+  manifest_commit="${manifest_lines[1]#commit=}"
+  script_checksum="${manifest_lines[2]#script_sha256=}"
+  x64_checksum="${manifest_lines[3]#linux_x64_sha256=}"
+  arm64_checksum="${manifest_lines[4]#linux_arm64_sha256=}"
+  [[ "$manifest_commit" =~ ^[a-f0-9]{40}$ ]] || return 1
+  [[ "$script_checksum" =~ ^[a-f0-9]{64}$ ]] || return 1
+  [[ "$x64_checksum" =~ ^[a-f0-9]{64}$ ]] || return 1
+  [[ "$arm64_checksum" =~ ^[a-f0-9]{64}$ ]] || return 1
+
+  manager_name="mcpanel-$manifest_commit.sh"
+  manager_file="$attempt_dir/$manager_name"
+  download_release_asset "$release" "$manager_name" "$manager_file" || return 1
+  actual_checksum="$(sha256sum --binary -- "$manager_file")"
+  actual_checksum="${actual_checksum%% *}"
+  [[ "$actual_checksum" == "$script_checksum" ]] || return 1
+  chmod 0755 "$manager_file"
+  printf '%s\n' "$manager_file" > "$attempt_dir/manager-path"
+}
+
+main() {
+  local release work_root="" attempt attempt_dir manager=""
+  require_commands chmod curl mkdir mktemp rm sha256sum
+  release="$(selected_release "$@")"
+  work_root="$(mktemp -d /tmp/mcpanel-bootstrap.XXXXXX)"
+  cleanup() {
+    local rc=$?
+    rm -rf -- "$work_root"
+    trap - EXIT
+    exit "$rc"
+  }
+  trap cleanup EXIT
+
+  printf 'Downloading the verified MC Panel %s manager.\n' "$release"
+  for attempt in 1 2 3; do
+    attempt_dir="$work_root/attempt-$attempt"
+    if prepare_manager_attempt "$release" "$attempt_dir"; then
+      manager="$(< "$attempt_dir/manager-path")"
+      break
+    fi
+    warn "manager download attempt $attempt of 3 failed"
+  done
+  [[ -n "$manager" ]] || die "could not download a verified MC Panel manager after three attempts"
+
+  "$manager" setup "$@"
+  rm -rf -- "$work_root"
+  work_root=""
+  trap - EXIT
+}
+
+main "$@"

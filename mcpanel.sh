@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# mcpanel-system-manager: karilaa-dev/mc-panel
+
 set -Eeuo pipefail
 umask 077
 
@@ -10,7 +12,9 @@ readonly DEFAULT_SERVICE_NAME="mcpanel"
 readonly DEFAULT_PORT="6050"
 readonly DEFAULT_INSTALL_SOURCE="github"
 readonly DEFAULT_RELEASE="main"
+readonly DEFAULT_COMMAND_PATH="/usr/local/bin/mcpanel"
 readonly GITHUB_REPOSITORY="karilaa-dev/mc-panel"
+readonly SYSTEM_MANAGER_MARKER="# mcpanel-system-manager: karilaa-dev/mc-panel"
 readonly RELEASE_MANIFEST_NAME="release-manifest.txt"
 readonly RELEASE_METADATA_NAME=".mcpanel-release"
 readonly GITHUB_RELEASE_BASE_URL="${MCPANEL_RELEASE_BASE_URL:-https://github.com/$GITHUB_REPOSITORY/releases/download}"
@@ -21,24 +25,52 @@ readonly CREDENTIAL_STORE_DIR="/etc/credstore"
 script_path="$(realpath -e -- "${BASH_SOURCE[0]}")"
 repo_root="$(dirname -- "$script_path")"
 
+source_checkout_available() {
+  [[ -f "$repo_root/McPanel.slnx" &&
+     -f "$repo_root/src/McPanel.Web/package-lock.json" &&
+     -f "$repo_root/src/McPanel.Api/McPanel.Api.csproj" ]]
+}
+
+system_manager_command_path() {
+  printf '%s\n' "$DEFAULT_COMMAND_PATH"
+}
+
 usage() {
-  cat <<'EOF'
-Usage: ./mcpanel.sh COMMAND [options]
+  local invocation="mcpanel"
+  if source_checkout_available; then invocation="./mcpanel.sh"; fi
+
+  cat <<EOF
+Usage: $invocation COMMAND [options]
 
 Build and manage MC Panel as a Debian/Ubuntu systemd installation.
 
 Commands:
+  setup               Interactively install or update MC Panel
   install             Download and install MC Panel
   update              Download and update MC Panel
   import-server SOURCE  Import an existing Minecraft server
   uninstall           Remove services and binaries, preserving all data
   purge               Permanently remove services, binaries, and all data
-  build OUTPUT         Build a self-contained artifact without installing it
   status              Show service and HTTP status
   help                 Show this help
+EOF
+  if source_checkout_available; then
+    cat <<'EOF'
+  build OUTPUT         Build a self-contained artifact without installing it
+EOF
+  fi
+  cat <<'EOF'
+
+Setup options:
+  --release REF            GitHub release tag (default: main)
+  --listen-address ADDRESS  HTTP bind address (default: 0.0.0.0)
+  --port PORT               HTTP port (default: 6050)
+  --install-dir PATH        Binary directory (default: /opt/mcpanel)
+  --config-dir PATH         Configuration directory (default: /etc/mcpanel)
+  --data-dir PATH           Data directory (default: /var/lib/mcpanel)
+  --service-name NAME       systemd unit name (default: mcpanel)
 
 Install options:
-  --source github|local    Artifact source (default: github)
   --release REF            GitHub release tag (default: main)
   --listen-address ADDRESS  HTTP bind address (default: 0.0.0.0)
   --port PORT               HTTP port (default: 6050)
@@ -48,7 +80,6 @@ Install options:
   --service-name NAME       systemd unit name (default: mcpanel)
 
 Update options:
-  --source github|local    Artifact source (default: github)
   --release REF            GitHub release tag (default: main)
   --install-dir PATH        Binary directory (default: /opt/mcpanel)
   --config-dir PATH         Configuration directory (default: /etc/mcpanel)
@@ -81,7 +112,6 @@ Uninstall/purge options:
   --service-name NAME       systemd unit name (default: mcpanel)
 
 Purge additionally requires --yes-really-purge.
-Build accepts --rid linux-x64|linux-arm64; otherwise host architecture is used.
 Status accepts --config-dir and --service-name.
 
 Import-server accepts an unpacked directory, .zip, .tar, .tar.gz, or .tgz.
@@ -89,10 +119,17 @@ The archive contents must be the server root, not a containing directory.
 The source is preserved. A real import briefly pauses the web panel while
 existing managed servers remain online in the persistent runtime.
 
-Run install, update, and import-server as a regular user. GitHub artifacts are used by default.
-Use --source local to build and install the current checkout. The script uses
-passwordless sudo only for system changes.
+Run setup, install, update, and import-server as a regular user. GitHub artifacts are used by default.
+The manager asks sudo for access only when a command changes protected system files.
 EOF
+  if source_checkout_available; then
+    cat <<'EOF'
+Checkout-only options:
+  install and update accept --source github|local (default: github).
+  Use --source local to build and install the current checkout.
+  Build accepts --rid linux-x64|linux-arm64; otherwise host architecture is used.
+EOF
+  fi
 }
 
 die() {
@@ -136,9 +173,104 @@ require_root() {
   [[ "${EUID:-$(id -u)}" -eq 0 ]] || die "internal system operation requires root"
 }
 
-require_passwordless_sudo() {
+interactive_terminal_available() {
+  [[ -t 0 || -t 1 || -t 2 ]]
+}
+
+sudo_validate_interactively() {
+  # shellcheck disable=SC2024 # The redirect gives sudo a terminal when the manager came from a pipe.
+  sudo -v </dev/tty
+}
+
+require_sudo_access() {
   require_commands sudo
-  sudo -n true 2>/dev/null || die "passwordless sudo is required for system installation commands"
+  if sudo -n true 2>/dev/null; then return 0; fi
+  if ! interactive_terminal_available; then
+    die "sudo authentication is required; run this command from a terminal or configure passwordless sudo"
+  fi
+  sudo_validate_interactively || die "sudo authentication failed"
+  sudo -n true 2>/dev/null || die "sudo authentication did not grant access"
+}
+
+is_system_manager_file() {
+  local candidate="$1"
+  [[ -f "$candidate" && ! -L "$candidate" ]] || return 1
+  grep -Fqx -- "$SYSTEM_MANAGER_MARKER" "$candidate"
+}
+
+validate_system_manager_target() {
+  local target
+  target="$(system_manager_command_path)"
+  if [[ -e "$target" || -L "$target" ]]; then
+    [[ -f "$target" && ! -L "$target" ]] || die "refusing unsafe global command: $target"
+    is_system_manager_file "$target" || die "$target already exists and is not managed by MC Panel"
+  fi
+}
+
+backup_system_manager_command() {
+  local target backup=""
+  target="$(system_manager_command_path)"
+  validate_system_manager_target
+  if [[ -f "$target" ]]; then
+    backup="$(mktemp)"
+    cp -p -- "$target" "$backup"
+  fi
+  printf '%s\n' "$backup"
+}
+
+install_system_manager_command() {
+  local source="$1" target target_dir tmp=""
+  target="$(system_manager_command_path)"
+  [[ -f "$source" && ! -L "$source" ]] || die "manager source is missing or unsafe: $source"
+  is_system_manager_file "$source" || die "manager source does not contain the MC Panel marker"
+  validate_system_manager_target
+  target_dir="$(dirname -- "$target")"
+  if [[ -e "$target_dir" ]]; then
+    [[ -d "$target_dir" && ! -L "$target_dir" ]] || die "global command directory is unsafe: $target_dir"
+  else
+    install -d -o root -g root -m 0755 -- "$target_dir"
+  fi
+  tmp="$(mktemp "$target_dir/.mcpanel.XXXXXX")"
+  if ! install -o root -g root -m 0755 -- "$source" "$tmp" || ! mv -- "$tmp" "$target"; then
+    rm -f -- "$tmp"
+    die "could not install the global command at $target"
+  fi
+}
+
+restore_system_manager_command() {
+  local backup="$1" target target_dir tmp=""
+  target="$(system_manager_command_path)"
+  if [[ -n "$backup" && -f "$backup" ]]; then
+    if [[ -e "$target" || -L "$target" ]]; then
+      if ! is_system_manager_file "$target"; then
+        warn "could not restore $target because it was replaced by another command"
+        return 1
+      fi
+    fi
+    target_dir="$(dirname -- "$target")"
+    tmp="$(mktemp "$target_dir/.mcpanel-restore.XXXXXX")" || return 1
+    if ! install -o root -g root -m 0755 -- "$backup" "$tmp" || ! mv -- "$tmp" "$target"; then
+      rm -f -- "$tmp"
+      return 1
+    fi
+  elif is_system_manager_file "$target"; then
+    rm -f -- "$target"
+  elif [[ -e "$target" || -L "$target" ]]; then
+    warn "could not remove the replacement at $target while restoring the previous installation"
+    return 1
+  fi
+}
+
+remove_system_manager_command() {
+  local target
+  target="$(system_manager_command_path)"
+  if [[ ! -e "$target" && ! -L "$target" ]]; then return 0; fi
+  if is_system_manager_file "$target"; then
+    rm -f -- "$target"
+    info "Removed global command: $target"
+  else
+    warn "$target is not an MC Panel managed command and was preserved"
+  fi
 }
 
 detect_rid() {
@@ -177,6 +309,51 @@ validate_managed_paths() {
 
 validate_service_name() {
   [[ "$1" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "invalid service name"
+}
+
+is_valid_listen_address() {
+  [[ "$1" =~ ^[][A-Za-z0-9._:-]+$ ]]
+}
+
+validate_listen_address() {
+  is_valid_listen_address "$1" || die "invalid listen address"
+}
+
+is_valid_port() {
+  [[ "$1" =~ ^[0-9]+$ && ${#1} -le 5 ]] && ((10#$1 >= 1 && 10#$1 <= 65535))
+}
+
+validate_port() {
+  [[ "$1" =~ ^[0-9]+$ ]] || die "port must be an integer"
+  ((${#1} <= 5)) || die "port must be between 1 and 65535"
+  ((10#$1 >= 1 && 10#$1 <= 65535)) || die "port must be between 1 and 65535"
+}
+
+wizard_open_tty() {
+  exec 3<>/dev/tty 2>/dev/null || die "interactive setup requires a terminal"
+}
+
+wizard_close_tty() {
+  exec 3>&- 3<&-
+}
+
+wizard_stage() {
+  printf '\n[%s/%s] %s\n' "$1" "$2" "$3"
+}
+
+wizard_prompt() {
+  local variable_name="$1" label="$2" default_value="$3" input=""
+  printf '  %s [%s]: ' "$label" "$default_value"
+  IFS= read -r input <&3 || die "setup input ended before installation was confirmed"
+  if [[ -z "$input" ]]; then input="$default_value"; fi
+  printf -v "$variable_name" '%s' "$input"
+}
+
+wizard_confirm() {
+  local reply=""
+  printf '  Continue? [y/N] '
+  IFS= read -r reply <&3 || return 1
+  [[ "$reply" =~ ^[Yy]$ ]]
 }
 
 systemd_service_unit() {
@@ -255,7 +432,11 @@ validate_artifact() {
 
 validate_install_source() {
   case "$1" in
-    github|local) ;;
+    github) ;;
+    local)
+      source_checkout_available || \
+        die "--source local is checkout-only; run ./mcpanel.sh from the MC Panel source directory"
+      ;;
     *) die "install source must be github or local" ;;
   esac
 }
@@ -685,6 +866,7 @@ root_install() {
   local stage_dir="" install_started=0 install_activated=0 panel_unit_created=0 runtime_unit_created=0 install_succeeded=0
   local credential_file environment_file generated_token="" environment_tmp url_host credential_tmp
   local install_parent service_unit runtime_service_name runtime_unit unit_tmp="" runtime_unit_tmp=""
+  local manager_backup="" manager_replaced=0
 
   install_cleanup() {
     local rc=$?
@@ -701,9 +883,13 @@ root_install() {
         warn "configuration and data were preserved under $config_dir and $data_dir"
       fi
     fi
+    if ((rc != 0 && manager_replaced)); then
+      restore_system_manager_command "$manager_backup" || warn "the previous global command could not be restored"
+    fi
     if [[ -n "$stage_dir" && -d "$stage_dir" ]]; then rm -rf -- "$stage_dir"; fi
     if [[ -n "$unit_tmp" && -f "$unit_tmp" ]]; then rm -f -- "$unit_tmp"; fi
     if [[ -n "$runtime_unit_tmp" && -f "$runtime_unit_tmp" ]]; then rm -f -- "$runtime_unit_tmp"; fi
+    if [[ -n "$manager_backup" && -f "$manager_backup" ]]; then rm -f -- "$manager_backup"; fi
     trap - EXIT
     exit "$rc"
   }
@@ -713,9 +899,8 @@ root_install() {
   validate_host
   validate_service_name "$service_name"
   validate_access_user "$access_user"
-  [[ "$listen_address" =~ ^[][A-Za-z0-9._:-]+$ ]] || die "invalid listen address"
-  [[ "$port" =~ ^[0-9]+$ ]] || die "port must be an integer"
-  ((port >= 1 && port <= 65535)) || die "port must be between 1 and 65535"
+  validate_listen_address "$listen_address"
+  validate_port "$port"
   install_dir="$(normalize_managed_path "$install_dir")"
   config_dir="$(normalize_managed_path "$config_dir")"
   data_dir="$(normalize_managed_path "$data_dir")"
@@ -726,9 +911,10 @@ root_install() {
   service_unit="$(systemd_service_unit "$service_name")"
   runtime_service_name="$service_name-runtime"
   runtime_unit="/etc/systemd/system/$runtime_service_name.service"
-  [[ ! -e "$install_dir" ]] || die "$install_dir already exists; use ./mcpanel.sh update"
+  [[ ! -e "$install_dir" ]] || die "$install_dir already exists; use mcpanel update"
   [[ ! -e "$service_unit" ]] || die "$service_unit already exists"
   [[ ! -e "$runtime_unit" ]] || die "$runtime_unit already exists"
+  manager_backup="$(backup_system_manager_command)"
   for managed_dir in "$config_dir" "$data_dir"; do
     [[ ! -L "$managed_dir" ]] || die "managed directory must not be a symbolic link: $managed_dir"
   done
@@ -809,10 +995,14 @@ root_install() {
   wait_for_active "$runtime_service_name.service" || die "$runtime_service_name.service did not remain active"
   wait_for_active "$service_name.service" || die "$service_name.service did not remain active"
   wait_for_http "$config_dir" || die "the panel HTTP endpoint did not become ready"
+  install_system_manager_command "$script_path"
+  manager_replaced=1
 
   install_succeeded=1
+  if [[ -n "$manager_backup" && -f "$manager_backup" ]]; then rm -f -- "$manager_backup"; manager_backup=""; fi
   trap - EXIT
   info "MC Panel was installed and started as $PANEL_USER."
+  info "Global command: $DEFAULT_COMMAND_PATH"
   info "Panel URL: http://$listen_address:$port/"
   if [[ -n "$generated_token" ]]; then
     info "First-run setup token: $generated_token"
@@ -832,6 +1022,7 @@ root_update() {
   local credential_file environment_file
   local service_unit runtime_service_name runtime_unit install_parent
   local unit_tmp="" runtime_unit_tmp="" failed_dir="" runtime_socket old_runtime_pid="0" current_runtime_pid="0" runtime_upgrade_result=""
+  local manager_backup="" manager_replaced=0
 
   restore_access_state() {
     rm -f -- "$environment_file" "$credential_file"
@@ -870,11 +1061,14 @@ root_update() {
         if ((was_active)); then systemctl start "$service_name.service" >/dev/null 2>&1 || warn "the old panel service could not be restarted"; fi
       fi
     fi
+    if ((rc != 0 && manager_replaced)); then
+      restore_system_manager_command "$manager_backup" || warn "the previous global command could not be restored"
+    fi
     if [[ -n "$stage_dir" && -d "$stage_dir" ]]; then rm -rf -- "$stage_dir"; fi
     if [[ -n "$unit_tmp" && -f "$unit_tmp" ]]; then rm -f -- "$unit_tmp"; fi
     if [[ -n "$runtime_unit_tmp" && -f "$runtime_unit_tmp" ]]; then rm -f -- "$runtime_unit_tmp"; fi
     local backup
-    for backup in "$old_unit_backup" "$old_runtime_unit_backup" "$old_environment_backup" "$old_credential_backup"; do
+    for backup in "$old_unit_backup" "$old_runtime_unit_backup" "$old_environment_backup" "$old_credential_backup" "$manager_backup"; do
       if [[ -n "$backup" && -f "$backup" ]]; then rm -f -- "$backup"; fi
     done
     trap - EXIT
@@ -902,6 +1096,7 @@ root_update() {
   [[ -f "$runtime_unit" && ! -L "$runtime_unit" ]] || die "runtime unit is missing or unsafe: $runtime_unit"
   [[ -f "$environment_file" && ! -L "$environment_file" ]] || die "environment file is missing or unsafe: $environment_file"
   [[ -f "$credential_file" && ! -L "$credential_file" ]] || die "setup credential is missing or unsafe: $credential_file"
+  manager_backup="$(backup_system_manager_command)"
   artifact_dir="$(realpath -e -- "$artifact_dir")"
   validate_artifact "$artifact_dir"
   [[ "$artifact_dir" != "$install_dir" && "$artifact_dir" != "$install_dir/"* ]] || die "artifact must be outside the active installation"
@@ -937,9 +1132,11 @@ root_update() {
       wait_for_active "$service_name.service" || die "$service_name.service did not remain active"
       wait_for_http "$config_dir" || die "the panel HTTP endpoint did not become ready"
     fi
+    install_system_manager_command "$script_path"
+    manager_replaced=1
     update_succeeded=1
     local state_backup
-    for state_backup in "$old_unit_backup" "$old_runtime_unit_backup" "$old_environment_backup" "$old_credential_backup"; do
+    for state_backup in "$old_unit_backup" "$old_runtime_unit_backup" "$old_environment_backup" "$old_credential_backup" "$manager_backup"; do
       if [[ -n "$state_backup" && -f "$state_backup" ]]; then rm -f -- "$state_backup"; fi
     done
     trap - EXIT
@@ -1007,13 +1204,16 @@ root_update() {
     wait_for_active "$service_name.service" || die "$service_name.service did not remain active"
     wait_for_http "$config_dir" || die "the panel HTTP endpoint did not become ready"
   fi
+  install_system_manager_command "$script_path"
+  manager_replaced=1
   update_succeeded=1
   local successful_backup
-  for successful_backup in "$old_unit_backup" "$old_runtime_unit_backup" "$old_environment_backup" "$old_credential_backup"; do
+  for successful_backup in "$old_unit_backup" "$old_runtime_unit_backup" "$old_environment_backup" "$old_credential_backup" "$manager_backup"; do
     if [[ -n "$successful_backup" && -f "$successful_backup" ]]; then rm -f -- "$successful_backup"; fi
   done
   trap - EXIT
   info "MC Panel binaries were updated successfully."
+  info "Global command: $DEFAULT_COMMAND_PATH"
   if ((was_active)); then info "The panel service is active."; else info "The panel service was left stopped."; fi
   info "Previous binaries were retained at $rollback_dir."
   info "Configuration, data, and the setup credential were preserved."
@@ -1025,7 +1225,7 @@ root_uninstall() {
   local install_dir="$1" config_dir="$2" data_dir="$3" service_name="$4" purge="$5"
   local service_unit runtime_service_name runtime_unit memory_dropin_dir memory_dropin managed_path credential_file
 
-  require_commands getent groupdel realpath rm rmdir systemctl userdel
+  require_commands getent grep groupdel realpath rm rmdir systemctl userdel
   validate_service_name "$service_name"
   install_dir="$(normalize_managed_path "$install_dir")"
   config_dir="$(normalize_managed_path "$config_dir")"
@@ -1061,6 +1261,7 @@ root_uninstall() {
   systemctl reset-failed "$service_name.service" >/dev/null 2>&1 || true
   systemctl reset-failed "$runtime_service_name.service" >/dev/null 2>&1 || true
   if [[ -d "$install_dir" ]]; then rm -rf --one-file-system -- "$install_dir"; fi
+  remove_system_manager_command
 
   if ((purge)); then
     info "Permanently deleting $config_dir and $data_dir."
@@ -1319,7 +1520,7 @@ build_for_system_command() {
   local listen_address="${6:-}" port="${7:-}"
   local build_root artifact rid access_user
   require_regular_user
-  require_passwordless_sudo
+  require_sudo_access
   access_user="$(id -un)"
   rid="$(detect_rid)"
   build_root="$(mktemp -d /tmp/mcpanel-system-build.XXXXXX)"
@@ -1327,6 +1528,7 @@ build_for_system_command() {
   trap cleanup_system_build EXIT
   artifact="$build_root/artifact"
   publish_artifact "$rid" "$artifact"
+  require_sudo_access
   if [[ "$action" == "install" ]]; then
     sudo -n -- "$script_path" __install "$artifact" "$install_dir" "$config_dir" "$data_dir" "$service_name" "$listen_address" "$port" "$access_user"
   else
@@ -1348,7 +1550,7 @@ run_remote_system_command() {
   local work_root prepared_dir rid commit installer artifact access_user
 
   require_regular_user
-  require_passwordless_sudo
+  require_sudo_access
   access_user="$(id -un)"
   require_commands basename chmod curl find grep mkdir mktemp realpath sha256sum tar tr uname
   validate_release_ref "$release"
@@ -1380,7 +1582,7 @@ apply_prepared_system_command() {
   local listen_address="${10}" port="${11}" access_user="${12:-$(id -un)}"
 
   require_regular_user
-  require_passwordless_sudo
+  require_sudo_access
   validate_release_ref "$release"
   [[ "$commit" =~ ^[a-f0-9]{40}$ ]] || die "invalid prepared release commit"
   validate_rid "$rid"
@@ -1397,6 +1599,109 @@ apply_prepared_system_command() {
       ;;
     *) die "invalid prepared release action: $action" ;;
   esac
+}
+
+command_setup() {
+  local install_dir="$DEFAULT_INSTALL_DIR" config_dir="$DEFAULT_CONFIG_DIR" data_dir="$DEFAULT_DATA_DIR"
+  local service_name="$DEFAULT_SERVICE_NAME" listen_address="0.0.0.0" port="$DEFAULT_PORT" release="$DEFAULT_RELEASE"
+  local listen_address_set=0 port_set=0 action="install" total_stages=3 url_host
+
+  while (($#)); do
+    case "$1" in
+      --release) (($# >= 2)) || die "$1 requires a value"; release="$2"; shift 2 ;;
+      --listen-address) (($# >= 2)) || die "$1 requires a value"; listen_address="$2"; listen_address_set=1; shift 2 ;;
+      --port) (($# >= 2)) || die "$1 requires a value"; port="$2"; port_set=1; shift 2 ;;
+      --install-dir) (($# >= 2)) || die "$1 requires a value"; install_dir="$2"; shift 2 ;;
+      --config-dir) (($# >= 2)) || die "$1 requires a value"; config_dir="$2"; shift 2 ;;
+      --data-dir) (($# >= 2)) || die "$1 requires a value"; data_dir="$2"; shift 2 ;;
+      --service-name) (($# >= 2)) || die "$1 requires a value"; service_name="$2"; shift 2 ;;
+      -h|--help) usage; return ;;
+      *) die "unknown setup option: $1" ;;
+    esac
+  done
+
+  require_regular_user
+  require_commands awk basename chmod curl find grep mkdir mktemp realpath sha256sum sudo systemctl tar tr uname
+  validate_host
+  validate_release_ref "$release"
+  validate_service_name "$service_name"
+  validate_listen_address "$listen_address"
+  validate_port "$port"
+  install_dir="$(normalize_managed_path "$install_dir")"
+  config_dir="$(normalize_managed_path "$config_dir")"
+  data_dir="$(normalize_managed_path "$data_dir")"
+  validate_managed_paths "$install_dir" "$config_dir" "$data_dir"
+
+  if [[ -e "$install_dir" || -L "$install_dir" ]]; then
+    [[ -d "$install_dir" && ! -L "$install_dir" && -f "$install_dir/McPanel.Api" && ! -L "$install_dir/McPanel.Api" ]] || \
+      die "$install_dir exists but is not a valid MC Panel installation"
+    action="update"
+    total_stages=2
+  fi
+
+  wizard_open_tty
+  printf '\nMC Panel setup\n'
+  wizard_stage 1 "$total_stages" "System check"
+  # shellcheck disable=SC1091
+  info "  Host: $(. /etc/os-release; printf '%s %s' "${PRETTY_NAME:-${ID:-Linux}}" "$(uname -m)")"
+  info "  Release: $release"
+  if [[ "$action" == "update" ]]; then
+    info "  Existing installation: $install_dir"
+  else
+    wizard_stage 2 "$total_stages" "Network"
+    if ((!listen_address_set)); then
+      while true; do
+        wizard_prompt listen_address "Listen address" "$listen_address"
+        if is_valid_listen_address "$listen_address"; then break; fi
+        warn "enter an IP address or host name without http://"
+      done
+    else
+      info "  Listen address: $listen_address"
+    fi
+    if ((!port_set)); then
+      while true; do
+        wizard_prompt port "HTTP port" "$port"
+        if is_valid_port "$port"; then break; fi
+        warn "enter a port between 1 and 65535"
+      done
+    else
+      info "  HTTP port: $port"
+    fi
+  fi
+
+  wizard_stage "$total_stages" "$total_stages" "Review"
+  if [[ "$action" == "install" ]]; then
+    url_host="$listen_address"
+    if [[ "$url_host" == *:* && "$url_host" != \[*\] ]]; then url_host="[$url_host]"; fi
+    info "  Action: install and start MC Panel"
+    info "  Listen URL: http://$url_host:$port/"
+  else
+    info "  Action: update MC Panel"
+    if ((listen_address_set || port_set)); then
+      warn "the existing listen address and port will be preserved during this update"
+    fi
+  fi
+  info "  Application: $install_dir"
+  info "  Configuration: $config_dir"
+  info "  Data: $data_dir"
+  info "  Global command: $DEFAULT_COMMAND_PATH"
+  warn "MC Panel uses HTTP. Keep this port on a trusted private network and do not forward it from a router."
+
+  if ! wizard_confirm; then
+    wizard_close_tty
+    info "Setup cancelled."
+    return 0
+  fi
+  wizard_close_tty
+
+  if [[ "$action" == "install" ]]; then
+    command_install --source github --release "$release" \
+      --listen-address "$listen_address" --port "$port" \
+      --install-dir "$install_dir" --config-dir "$config_dir" --data-dir "$data_dir" --service-name "$service_name"
+  else
+    command_update --source github --release "$release" \
+      --install-dir "$install_dir" --config-dir "$config_dir" --data-dir "$data_dir" --service-name "$service_name"
+  fi
 }
 
 command_install() {
@@ -1481,7 +1786,7 @@ command_import_server() {
   done
   [[ -n "$source" ]] || die_import "$json" 2 IMPORT_USAGE "import-server requires a source directory or archive"
   require_regular_user
-  require_passwordless_sudo
+  require_sudo_access
   require_commands realpath
   [[ ! -L "$source" ]] || die_import "$json" 3 IMPORT_SYMBOLIC_LINK "import source must not be a symbolic link"
   source="$(realpath -e -- "$source" 2>/dev/null)" || die_import "$json" 3 IMPORT_SOURCE_NOT_FOUND "import source does not exist"
@@ -1505,12 +1810,14 @@ command_remove() {
     esac
   done
   if ((purge)); then ((purge_confirmed)) || die "purge requires --yes-really-purge"; else ((!purge_confirmed)) || die "--yes-really-purge is only valid with purge"; fi
-  require_passwordless_sudo
+  require_sudo_access
   sudo -n -- "$script_path" __uninstall "$install_dir" "$config_dir" "$data_dir" "$service_name" "$purge"
 }
 
 command_build() {
   local output="" rid=""
+  source_checkout_available || \
+    die "build is checkout-only; run ./mcpanel.sh from the MC Panel source directory"
   while (($#)); do
     case "$1" in
       --rid) (($# >= 2)) || die "$1 requires a value"; rid="$2"; shift 2 ;;
@@ -1539,7 +1846,7 @@ command_status() {
   require_commands curl systemctl
   systemctl --no-pager --full status "$service_name.service" || rc=1
   systemctl --no-pager --full status "$service_name-runtime.service" || rc=1
-  require_passwordless_sudo
+  require_sudo_access
   probe_url="$(sudo -n -- "$script_path" __probe-url "$config_dir" 2>/dev/null || true)"
   if [[ -n "$probe_url" ]]; then
     if ! curl --noproxy '*' --fail --silent --show-error --max-time 10 "$probe_url"; then rc=1; fi
@@ -1559,6 +1866,7 @@ fi
 command="${1:-help}"
 if (($#)); then shift; fi
 case "$command" in
+  setup) command_setup "$@" ;;
   install) command_install "$@" ;;
   update) command_update "$@" ;;
   import-server) command_import_server "$@" ;;

@@ -18,7 +18,7 @@ Java itself.
 - Debian or Ubuntu with systemd 247 or newer and cgroup v2
 - An x86-64 or ARM64 processor
 - `curl`, GNU `tar`, and `sha256sum`
-- Passwordless `sudo` for the installer
+- `sudo` access for system installation
 - A 64-bit Java runtime supported by each Minecraft version you plan to run
 
 The default installer downloads a self-contained application from GitHub. The
@@ -26,35 +26,28 @@ The default installer downloads a self-contained application from GitHub. The
 
 ## Install
 
-Download the installer and run it as your regular user:
+Run the setup wizard as your regular user:
 
 ```bash
-curl --fail --location --show-error \
-  --output mcpanel.sh \
-  https://raw.githubusercontent.com/karilaa-dev/mc-panel/main/mcpanel.sh
-chmod +x mcpanel.sh
-./mcpanel.sh install
+curl -fsSL https://github.com/karilaa-dev/mc-panel/releases/download/main/install | bash
 ```
 
-The default release is the newest successful build from `main`. The script
-downloads its current release copy and the application for the host
-architecture, verifies both against the release manifest, and then installs
-them. A saved copy of `mcpanel.sh` can be reused for later updates.
+The wizard checks the host, asks for the listen address and port, and shows a
+summary before it asks for sudo access. It downloads the newest successful
+build from `main`, verifies the manager and application against the release
+manifest, and installs the global `mcpanel` command. Running the one-line
+installer again offers to update an existing default installation.
 
-Select the rolling release or a future version tag explicitly with
-`--release`:
+Pass setup options after `bash -s --`. For example, select a release tag or
+bind to one private address:
 
 ```bash
-./mcpanel.sh install --release main
-./mcpanel.sh install --release v1.2.3
+curl -fsSL https://github.com/karilaa-dev/mc-panel/releases/download/main/install \
+  | bash -s -- --release v1.2.3 --listen-address 192.168.1.20 --port 6050
 ```
 
 The default address is `http://0.0.0.0:6050`, which listens on every network
-interface. You can bind the panel to one private address instead:
-
-```bash
-./mcpanel.sh install --listen-address 192.168.1.20 --port 6050
-```
+interface. Keep that port on a trusted private network.
 
 The installer prints a setup token. Open the panel from another device on the
 same network and use that token to create the administrator account. Root can
@@ -83,7 +76,7 @@ Minecraft version, loader or build, Java runtime, or launch JAR while stopped.
 Import an unpacked Minecraft server directory with the interactive wizard:
 
 ```bash
-./mcpanel.sh import-server /srv/old-survival
+mcpanel import-server /srv/old-survival
 ```
 
 The command also accepts `.zip`, `.tar`, `.tar.gz`, and `.tgz` archives. An
@@ -95,7 +88,7 @@ For an unattended import, provide every value that cannot come from
 `server.properties`:
 
 ```bash
-./mcpanel.sh import-server /srv/old-survival.tar.gz \
+mcpanel import-server /srv/old-survival.tar.gz \
   --name "Survival" \
   --kind paper \
   --version 1.21.8 \
@@ -122,20 +115,16 @@ restored.
 ## Maintenance
 
 ```bash
-./mcpanel.sh update
-./mcpanel.sh status
-./mcpanel.sh uninstall
+mcpanel update
+mcpanel status
+mcpanel uninstall
 ```
 
 `update` downloads the newest build from the selected release and replaces the
-installed application. When that commit is already installed, it refreshes
-credentials, group membership, permissions, and systemd units.
-Running Minecraft servers stay online during a normal panel update. You can
-rerun the saved installer without downloading it again:
-
-```bash
-./mcpanel.sh update
-```
+installed application and the global manager command. When that commit is
+already installed, it refreshes the manager, credentials, group membership,
+permissions, and systemd units. Running Minecraft servers stay online during
+a normal panel update.
 
 Developers can build and install the current checkout instead:
 
@@ -151,6 +140,7 @@ The default installation paths are:
 
 | Path | Contents |
 | --- | --- |
+| `/usr/local/bin/mcpanel` | Global system-management command |
 | `/opt/mcpanel` | Application files |
 | `/etc/mcpanel` | Root-owned, generally readable service configuration (no secrets) |
 | `/etc/credstore/mcpanel.setup-token` | Root-only systemd setup credential |

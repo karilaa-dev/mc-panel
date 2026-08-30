@@ -1,8 +1,9 @@
 # Debian and Ubuntu operations
 
-`mcpanel.sh` downloads MC Panel and manages its two systemd services. Run it as
-a regular user. The script uses passwordless `sudo` only when it changes the
-system installation.
+The global `mcpanel` command downloads MC Panel and manages its two systemd
+services. Run it as a regular user. It asks sudo for access only when it
+changes protected system files. Automation still works with cached or
+passwordless sudo.
 
 ## Host setup
 
@@ -29,29 +30,27 @@ startup fails if the host cannot enforce that limit.
 
 ## Install and build
 
-Download the installer, then install the rolling `main` release:
+Run the interactive installer for the rolling `main` release:
 
 ```bash
-curl --fail --location --show-error \
-  --output mcpanel.sh \
-  https://raw.githubusercontent.com/karilaa-dev/mc-panel/main/mcpanel.sh
-chmod +x mcpanel.sh
-./mcpanel.sh install --listen-address 192.168.1.20 --port 6050
+curl -fsSL https://github.com/karilaa-dev/mc-panel/releases/download/main/install \
+  | bash -s -- --listen-address 192.168.1.20 --port 6050
 ```
 
-The saved script refreshes itself from the selected release before it installs
-the matching application artifact. GitHub is the default source and `main` is
-the default release. Both forms below select the same rolling build:
+The bootstrap verifies the released manager before it runs. The wizard checks
+the host, shows the fixed system paths, confirms the network settings, and
+installs `/usr/local/bin/mcpanel`. GitHub is the default source and `main` is
+the default release. Run either command below to update that rolling build:
 
 ```bash
-./mcpanel.sh update
-./mcpanel.sh update --source github --release main
+mcpanel update
+mcpanel update --release main
 ```
 
 A future versioned release can use the same artifact contract:
 
 ```bash
-./mcpanel.sh update --release v1.2.3
+mcpanel update --release v1.2.3
 ```
 
 The default is `0.0.0.0:6050`. Restrict the panel port with the host firewall
@@ -65,8 +64,8 @@ To build a self-contained directory without installing it:
 ./mcpanel.sh build --rid linux-arm64 ./artifacts/mcpanel-linux-arm64
 ```
 
-The output directory must not already exist. Run `./mcpanel.sh help` for custom
-installation paths and service names.
+The output directory must not already exist. Run `./mcpanel.sh help` in the
+checkout for build options. Run `mcpanel help` for system-management options.
 
 To build the current checkout and apply it to the system installation, bypass
 GitHub explicitly:
@@ -82,7 +81,7 @@ The installer creates `mcpanel.service` for the web application and
 non-login `mcpanel` user.
 
 ```bash
-./mcpanel.sh status
+mcpanel status
 sudo systemctl status mcpanel mcpanel-runtime
 sudo systemctl restart mcpanel
 sudo journalctl -u mcpanel -f
@@ -97,6 +96,7 @@ The default paths are:
 
 | Path | Owner | Contents |
 | --- | --- | --- |
+| `/usr/local/bin/mcpanel` | root | Global system-management command |
 | `/opt/mcpanel` | root | Read-only application files |
 | `/etc/mcpanel` | root | Readable, non-secret environment configuration |
 | `/etc/credstore/mcpanel.setup-token` | root | Root-only setup credential loaded by systemd |
@@ -123,13 +123,13 @@ untrusted owners on one installation.
 
 ## Import an existing Minecraft server
 
-Run imports as the same regular user used for installation. The wrapper uses
-passwordless `sudo` to copy the source into protected staging and to pause the
-web service during the final commit.
+Run imports as the same regular user used for installation. The wrapper asks
+sudo for access before it copies the source into protected staging and pauses
+the web service during the final commit.
 
 ```bash
-./mcpanel.sh import-server /srv/minecraft/old-server
-./mcpanel.sh import-server /srv/minecraft/old-server.zip --dry-run
+mcpanel import-server /srv/minecraft/old-server
+mcpanel import-server /srv/minecraft/old-server.zip --dry-run
 ```
 
 The source may be an unpacked directory, `.zip`, `.tar`, `.tar.gz`, or `.tgz`.
@@ -141,7 +141,7 @@ The wizard asks for the server kind, version, launch target, Java runtime,
 heap size, port, optional JVM arguments, and EULA acceptance. It does not read
 or execute old start scripts. For scripts and configuration management, pass
 the matching flags with `--non-interactive`; add `--json` for a single JSON
-result. Run `./mcpanel.sh help` for the complete option list.
+result. Run `mcpanel help` for the complete option list.
 
 The source remains unchanged. MC Panel writes the selected port and EULA only
 to the managed copy, then registers it as stopped with start-on-boot disabled.
@@ -174,7 +174,7 @@ both services, restore both directories, and set the data tree owner to
 ## Updates and removal
 
 ```bash
-./mcpanel.sh update
+mcpanel update
 ```
 
 An update downloads the newest commit from the selected release. A same-version
@@ -184,10 +184,11 @@ The updater retains the previous application beside `/opt/mcpanel` in a dated
 rollback directory. It restores that copy if the new panel does not stay
 active. Updates preserve application configuration, credentials, and data.
 
-The normal uninstall keeps all state and the service account:
+The normal uninstall removes the global command, application, and services. It
+keeps all state and the service account:
 
 ```bash
-./mcpanel.sh uninstall
+mcpanel uninstall
 ```
 
 It also preserves the setup credential. Purge removes the credential together
@@ -196,7 +197,7 @@ with configuration and data.
 Permanent removal requires an explicit confirmation flag:
 
 ```bash
-./mcpanel.sh purge --yes-really-purge
+mcpanel purge --yes-really-purge
 ```
 
 Purge deletes every managed server, world, database, key, log, and panel
