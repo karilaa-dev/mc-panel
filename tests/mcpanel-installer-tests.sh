@@ -253,6 +253,8 @@ test_service_security_contract() {
   [[ "$panel_unit" == *"UMask=0077"* ]] || fail "panel private umask changed"
   [[ "$runtime_unit" == *"UMask=0007"* ]] || fail "runtime group-writable umask is missing"
   [[ "$runtime_unit" != *"LoadCredential="* ]] || fail "runtime service should not receive the setup credential"
+  # Match the literal installer variable, not its value in this test process.
+  # shellcheck disable=SC2016
   instances_mode_count="$(grep -c -- '-m 2750 -- "$data_dir/instances"' "$test_repo_root/mcpanel.sh")"
   [[ "$instances_mode_count" -eq 2 ]] || fail "instances parent must be setgid and group-readable, but not group-writable"
 }
