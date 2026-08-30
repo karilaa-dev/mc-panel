@@ -241,8 +241,10 @@ internal sealed class RuntimeSocketService(
     ILogger<RuntimeSocketService> logger) : BackgroundService
 {
     private Socket? _listener;
+    private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private byte[]? _startupExecutableHash;
     private int _upgradeRequested;
+    private int _draining;
     internal TimeSpan UpgradePollInterval { get; set; } = TimeSpan.FromSeconds(30);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -280,19 +282,17 @@ internal sealed class RuntimeSocketService(
             while (!cancellationToken.IsCancellationRequested)
             {
                 await Task.Delay(UpgradePollInterval, cancellationToken);
-                if (engine.Snapshot().Any(x => PersistentRuntimeClient.IsActive(x.State))) continue;
                 var current = ExecutableHash();
                 var binaryChanged = _startupExecutableHash is not null && current is not null &&
                     !CryptographicOperations.FixedTimeEquals(_startupExecutableHash, current);
-                if (Volatile.Read(ref _upgradeRequested) != 0 || binaryChanged)
-                {
-                    if (binaryChanged)
-                        logger.LogInformation("Runtime binary changed and no servers are active; restarting onto the updated binary");
-                    else
-                        logger.LogInformation("Runtime upgrade is pending and no servers are active; restarting now");
-                    lifetime.StopApplication();
-                    return;
-                }
+                if (Volatile.Read(ref _upgradeRequested) == 0 && !binaryChanged) continue;
+                if (!await TryBeginDrainWhenIdleAsync(cancellationToken)) continue;
+                if (binaryChanged)
+                    logger.LogInformation("Runtime binary changed and no servers are active; restarting onto the updated binary");
+                else
+                    logger.LogInformation("Runtime upgrade is pending and no servers are active; restarting now");
+                lifetime.StopApplication();
+                return;
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
@@ -338,8 +338,8 @@ internal sealed class RuntimeSocketService(
     {
         "snapshot" => RuntimeWire.Element(engine.Snapshot()),
         "subscribe" => RuntimeWire.Element(await engine.SubscribeAsync(RuntimeWire.Value<long>(request.Payload), cancellationToken)),
-        "start" => RuntimeWire.Element(await engine.StartAsync(RuntimeWire.Value<RuntimeLaunchRequest>(request.Payload) ?? throw new InvalidDataException("Missing launch request."), cancellationToken)),
-        "restart" => RuntimeWire.Element(await engine.RestartAsync(RuntimeWire.Value<RuntimeLaunchRequest>(request.Payload) ?? throw new InvalidDataException("Missing launch request."), cancellationToken)),
+        "start" => await StartAsync(request.Payload, false, cancellationToken),
+        "restart" => await StartAsync(request.Payload, true, cancellationToken),
         "stop" => RuntimeWire.Element(await engine.StopAsync(RuntimeWire.Value<Guid>(request.Payload), false, cancellationToken)),
         "kill" => RuntimeWire.Element(await engine.StopAsync(RuntimeWire.Value<Guid>(request.Payload), true, cancellationToken)),
         "command" => await CommandAsync(request.Payload, cancellationToken),
@@ -347,9 +347,25 @@ internal sealed class RuntimeSocketService(
             RuntimeWire.Version,
             [RuntimeWorkloadKind.Minecraft, RuntimeWorkloadKind.Gate],
             ["typed-workloads", "gate-api-readiness", "upgrade-when-idle"])),
-        "upgradeWhenIdle" => UpgradeWhenIdle(),
+        "upgradeWhenIdle" => RuntimeWire.Element(await UpgradeWhenIdleAsync(cancellationToken)),
         _ => throw new InvalidDataException("Unknown runtime operation.")
     };
+
+    private async Task<JsonElement> StartAsync(JsonElement payload, bool restart, CancellationToken cancellationToken)
+    {
+        var launch = RuntimeWire.Value<RuntimeLaunchRequest>(payload)
+            ?? throw new InvalidDataException("Missing launch request.");
+        await _lifecycleGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (Volatile.Read(ref _draining) != 0)
+                throw new InvalidOperationException("The runtime is restarting and cannot start new workloads.");
+            return RuntimeWire.Element(restart
+                ? await engine.RestartAsync(launch, cancellationToken)
+                : await engine.StartAsync(launch, cancellationToken));
+        }
+        finally { _lifecycleGate.Release(); }
+    }
 
     private async Task<JsonElement> CommandAsync(JsonElement payload, CancellationToken cancellationToken)
     {
@@ -358,11 +374,23 @@ internal sealed class RuntimeSocketService(
         return RuntimeWire.Element<object?>(null);
     }
 
-    private JsonElement UpgradeWhenIdle()
+    private async Task<bool> UpgradeWhenIdleAsync(CancellationToken cancellationToken)
     {
         Interlocked.Exchange(ref _upgradeRequested, 1);
-        var idle = engine.Snapshot().All(x => !PersistentRuntimeClient.IsActive(x.State));
-        return RuntimeWire.Element(idle);
+        return await TryBeginDrainWhenIdleAsync(cancellationToken);
+    }
+
+    private async Task<bool> TryBeginDrainWhenIdleAsync(CancellationToken cancellationToken)
+    {
+        await _lifecycleGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (Volatile.Read(ref _draining) != 0) return true;
+            if (engine.Snapshot().Any(x => PersistentRuntimeClient.IsActive(x.State))) return false;
+            Volatile.Write(ref _draining, 1);
+            return true;
+        }
+        finally { _lifecycleGate.Release(); }
     }
 
     private sealed record RuntimeCommand(Guid ServerId, string Command);

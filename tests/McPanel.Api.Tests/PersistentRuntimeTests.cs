@@ -1,4 +1,5 @@
 using McPanel.Api.Configuration;
+using McPanel.Api.Infrastructure;
 using McPanel.Api.Services;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
@@ -103,6 +104,39 @@ public sealed class PersistentRuntimeTests : IAsyncLifetime
 
             Assert.True(restarting);
             Assert.True(lifetime.ApplicationStopping.IsCancellationRequested);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Idle_upgrade_rejects_new_starts_after_the_restart_is_acknowledged()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var lifetime = new TestApplicationLifetime();
+        var service = new RuntimeSocketService(_paths, _engine, lifetime, NullLogger<RuntimeSocketService>.Instance);
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            for (var attempt = 0; attempt < 100 && !File.Exists(_paths.RuntimeSocket); attempt++)
+                await Task.Delay(10);
+            var restarting = await PersistentRuntimeProtocol.SendAsync<bool>(
+                _paths.RuntimeSocket, "upgradeWhenIdle", null, CancellationToken.None);
+            var id = Guid.NewGuid();
+            var instance = _paths.Instance(id);
+            Directory.CreateDirectory(instance);
+
+            var exception = await Assert.ThrowsAsync<PanelException>(() =>
+                PersistentRuntimeProtocol.SendAsync<RuntimeServerSnapshot>(
+                    _paths.RuntimeSocket, "start",
+                    new RuntimeLaunchRequest(id, _fakeJava, instance, ["-jar", "server.jar", "nogui"], 1024, 5),
+                    CancellationToken.None));
+
+            Assert.True(restarting);
+            Assert.Equal("RUNTIME_OPERATION_FAILED", exception.Code);
+            Assert.DoesNotContain(_engine.Snapshot(), snapshot => PersistentRuntimeClient.IsActive(snapshot.State));
         }
         finally
         {

@@ -120,7 +120,9 @@ public sealed class SoftwareActivationService(
 
     internal sealed class ActivationTransaction
     {
-        private const int ManifestVersion = 2;
+        private const int ManifestVersion = 3;
+        private const int LegacyManifestVersion = 2;
+        private const string PayloadDirectoryName = "files";
         private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
         private readonly string? _source;
         private readonly string _destination;
@@ -128,6 +130,7 @@ public sealed class SoftwareActivationService(
         private readonly SoftwareMetadataSnapshot _originalMetadata;
         private readonly List<FileMutation> _files;
         private readonly List<string> _createdDirectories;
+        private readonly int _manifestVersion;
         private bool _commitRecorded;
         private bool _finished;
 
@@ -139,7 +142,8 @@ public sealed class SoftwareActivationService(
             SoftwareMetadataSnapshot originalMetadata,
             bool commitRecorded = false,
             List<FileMutation>? files = null,
-            List<string>? createdDirectories = null)
+            List<string>? createdDirectories = null,
+            int manifestVersion = ManifestVersion)
         {
             ServerId = serverId;
             _source = source;
@@ -149,6 +153,7 @@ public sealed class SoftwareActivationService(
             _commitRecorded = commitRecorded;
             _files = files ?? [];
             _createdDirectories = createdDirectories ?? [];
+            _manifestVersion = manifestVersion;
         }
 
         public ActivationTransaction(
@@ -165,6 +170,7 @@ public sealed class SoftwareActivationService(
         public bool IsFinished => _finished;
         public IReadOnlyList<string> ActivatedPaths => _files.Select(file => ResolveDestination(file.RelativePath)).ToArray();
         private string ManifestPath => Path.Combine(_rollback, "activation-manifest.json");
+        private string PayloadRoot => Path.Combine(_rollback, PayloadDirectoryName);
 
         public void Activate()
         {
@@ -180,7 +186,7 @@ public sealed class SoftwareActivationService(
                 CreateParents(Path.GetDirectoryName(target)!);
 
                 var replaced = File.Exists(target);
-                var backup = ResolveRelative(_rollback, relative);
+                var backup = ResolveBackup(relative);
                 if (replaced) Directory.CreateDirectory(Path.GetDirectoryName(backup)!);
                 _files.Add(new FileMutation(relative, replaced));
                 WriteManifest();
@@ -224,7 +230,7 @@ public sealed class SoftwareActivationService(
                 var target = ResolveDestination(mutation.RelativePath);
                 if (mutation.Replaced)
                 {
-                    var backup = ResolveRelative(_rollback, mutation.RelativePath);
+                    var backup = ResolveBackup(mutation.RelativePath);
                     if (!File.Exists(backup)) continue;
                     if (File.Exists(target)) File.Delete(target);
                     Directory.CreateDirectory(Path.GetDirectoryName(target)!);
@@ -247,13 +253,14 @@ public sealed class SoftwareActivationService(
             var manifestPath = Path.Combine(rollback, "activation-manifest.json");
             var manifest = JsonSerializer.Deserialize<ActivationManifest>(File.ReadAllText(manifestPath), JsonOptions)
                 ?? throw new InvalidDataException("The activation manifest is empty.");
-            if (manifest.Version != ManifestVersion || manifest.ServerId == Guid.Empty ||
+            if (manifest.Version is not (LegacyManifestVersion or ManifestVersion) || manifest.ServerId == Guid.Empty ||
                 manifest.OriginalMetadata is null || manifest.Files is null || manifest.CreatedDirectories is null)
                 throw new InvalidDataException("The activation manifest is invalid.");
             foreach (var file in manifest.Files) ResolveRelative(paths.Instance(manifest.ServerId), file.RelativePath);
             foreach (var directory in manifest.CreatedDirectories) ResolveRelative(paths.Instance(manifest.ServerId), directory);
             return new ActivationTransaction(manifest.ServerId, null, paths.Instance(manifest.ServerId), rollback,
-                manifest.OriginalMetadata, manifest.CommitRecorded, manifest.Files, manifest.CreatedDirectories);
+                manifest.OriginalMetadata, manifest.CommitRecorded, manifest.Files, manifest.CreatedDirectories,
+                manifest.Version);
         }
 
         private void CreateParents(string directory)
@@ -286,7 +293,7 @@ public sealed class SoftwareActivationService(
             using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
             {
                 JsonSerializer.Serialize(stream,
-                    new ActivationManifest(ManifestVersion, ServerId, _commitRecorded, _originalMetadata,
+                    new ActivationManifest(_manifestVersion, ServerId, _commitRecorded, _originalMetadata,
                         _files, _createdDirectories), JsonOptions);
                 stream.Flush(true);
             }
@@ -302,6 +309,9 @@ public sealed class SoftwareActivationService(
             EnsureNoReparsePoints(_destination, path);
             return path;
         }
+
+        private string ResolveBackup(string relative) => ResolveRelative(
+            _manifestVersion == LegacyManifestVersion ? _rollback : PayloadRoot, relative);
 
         private static void EnsureNoReparsePoints(string root, string path)
         {

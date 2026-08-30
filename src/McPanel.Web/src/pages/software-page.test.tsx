@@ -124,6 +124,28 @@ describe("Runtime server core settings", () => {
     await waitFor(() => expect(mockedApi.software.mock.calls.length).toBeGreaterThan(1))
   })
 
+  it("clears an uploaded custom JAR after its change completes", async () => {
+    const user = userEvent.setup()
+    mockedApi.uploadCustomJar.mockResolvedValue({
+      token: "jar-token", fileName: "custom.jar", size: 123, expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    })
+    renderPage()
+
+    await screen.findByText("Current server core")
+    await user.click(screen.getByRole("button", { name: "Custom JAR" }))
+    await user.upload(screen.getByLabelText("Executable JAR"), new File(["jar"], "custom.jar", { type: "application/java-archive" }))
+    expect(await screen.findByText("Ready to activate as custom-server.jar.")).toBeVisible()
+    const review = screen.getByRole("button", { name: "Review server core change" })
+    await waitFor(() => expect(review).toBeEnabled())
+    await user.click(review)
+    await user.click(await screen.findByRole("button", { name: "Change server core" }))
+
+    await waitFor(() => expect(mockedApi.job).toHaveBeenCalledWith("change-job"))
+    await waitFor(() => expect(screen.queryByText("Ready to activate as custom-server.jar.")).not.toBeInTheDocument())
+    expect(screen.getByLabelText("Executable JAR")).toHaveValue("")
+    expect(screen.getByRole("button", { name: "Review server core change" })).toBeDisabled()
+  })
+
   it("redirects old software URLs to Runtime", async () => {
     render(<MemoryRouter initialEntries={["/servers/server-1/software"]}><Routes>
       <Route path="servers/:serverId/software" element={<LegacySoftwareRedirect />} />
