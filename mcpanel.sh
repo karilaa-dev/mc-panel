@@ -24,6 +24,7 @@ readonly CREDENTIAL_STORE_DIR="/etc/credstore"
 
 script_path="$(realpath -e -- "${BASH_SOURCE[0]}")"
 repo_root="$(dirname -- "$script_path")"
+sudo_mode="noninteractive"
 
 source_checkout_available() {
   [[ -f "$repo_root/McPanel.slnx" &&
@@ -173,23 +174,51 @@ require_root() {
   [[ "${EUID:-$(id -u)}" -eq 0 ]] || die "internal system operation requires root"
 }
 
+terminal_path() {
+  printf '/dev/tty\n'
+}
+
 interactive_terminal_available() {
-  [[ -t 0 || -t 1 || -t 2 ]]
+  local terminal
+  terminal="$(terminal_path)"
+  { exec 9<>"$terminal"; } 2>/dev/null || return 1
+  exec 9>&- 9<&-
 }
 
 sudo_validate_interactively() {
   # shellcheck disable=SC2024 # The redirect gives sudo a terminal when the manager came from a pipe.
-  sudo -v </dev/tty
+  sudo -v <"$(terminal_path)"
 }
 
 require_sudo_access() {
   require_commands sudo
-  if sudo -n true 2>/dev/null; then return 0; fi
+  if [[ "$sudo_mode" == "interactive" ]]; then
+    interactive_terminal_available || die "sudo authentication requires a terminal"
+    return 0
+  fi
+  if sudo -n true 2>/dev/null; then
+    sudo_mode="noninteractive"
+    return 0
+  fi
   if ! interactive_terminal_available; then
     die "sudo authentication is required; run this command from a terminal or configure passwordless sudo"
   fi
   sudo_validate_interactively || die "sudo authentication failed"
-  sudo -n true 2>/dev/null || die "sudo authentication did not grant access"
+  if sudo -n true 2>/dev/null; then
+    sudo_mode="noninteractive"
+  else
+    # Some sudoers policies intentionally disable timestamp caching. Let sudo
+    # authenticate the single privileged handoff directly from its terminal.
+    sudo_mode="interactive"
+  fi
+}
+
+sudo_system() {
+  if [[ "$sudo_mode" == "interactive" ]]; then
+    sudo -- "$@"
+  else
+    sudo -n -- "$@"
+  fi
 }
 
 is_system_manager_file() {
@@ -273,6 +302,29 @@ remove_system_manager_command() {
   fi
 }
 
+systemd_unit_directory() {
+  printf '/etc/systemd/system\n'
+}
+
+another_mcpanel_system_installation_exists() {
+  local unit unit_dir
+  unit_dir="$(systemd_unit_directory)"
+  for unit in "$unit_dir"/*.service; do
+    [[ -f "$unit" && ! -L "$unit" ]] || continue
+    grep -Fqx -- 'Description=MC Panel Minecraft server manager' "$unit" || continue
+    grep -Eq -- '^ExecStart=.*/McPanel[.]Api$' "$unit" && return 0
+  done
+  return 1
+}
+
+remove_system_manager_command_if_unused() {
+  if another_mcpanel_system_installation_exists; then
+    info "Preserved global command because another MC Panel installation is registered."
+  else
+    remove_system_manager_command
+  fi
+}
+
 detect_rid() {
   case "$(uname -m)" in
     x86_64) printf 'linux-x64\n' ;;
@@ -330,7 +382,9 @@ validate_port() {
 }
 
 wizard_open_tty() {
-  exec 3<>/dev/tty 2>/dev/null || die "interactive setup requires a terminal"
+  local terminal
+  terminal="$(terminal_path)"
+  { exec 3<>"$terminal"; } 2>/dev/null || die "interactive setup requires a terminal"
 }
 
 wizard_close_tty() {
@@ -1261,7 +1315,7 @@ root_uninstall() {
   systemctl reset-failed "$service_name.service" >/dev/null 2>&1 || true
   systemctl reset-failed "$runtime_service_name.service" >/dev/null 2>&1 || true
   if [[ -d "$install_dir" ]]; then rm -rf --one-file-system -- "$install_dir"; fi
-  remove_system_manager_command
+  remove_system_manager_command_if_unused
 
   if ((purge)); then
     info "Permanently deleting $config_dir and $data_dir."
@@ -1530,9 +1584,9 @@ build_for_system_command() {
   publish_artifact "$rid" "$artifact"
   require_sudo_access
   if [[ "$action" == "install" ]]; then
-    sudo -n -- "$script_path" __install "$artifact" "$install_dir" "$config_dir" "$data_dir" "$service_name" "$listen_address" "$port" "$access_user"
+    sudo_system "$script_path" __install "$artifact" "$install_dir" "$config_dir" "$data_dir" "$service_name" "$listen_address" "$port" "$access_user"
   else
-    sudo -n -- "$script_path" __update "$artifact" "$install_dir" "$config_dir" "$data_dir" "$service_name" "$access_user"
+    sudo_system "$script_path" __update "$artifact" "$install_dir" "$config_dir" "$data_dir" "$service_name" "$access_user"
   fi
   rm -rf -- "$build_root"
   trap - EXIT
@@ -1591,11 +1645,11 @@ apply_prepared_system_command() {
   validate_release_metadata "$artifact" "$release" "$commit" "$rid"
   case "$action" in
     install)
-      sudo -n -- "$script_path" __install "$artifact" "$install_dir" "$config_dir" "$data_dir" \
+      sudo_system "$script_path" __install "$artifact" "$install_dir" "$config_dir" "$data_dir" \
         "$service_name" "$listen_address" "$port" "$access_user"
       ;;
     update)
-      sudo -n -- "$script_path" __update "$artifact" "$install_dir" "$config_dir" "$data_dir" "$service_name" "$access_user"
+      sudo_system "$script_path" __update "$artifact" "$install_dir" "$config_dir" "$data_dir" "$service_name" "$access_user"
       ;;
     *) die "invalid prepared release action: $action" ;;
   esac
@@ -1791,7 +1845,7 @@ command_import_server() {
   [[ ! -L "$source" ]] || die_import "$json" 3 IMPORT_SYMBOLIC_LINK "import source must not be a symbolic link"
   source="$(realpath -e -- "$source" 2>/dev/null)" || die_import "$json" 3 IMPORT_SOURCE_NOT_FOUND "import source does not exist"
   [[ -d "$source" || -f "$source" ]] || die_import "$json" 3 IMPORT_SOURCE_INVALID "import source must be a directory or regular archive"
-  sudo -n -- "$script_path" __import-server "$source" "$install_dir" "$config_dir" "$data_dir" "$service_name" "${import_options[@]}"
+  sudo_system "$script_path" __import-server "$source" "$install_dir" "$config_dir" "$data_dir" "$service_name" "${import_options[@]}"
 }
 
 command_remove() {
@@ -1811,7 +1865,7 @@ command_remove() {
   done
   if ((purge)); then ((purge_confirmed)) || die "purge requires --yes-really-purge"; else ((!purge_confirmed)) || die "--yes-really-purge is only valid with purge"; fi
   require_sudo_access
-  sudo -n -- "$script_path" __uninstall "$install_dir" "$config_dir" "$data_dir" "$service_name" "$purge"
+  sudo_system "$script_path" __uninstall "$install_dir" "$config_dir" "$data_dir" "$service_name" "$purge"
 }
 
 command_build() {
@@ -1847,7 +1901,7 @@ command_status() {
   systemctl --no-pager --full status "$service_name.service" || rc=1
   systemctl --no-pager --full status "$service_name-runtime.service" || rc=1
   require_sudo_access
-  probe_url="$(sudo -n -- "$script_path" __probe-url "$config_dir" 2>/dev/null || true)"
+  probe_url="$(sudo_system "$script_path" __probe-url "$config_dir" 2>/dev/null || true)"
   if [[ -n "$probe_url" ]]; then
     if ! curl --noproxy '*' --fail --silent --show-error --max-time 10 "$probe_url"; then rc=1; fi
     printf '\n'

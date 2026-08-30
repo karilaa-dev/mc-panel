@@ -364,6 +364,7 @@ test_systemd_minimum() {
 test_setup_wizard() {
   local fixture="$test_root/setup-wizard" install_dir="$test_root/setup-wizard/install"
   local config_dir="$test_root/setup-wizard/config" data_dir="$test_root/setup-wizard/data" output
+  local tty_fixture="$test_root/setup-wizard/tty" tty_stderr="$test_root/setup-wizard/stderr"
   mkdir -p -- "$fixture"
 
   output="$({
@@ -427,6 +428,16 @@ test_setup_wizard() {
     command_setup --install-dir "$install_dir" --config-dir "$config_dir" --data-dir "$data_dir"
   })"
   [[ "$output" == *"Setup cancelled."* ]] || fail "cancelled setup did not report cancellation"
+
+  : > "$tty_fixture"
+  (
+    terminal_path() { printf '%s\n' "$tty_fixture"; }
+    wizard_open_tty
+    printf 'wizard stderr remains visible\n' >&2
+    wizard_close_tty
+  ) 2> "$tty_stderr"
+  grep -Fq 'wizard stderr remains visible' "$tty_stderr" || \
+    fail "opening the wizard terminal permanently redirected stderr"
 }
 
 test_sudo_access() {
@@ -441,6 +452,27 @@ test_sudo_access() {
     sudo_validate_interactively() { authenticated=1; prompts=$((prompts + 1)); }
     require_sudo_access
     assert_equal "1" "$prompts" "sudo prompt count"
+    assert_equal "noninteractive" "$sudo_mode" "cached sudo mode"
+  )
+  (
+    local prompts=0 handoffs=0
+    sudo_mode="noninteractive"
+    require_commands() { :; }
+    interactive_terminal_available() { return 0; }
+    sudo_validate_interactively() { prompts=$((prompts + 1)); }
+    sudo() {
+      if [[ "$1" == "-n" ]]; then return 1; fi
+      if [[ "$1" == "--" && "$2" == "root-operation" ]]; then
+        handoffs=$((handoffs + 1))
+        return 0
+      fi
+      return 1
+    }
+    require_sudo_access
+    assert_equal "1" "$prompts" "non-caching sudo validation count"
+    assert_equal "interactive" "$sudo_mode" "non-caching sudo mode"
+    sudo_system root-operation
+    assert_equal "1" "$handoffs" "interactive sudo handoff count"
   )
   (
     # shellcheck disable=SC2317,SC2329 # These stubs are invoked through assert_fails.
@@ -456,7 +488,8 @@ test_sudo_access() {
 test_system_manager_command() {
   local manager_dir="$test_root/global-bin" target="$test_command_path"
   local updated_manager="$test_root/updated-manager" manager_backup
-  mkdir -p -- "$manager_dir"
+  local test_unit_dir="$test_root/systemd-units"
+  mkdir -p -- "$manager_dir" "$test_unit_dir"
   (
     install() {
       local -a filtered=()
@@ -468,6 +501,7 @@ test_system_manager_command() {
       done
       command install "${filtered[@]}"
     }
+    systemd_unit_directory() { printf '%s\n' "$test_unit_dir"; }
 
     install_system_manager_command "$test_repo_root/mcpanel.sh"
     is_system_manager_file "$target" || fail "global command was not installed with its marker"
@@ -481,6 +515,16 @@ test_system_manager_command() {
     restore_system_manager_command "$manager_backup"
     if grep -Fq '# updated-manager-fixture' "$target"; then fail "global command rollback did not restore its backup"; fi
     rm -f -- "$manager_backup"
+
+    {
+      printf '[Unit]\nDescription=MC Panel Minecraft server manager\n'
+      printf '[Service]\nExecStart=/srv/other-mcpanel/McPanel.Api\n'
+    } > "$test_unit_dir/other-mcpanel.service"
+    remove_system_manager_command_if_unused >/dev/null
+    is_system_manager_file "$target" || fail "shared global command was removed while another installation exists"
+    rm -f -- "$test_unit_dir/other-mcpanel.service"
+    remove_system_manager_command_if_unused >/dev/null
+    [[ ! -e "$target" ]] || fail "unused global command was not removed"
 
     printf '#!/usr/bin/env bash\nprintf unrelated\\n\n' > "$target"
     chmod 0755 "$target"
