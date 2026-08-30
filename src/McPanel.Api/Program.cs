@@ -19,6 +19,9 @@ using Microsoft.Extensions.Options;
 
 if (CgroupProcessLauncher.TryExec(args, out var launcherExitCode)) return launcherExitCode;
 if (PersistentRuntimeHost.IsInvocation(args)) return await PersistentRuntimeHost.RunAsync(args);
+if (PersistentRuntimeUpgradeCommand.IsInvocation(args)) return await PersistentRuntimeUpgradeCommand.RunAsync();
+if (ServerImportCommand.IsStageInvocation(args)) return await ServerImportCommand.RunStageAsync(args);
+if (ServerImportCommand.IsImportInvocation(args)) return await ServerImportCommand.RunImportAsync(args);
 
 // systemd intentionally uses the writable data directory as its working directory.
 // Anchor configuration and bundled web assets to the executable instead of the CWD.

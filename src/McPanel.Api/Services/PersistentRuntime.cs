@@ -152,18 +152,9 @@ public sealed class PersistentRuntimeClient(PanelPaths paths, IHostEnvironment e
     private async Task<T?> SendAsync<T>(string operation, object? payload, CancellationToken cancellationToken)
     {
         if (!Enabled) throw new InvalidOperationException("The persistent runtime is disabled in this environment.");
-        using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
         try
         {
-            await socket.ConnectAsync(new UnixDomainSocketEndPoint(paths.RuntimeSocket), cancellationToken);
-            await using var stream = new NetworkStream(socket, ownsSocket: false);
-            var requestId = Guid.NewGuid();
-            await RuntimeWire.WriteAsync(stream, new RuntimeWireRequest(RuntimeWire.Version, requestId, operation, RuntimeWire.Element(payload)), cancellationToken);
-            var response = await RuntimeWire.ReadAsync<RuntimeWireResponse>(stream, cancellationToken);
-            if (response.Version != RuntimeWire.Version || response.RequestId != requestId)
-                throw new InvalidDataException("The runtime returned a mismatched protocol response.");
-            if (!response.Success) throw new PanelException(409, "RUNTIME_OPERATION_FAILED", response.Error ?? "The runtime operation failed.");
-            return response.Payload.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined ? default : RuntimeWire.Value<T>(response.Payload);
+            return await PersistentRuntimeProtocol.SendAsync<T>(paths.RuntimeSocket, operation, payload, cancellationToken);
         }
         catch (PanelException) { throw; }
         catch (Exception exception) when (exception is SocketException or IOException or InvalidDataException)
@@ -177,6 +168,50 @@ public sealed class PersistentRuntimeClient(PanelPaths paths, IHostEnvironment e
         new(503, "RUNTIME_UNAVAILABLE", "The Minecraft runtime service is unavailable.", detail);
     public static bool IsActive(RuntimeProcessState state) => state is RuntimeProcessState.Starting or RuntimeProcessState.Running or RuntimeProcessState.Stopping;
     private sealed record RuntimeCommand(Guid ServerId, string Command);
+}
+
+internal static class PersistentRuntimeProtocol
+{
+    public static async Task<T?> SendAsync<T>(string socketPath, string operation, object? payload, CancellationToken cancellationToken)
+    {
+        using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), cancellationToken);
+        await using var stream = new NetworkStream(socket, ownsSocket: false);
+        var requestId = Guid.NewGuid();
+        await RuntimeWire.WriteAsync(stream,
+            new RuntimeWireRequest(RuntimeWire.Version, requestId, operation, RuntimeWire.Element(payload)), cancellationToken);
+        var response = await RuntimeWire.ReadAsync<RuntimeWireResponse>(stream, cancellationToken);
+        if (response.Version != RuntimeWire.Version || response.RequestId != requestId)
+            throw new InvalidDataException("The runtime returned a mismatched protocol response.");
+        if (!response.Success)
+            throw new PanelException(409, "RUNTIME_OPERATION_FAILED", response.Error ?? "The runtime operation failed.");
+        return response.Payload.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+            ? default
+            : RuntimeWire.Value<T>(response.Payload);
+    }
+}
+
+public static class PersistentRuntimeUpgradeCommand
+{
+    public const string Argument = "--mcpanel-runtime-upgrade-when-idle";
+    public static bool IsInvocation(string[] arguments) => arguments.Length == 1 && arguments[0] == Argument;
+
+    public static async Task<int> RunAsync()
+    {
+        var paths = new PanelPaths(new PanelOptions());
+        try
+        {
+            var restarting = await PersistentRuntimeProtocol.SendAsync<bool>(
+                paths.RuntimeSocket, "upgradeWhenIdle", null, CancellationToken.None);
+            Console.Out.WriteLine(restarting ? "restarting" : "busy");
+            return 0;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"Could not request a runtime upgrade: {exception.Message}");
+            return 1;
+        }
+    }
 }
 
 public static class PersistentRuntimeHost
@@ -273,6 +308,11 @@ internal sealed class RuntimeSocketService(
                 if (request.Version != RuntimeWire.Version) throw new InvalidDataException($"Unsupported runtime protocol version {request.Version}.");
                 var result = await DispatchAsync(request, cancellationToken);
                 await RuntimeWire.WriteAsync(stream, new RuntimeWireResponse(RuntimeWire.Version, request.RequestId, true, null, result), cancellationToken);
+                if (request.Operation == "upgradeWhenIdle" && RuntimeWire.Value<bool>(result))
+                {
+                    logger.LogInformation("Runtime is idle; restarting onto the updated binary");
+                    lifetime.StopApplication();
+                }
             }
             catch (Exception exception)
             {
@@ -313,7 +353,6 @@ internal sealed class RuntimeSocketService(
     private JsonElement UpgradeWhenIdle()
     {
         var idle = engine.Snapshot().All(x => !PersistentRuntimeClient.IsActive(x.State));
-        if (idle) lifetime.StopApplication();
         return RuntimeWire.Element(idle);
     }
 

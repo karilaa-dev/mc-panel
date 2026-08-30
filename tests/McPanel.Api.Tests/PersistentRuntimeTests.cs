@@ -86,6 +86,30 @@ public sealed class PersistentRuntimeTests : IAsyncLifetime
         Assert.True(File.Exists(Path.Combine(_paths.RuntimeState, $"{id:N}.json")));
     }
 
+    [Fact]
+    public async Task Idle_upgrade_is_acknowledged_before_runtime_shutdown_is_requested()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var lifetime = new TestApplicationLifetime();
+        var service = new RuntimeSocketService(_paths, _engine, lifetime, NullLogger<RuntimeSocketService>.Instance);
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            for (var attempt = 0; attempt < 100 && !File.Exists(_paths.RuntimeSocket); attempt++)
+                await Task.Delay(10);
+
+            var restarting = await PersistentRuntimeProtocol.SendAsync<bool>(
+                _paths.RuntimeSocket, "upgradeWhenIdle", null, CancellationToken.None);
+
+            Assert.True(restarting);
+            Assert.True(lifetime.ApplicationStopping.IsCancellationRequested);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
     public async Task DisposeAsync()
     {
         await _engine.StopAllAsync(CancellationToken.None);
@@ -114,5 +138,14 @@ public sealed class PersistentRuntimeTests : IAsyncLifetime
         public string ApplicationName { get; set; } = "McPanel.Api.Tests";
         public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
         public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+    }
+
+    private sealed class TestApplicationLifetime : IHostApplicationLifetime
+    {
+        private readonly CancellationTokenSource _stopping = new();
+        public CancellationToken ApplicationStarted => CancellationToken.None;
+        public CancellationToken ApplicationStopping => _stopping.Token;
+        public CancellationToken ApplicationStopped => CancellationToken.None;
+        public void StopApplication() => _stopping.Cancel();
     }
 }

@@ -29,6 +29,7 @@ Build and manage MC Panel as a Debian/Ubuntu systemd installation.
 Commands:
   install             Download and install MC Panel
   update              Download and update MC Panel
+  import-server SOURCE  Import an existing Minecraft server
   uninstall           Remove services and binaries, preserving all data
   purge               Permanently remove services, binaries, and all data
   build OUTPUT         Build a self-contained artifact without installing it
@@ -53,6 +54,25 @@ Update options:
   --data-dir PATH           Data directory (default: /var/lib/mcpanel)
   --service-name NAME       systemd unit name (default: mcpanel)
 
+Import-server options:
+  --name NAME               Managed server name
+  --kind KIND               vanilla|paper|fabric|forge|neoforge
+  --version VERSION         Minecraft version
+  --loader-version VERSION  Required for Fabric, Forge, and NeoForge
+  --launch-target PATH      Relative server JAR or unix_args.txt
+  --java-runtime ID|PATH    Registered runtime ID or absolute Java path
+  --memory-mb MIB           Java heap in MiB
+  --port PORT               Game port (defaults to server.properties)
+  --jvm-args ARGUMENTS      Extra JVM arguments
+  --accept-eula             Accept the Minecraft EULA
+  --non-interactive         Fail instead of prompting for missing values
+  --dry-run                 Validate without changing panel state
+  --json                    Emit one JSON result and imply --non-interactive
+  --install-dir PATH        Binary directory (default: /opt/mcpanel)
+  --config-dir PATH         Configuration directory (default: /etc/mcpanel)
+  --data-dir PATH           Data directory (default: /var/lib/mcpanel)
+  --service-name NAME       systemd unit name (default: mcpanel)
+
 Uninstall/purge options:
   --install-dir PATH        Binary directory (default: /opt/mcpanel)
   --config-dir PATH         Configuration directory (default: /etc/mcpanel)
@@ -63,7 +83,12 @@ Purge additionally requires --yes-really-purge.
 Build accepts --rid linux-x64|linux-arm64; otherwise host architecture is used.
 Status accepts --config-dir and --service-name.
 
-Run install and update as a regular user. GitHub artifacts are used by default.
+Import-server accepts an unpacked directory, .zip, .tar, .tar.gz, or .tgz.
+The archive contents must be the server root, not a containing directory.
+The source is preserved. A real import briefly pauses the web panel while
+existing managed servers remain online in the persistent runtime.
+
+Run install, update, and import-server as a regular user. GitHub artifacts are used by default.
 Use --source local to build and install the current checkout. The script uses
 passwordless sudo only for system changes.
 EOF
@@ -80,6 +105,19 @@ info() {
 
 warn() {
   printf 'warning: %s\n' "$*" >&2
+}
+
+die_import() {
+  local json="$1" exit_code="$2" code="$3" message="$4"
+  if ((json)); then
+    message="${message//\\/\\\\}"
+    message="${message//\"/\\\"}"
+    message="${message//$'\n'/\\n}"
+    printf '{"ok":false,"code":"%s","message":"%s"}\n' "$code" "$message"
+  else
+    printf 'error: %s\n' "$message" >&2
+  fi
+  exit "$exit_code"
 }
 
 require_commands() {
@@ -519,6 +557,48 @@ wait_for_active() {
   return 1
 }
 
+runtime_socket_ready() {
+  [[ -S "$1" ]]
+}
+
+runtime_service_pid() {
+  systemctl show --property MainPID --value "$1" 2>/dev/null || true
+}
+
+wait_for_runtime_ready() {
+  local service="$1" socket="$2"
+  local consecutive=0
+  local attempt
+  for attempt in {1..45}; do
+    if systemctl is-active --quiet "$service" && runtime_socket_ready "$socket"; then
+      ((consecutive += 1))
+      if ((consecutive >= 3)); then return 0; fi
+    else
+      consecutive=0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_runtime_generation() {
+  local service="$1" socket="$2" old_pid="$3"
+  local consecutive=0 current_pid
+  local attempt
+  for attempt in {1..45}; do
+    current_pid="$(runtime_service_pid "$service")"
+    if [[ "$current_pid" =~ ^[1-9][0-9]*$ && "$current_pid" != "$old_pid" ]] &&
+       systemctl is-active --quiet "$service" && runtime_socket_ready "$socket"; then
+      ((consecutive += 1))
+      if ((consecutive >= 3)); then return 0; fi
+    else
+      consecutive=0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 http_probe_url() {
   local config_dir="$1"
   local url
@@ -697,7 +777,7 @@ root_update() {
   local stage_dir="" rollback_dir="" update_swapped=0 update_succeeded=0 was_active=0 was_runtime_active=0 panel_stopped=0
   local old_unit_backup="" old_runtime_unit_backup="" old_memory_dropin_backup=""
   local service_unit runtime_service_name runtime_unit memory_dropin_dir memory_dropin install_parent
-  local unit_tmp="" runtime_unit_tmp="" failed_dir=""
+  local unit_tmp="" runtime_unit_tmp="" failed_dir="" runtime_socket old_runtime_pid="0" current_runtime_pid="0" runtime_upgrade_result=""
 
   update_cleanup() {
     local rc=$?
@@ -741,7 +821,7 @@ root_update() {
   }
   trap update_cleanup EXIT
 
-  require_commands awk chmod chown cp curl date find grep mkdir mktemp mv realpath rm rmdir sleep systemctl
+  require_commands awk chmod chown cp curl date env find grep mkdir mktemp mv realpath rm rmdir runuser sleep systemctl
   validate_host
   validate_service_name "$service_name"
   install_dir="$(normalize_managed_path "$install_dir")"
@@ -751,6 +831,7 @@ root_update() {
   service_unit="/etc/systemd/system/$service_name.service"
   runtime_service_name="$service_name-runtime"
   runtime_unit="/etc/systemd/system/$runtime_service_name.service"
+  runtime_socket="$data_dir/runtime/control.sock"
   memory_dropin_dir="/etc/systemd/system/$service_name.service.d"
   memory_dropin="$memory_dropin_dir/50-mcpanel-memory.conf"
   [[ -d "$install_dir" && ! -L "$install_dir" ]] || die "installation is missing or unsafe: $install_dir"
@@ -784,7 +865,11 @@ root_update() {
   if [[ -e "$runtime_unit" ]]; then old_runtime_unit_backup="$(mktemp)"; cp -- "$runtime_unit" "$old_runtime_unit_backup"; fi
   if [[ -e "$memory_dropin" ]]; then old_memory_dropin_backup="$(mktemp)"; cp -- "$memory_dropin" "$old_memory_dropin_backup"; fi
   if systemctl is-active --quiet "$service_name.service"; then was_active=1; fi
-  if systemctl is-active --quiet "$runtime_service_name.service"; then was_runtime_active=1; fi
+  if systemctl is-active --quiet "$runtime_service_name.service"; then
+    was_runtime_active=1
+    old_runtime_pid="$(runtime_service_pid "$runtime_service_name.service")"
+    [[ "$old_runtime_pid" =~ ^[1-9][0-9]*$ ]] || die "could not determine the active runtime process"
+  fi
 
   rollback_dir="${install_dir}.rollback-$(date -u +%Y%m%dT%H%M%SZ)-$$"
   [[ ! -e "$rollback_dir" ]] || die "rollback destination already exists: $rollback_dir"
@@ -804,7 +889,33 @@ root_update() {
   chown root:root "$runtime_unit_tmp"; chmod 0644 "$runtime_unit_tmp"; mv -- "$runtime_unit_tmp" "$runtime_unit"
   systemctl daemon-reload
   systemctl enable --now "$runtime_service_name.service"
-  wait_for_active "$runtime_service_name.service" || die "$runtime_service_name.service did not remain active"
+  if ((was_runtime_active)); then
+    current_runtime_pid="$(runtime_service_pid "$runtime_service_name.service")"
+    if [[ "$current_runtime_pid" =~ ^[1-9][0-9]*$ && "$current_runtime_pid" != "$old_runtime_pid" ]]; then
+      wait_for_runtime_generation "$runtime_service_name.service" "$runtime_socket" "$old_runtime_pid" || \
+        die "$runtime_service_name.service did not finish its in-progress upgrade"
+    elif runtime_upgrade_result="$(runuser --user "$PANEL_USER" -- env \
+      MCPANEL_DATA_DIR="$data_dir" MCPANEL_CONFIG_DIR="$config_dir" \
+      "$install_dir/McPanel.Api" --mcpanel-runtime-upgrade-when-idle)"; then
+      case "$runtime_upgrade_result" in
+        restarting)
+          wait_for_runtime_generation "$runtime_service_name.service" "$runtime_socket" "$old_runtime_pid" || \
+            die "$runtime_service_name.service did not restart onto the updated binary"
+          ;;
+        busy)
+          wait_for_runtime_ready "$runtime_service_name.service" "$runtime_socket" || \
+            die "$runtime_service_name.service did not remain ready"
+          ;;
+        *) die "$runtime_service_name.service returned an invalid upgrade response" ;;
+      esac
+    else
+      wait_for_runtime_generation "$runtime_service_name.service" "$runtime_socket" "$old_runtime_pid" || \
+        die "could not ask $runtime_service_name.service to upgrade safely"
+    fi
+  else
+    wait_for_runtime_ready "$runtime_service_name.service" "$runtime_socket" || \
+      die "$runtime_service_name.service did not become ready"
+  fi
 
   if ((was_active)); then
     systemctl start "$service_name.service"
@@ -880,6 +991,146 @@ root_uninstall() {
     info "The $PANEL_USER account was retained."
   fi
   info "Review dated rollback directories beside $install_dir separately."
+}
+
+root_import_server() {
+  require_root
+  local raw_source="$1" install_dir="$2" config_dir="$3" data_dir="$4" service_name="$5"
+  shift 5
+  local -a import_options=("$@")
+  local -a panel_environment=()
+  local source stage_dir="" content result_file="" source_label json_result=""
+  local environment_file environment_line environment_key environment_value
+  local service_unit panel_was_active=0 panel_stopped=0 dry_run=0 json=0 import_rc=0 restart_rc=0
+  local option
+
+  for option in "${import_options[@]}"; do
+    [[ "$option" == "--dry-run" ]] && dry_run=1
+    [[ "$option" == "--json" ]] && json=1
+  done
+
+  import_cleanup() {
+    local rc=$?
+    set +e
+    if ((panel_stopped && panel_was_active)); then
+      systemctl start "$service_name.service" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$stage_dir" && -d "$stage_dir" ]]; then rm -rf -- "$stage_dir"; fi
+    trap - EXIT INT TERM
+    exit "$rc"
+  }
+  trap import_cleanup EXIT
+  trap 'exit 2' INT TERM
+
+  require_commands basename cat chown curl env find getent grep mktemp realpath rm runuser sleep systemctl
+  validate_service_name "$service_name"
+  install_dir="$(normalize_managed_path "$install_dir")"
+  config_dir="$(normalize_managed_path "$config_dir")"
+  data_dir="$(normalize_managed_path "$data_dir")"
+  validate_managed_paths "$install_dir" "$config_dir" "$data_dir"
+  [[ -d "$install_dir" && ! -L "$install_dir" ]] || die "installation is missing or unsafe: $install_dir"
+  [[ -x "$install_dir/McPanel.Api" && ! -L "$install_dir/McPanel.Api" ]] || die "current executable is missing"
+  [[ -d "$data_dir/staging" && ! -L "$data_dir/staging" ]] || die "panel staging directory is missing or unsafe"
+  [[ ! -L "$raw_source" ]] || die "import source must not be a symbolic link"
+  source="$(realpath -e -- "$raw_source" 2>/dev/null)" || \
+    die_import "$json" 3 IMPORT_SOURCE_NOT_FOUND "import source no longer exists"
+  [[ -d "$source" || -f "$source" ]] || die "import source must be a directory or regular archive"
+  if [[ -d "$source" ]] && find -P "$source" \( -type l -o \! -type d \! -type f \) -print -quit | grep -q .; then
+    die_import "$json" 3 IMPORT_SPECIAL_FILE "import source contains a symbolic link or special file"
+  fi
+  if [[ -d "$source" ]] && find -P "$source" -type f -links +1 -print -quit | grep -q .; then
+    die_import "$json" 3 IMPORT_HARD_LINK "import source contains a hard-linked file"
+  fi
+  if [[ -d "$source" && ( "$data_dir" == "$source" || "$data_dir" == "$source/"* ) ]]; then
+    die "import source must not contain the panel data directory"
+  fi
+  service_unit="/etc/systemd/system/$service_name.service"
+  [[ -f "$service_unit" && ! -L "$service_unit" ]] || die "systemd unit is missing or unsafe: $service_unit"
+  environment_file="$config_dir/mcpanel.env"
+  [[ -f "$environment_file" && ! -L "$environment_file" ]] || die "panel environment file is missing or unsafe: $environment_file"
+  while IFS= read -r environment_line || [[ -n "$environment_line" ]]; do
+    [[ -z "$environment_line" || "$environment_line" == \#* ]] && continue
+    environment_key="${environment_line%%=*}"
+    environment_value="${environment_line#*=}"
+    [[ "$environment_key" != "$environment_line" && "$environment_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || \
+      die "panel environment file contains an invalid assignment"
+    if [[ "$environment_value" == \"*\" && ${#environment_value} -ge 2 ]] ||
+       [[ "$environment_value" == \'*\' && ${#environment_value} -ge 2 ]]; then
+      environment_value="${environment_value:1:${#environment_value}-2}"
+    fi
+    panel_environment+=("$environment_key=$environment_value")
+  done < "$environment_file"
+  getent passwd "$PANEL_USER" >/dev/null || die "$PANEL_USER service account does not exist"
+
+  stage_dir="$(mktemp -d "$data_dir/staging/import-cli.XXXXXX")"
+  content="$stage_dir/content"
+  result_file="$stage_dir/result.json"
+  source_label="$(basename -- "$source")"
+  set +e
+  if ((json)); then
+    "$install_dir/McPanel.Api" --mcpanel-import-stage "$source" "$content" --json > "$result_file"
+  else
+    "$install_dir/McPanel.Api" --mcpanel-import-stage "$source" "$content"
+  fi
+  import_rc=$?
+  set -e
+  if ((import_rc != 0)); then
+    if ((json)); then
+      if [[ -s "$result_file" ]]; then cat -- "$result_file"
+      else printf '{"ok":false,"code":"IMPORT_STAGE_FAILED","message":"The import source could not be staged."}\n'
+      fi
+    fi
+    return "$import_rc"
+  fi
+  chown -R "$PANEL_USER:$PANEL_GROUP" "$stage_dir"
+
+  if ((!dry_run)) && systemctl is-active --quiet "$service_name.service"; then
+    panel_was_active=1
+    systemctl stop "$service_name.service"
+    panel_stopped=1
+  fi
+
+  set +e
+  if ((json)); then
+    runuser --user "$PANEL_USER" -- env "${panel_environment[@]}" \
+      MCPANEL_DATA_DIR="$data_dir" MCPANEL_CONFIG_DIR="$config_dir" \
+      "$install_dir/McPanel.Api" --mcpanel-import-server "$content" \
+      --source-label "$source_label" "${import_options[@]}" > "$result_file"
+  else
+    runuser --user "$PANEL_USER" -- env "${panel_environment[@]}" \
+      MCPANEL_DATA_DIR="$data_dir" MCPANEL_CONFIG_DIR="$config_dir" \
+      "$install_dir/McPanel.Api" --mcpanel-import-server "$content" \
+      --source-label "$source_label" "${import_options[@]}"
+  fi
+  import_rc=$?
+  set -e
+  if ((json)) && [[ -s "$result_file" ]]; then json_result="$(cat -- "$result_file")"; fi
+
+  if ((panel_stopped && panel_was_active)); then
+    if ! systemctl start "$service_name.service" ||
+       ! wait_for_active "$service_name.service" ||
+       ! wait_for_http "$config_dir"; then
+      restart_rc=5
+    else
+      panel_stopped=0
+    fi
+  fi
+
+  if ((json)); then
+    if ((restart_rc != 0)); then
+      printf '{"ok":false,"code":"IMPORT_PANEL_RESTART_FAILED","message":"The import command finished, but the web panel did not become ready."}\n'
+    elif [[ -n "$json_result" ]]; then
+      printf '%s\n' "$json_result"
+    else
+      printf '{"ok":false,"code":"IMPORT_FAILED","message":"The import command did not return a result."}\n'
+      import_rc=5
+    fi
+  elif ((restart_rc != 0)); then
+    warn "the import command finished, but the web panel did not become ready"
+  fi
+
+  if ((restart_rc != 0)); then return "$restart_rc"; fi
+  return "$import_rc"
 }
 
 build_for_system_command() {
@@ -1018,6 +1269,42 @@ command_update() {
   fi
 }
 
+command_import_server() {
+  local install_dir="$DEFAULT_INSTALL_DIR" config_dir="$DEFAULT_CONFIG_DIR" data_dir="$DEFAULT_DATA_DIR"
+  local service_name="$DEFAULT_SERVICE_NAME" source="" json=0 argument
+  local -a import_options=()
+  for argument in "$@"; do [[ "$argument" == "--json" ]] && json=1; done
+  if (($#)) && [[ "$1" != --* ]]; then source="$1"; shift; fi
+  while (($#)); do
+    case "$1" in
+      --install-dir) (($# >= 2)) || die_import "$json" 2 IMPORT_USAGE "$1 requires a value"; install_dir="$2"; shift 2 ;;
+      --config-dir) (($# >= 2)) || die_import "$json" 2 IMPORT_USAGE "$1 requires a value"; config_dir="$2"; shift 2 ;;
+      --data-dir) (($# >= 2)) || die_import "$json" 2 IMPORT_USAGE "$1 requires a value"; data_dir="$2"; shift 2 ;;
+      --service-name) (($# >= 2)) || die_import "$json" 2 IMPORT_USAGE "$1 requires a value"; service_name="$2"; shift 2 ;;
+      --name|--kind|--version|--loader-version|--launch-target|--java-runtime|--memory-mb|--port|--jvm-args)
+        (($# >= 2)) || die_import "$json" 2 IMPORT_USAGE "$1 requires a value"
+        import_options+=("$1" "$2")
+        shift 2
+        ;;
+      --accept-eula|--non-interactive|--dry-run|--json)
+        import_options+=("$1")
+        shift
+        ;;
+      -h|--help) usage; return ;;
+      --*) die_import "$json" 2 IMPORT_USAGE "unknown import option: $1" ;;
+      *) [[ -z "$source" ]] || die_import "$json" 2 IMPORT_USAGE "only one import source may be supplied"; source="$1"; shift ;;
+    esac
+  done
+  [[ -n "$source" ]] || die_import "$json" 2 IMPORT_USAGE "import-server requires a source directory or archive"
+  require_regular_user
+  require_passwordless_sudo
+  require_commands realpath
+  [[ ! -L "$source" ]] || die_import "$json" 3 IMPORT_SYMBOLIC_LINK "import source must not be a symbolic link"
+  source="$(realpath -e -- "$source" 2>/dev/null)" || die_import "$json" 3 IMPORT_SOURCE_NOT_FOUND "import source does not exist"
+  [[ -d "$source" || -f "$source" ]] || die_import "$json" 3 IMPORT_SOURCE_INVALID "import source must be a directory or regular archive"
+  sudo -n -- "$script_path" __import-server "$source" "$install_dir" "$config_dir" "$data_dir" "$service_name" "${import_options[@]}"
+}
+
 command_remove() {
   local purge="$1"; shift
   local install_dir="$DEFAULT_INSTALL_DIR" config_dir="$DEFAULT_CONFIG_DIR" data_dir="$DEFAULT_DATA_DIR" service_name="$DEFAULT_SERVICE_NAME"
@@ -1090,6 +1377,7 @@ if (($#)); then shift; fi
 case "$command" in
   install) command_install "$@" ;;
   update) command_update "$@" ;;
+  import-server) command_import_server "$@" ;;
   uninstall) command_remove 0 "$@" ;;
   purge) command_remove 1 "$@" ;;
   build) command_build "$@" ;;
@@ -1098,6 +1386,7 @@ case "$command" in
   __apply-prepared) [[ $# -eq 11 ]] || die "invalid prepared release invocation"; apply_prepared_system_command "$@" ;;
   __install) [[ $# -eq 7 ]] || die "invalid internal install invocation"; root_install "$@" ;;
   __update) [[ $# -eq 5 ]] || die "invalid internal update invocation"; root_update "$@" ;;
+  __import-server) (($# >= 5)) || die "invalid internal import invocation"; root_import_server "$@" ;;
   __uninstall) [[ $# -eq 5 ]] || die "invalid internal uninstall invocation"; root_uninstall "$@" ;;
   __probe-url) [[ $# -eq 1 ]] || die "invalid internal probe invocation"; require_root; http_probe_url "$1" ;;
   *) usage >&2; die "unknown command: $command" ;;

@@ -67,6 +67,47 @@ sudo cat /etc/mcpanel/setup-token
 The panel has one administrator account. The setup token stops working after
 that account exists.
 
+## Import an existing server
+
+Import an unpacked Minecraft server directory with the interactive wizard:
+
+```bash
+./mcpanel.sh import-server /srv/old-survival
+```
+
+The command also accepts `.zip`, `.tar`, `.tar.gz`, and `.tgz` archives. An
+archive must contain `server.properties` and the server files at its root. An
+archive that contains one outer directory is rejected; extract it and pass
+that directory instead.
+
+For an unattended import, provide every value that cannot come from
+`server.properties`:
+
+```bash
+./mcpanel.sh import-server /srv/old-survival.tar.gz \
+  --name "Survival" \
+  --kind paper \
+  --version 1.21.8 \
+  --launch-target paper.jar \
+  --java-runtime /usr/bin/java \
+  --memory-mb 4096 \
+  --accept-eula \
+  --non-interactive
+```
+
+Fabric, Forge, and NeoForge imports also require `--loader-version`. Use
+`--port` to override `server-port`, and `--jvm-args` for extra JVM arguments.
+Add `--dry-run` to inspect and validate without registering the server. Add
+`--json` for one machine-readable result; it also enables non-interactive
+mode.
+
+The importer copies the source and never changes or removes it. The managed
+copy starts in the stopped state with start-on-boot disabled. A real import
+briefly stops the web panel while it commits the new server, but the persistent
+runtime and existing Minecraft servers stay online. Old panel databases,
+schedules, backup records, console history, and Gate configuration are not
+restored.
+
 ## Maintenance
 
 ```bash

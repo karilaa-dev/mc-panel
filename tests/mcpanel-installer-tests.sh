@@ -202,10 +202,54 @@ test_release_identity() {
   if installed_release_matches "$test_root/incoming" "$test_root/installed"; then fail "different releases matched"; fi
 }
 
+test_import_option_parsing() {
+  local source="$test_root/import-source" output
+  mkdir -p -- "$source"
+  (
+    require_regular_user() { :; }
+    require_passwordless_sudo() { :; }
+    require_commands() { :; }
+    sudo() { printf 'sudo|%s\n' "$*"; }
+    output="$(command_import_server "$source" \
+      --name "Imported world" --kind paper --version 1.21.8 \
+      --launch-target paper.jar --java-runtime /usr/bin/java \
+      --memory-mb 4096 --port 25570 --jvm-args "-Dfixture=true" \
+      --accept-eula --non-interactive --json \
+      --install-dir /srv/mcpanel --config-dir /srv/mcpanel-config \
+      --data-dir /srv/mcpanel-data --service-name panel-test)"
+    assert_equal \
+      "sudo|-n -- $script_path __import-server $source /srv/mcpanel /srv/mcpanel-config /srv/mcpanel-data panel-test --name Imported world --kind paper --version 1.21.8 --launch-target paper.jar --java-runtime /usr/bin/java --memory-mb 4096 --port 25570 --jvm-args -Dfixture=true --accept-eula --non-interactive --json" \
+      "$output" \
+      "import handoff"
+    assert_fails "unknown import option" command_import_server "$source" --unknown
+    assert_fails "multiple import sources" command_import_server "$source" "$test_root"
+  )
+}
+
+test_runtime_generation_wait() {
+  (
+    local pid_reads="$test_root/runtime-pid-reads"
+    : > "$pid_reads"
+    runtime_service_pid() {
+      if [[ ! -s "$pid_reads" ]]; then printf 'read\n' >> "$pid_reads"; printf '101\n';
+      else printf 'read\n' >> "$pid_reads"; printf '202\n'; fi
+    }
+    systemctl() { [[ "$1" == "is-active" && "$2" == "--quiet" && "$3" == "mcpanel-runtime.service" ]]; }
+    runtime_socket_ready() { [[ "$1" == "/var/lib/mcpanel/runtime/control.sock" ]]; }
+    sleep() { :; }
+
+    wait_for_runtime_generation mcpanel-runtime.service /var/lib/mcpanel/runtime/control.sock 101 || \
+      fail "runtime generation wait did not observe the replacement process"
+    assert_equal "4" "$(wc -l < "$pid_reads")" "runtime generation stability checks"
+  )
+}
+
 test_option_parsing
 test_rid_detection
 test_release_validation
 test_unsafe_archive
 test_retry_and_handoff
 test_release_identity
+test_import_option_parsing
+test_runtime_generation_wait
 printf 'MC Panel installer tests passed.\n'

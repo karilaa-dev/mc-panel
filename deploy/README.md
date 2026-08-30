@@ -110,6 +110,37 @@ account. They cannot normally write outside `/var/lib/mcpanel`, but they can
 read or change sibling instances. Do not mix extensions from mutually
 untrusted owners on one installation.
 
+## Import an existing Minecraft server
+
+Run imports as the same regular user used for installation. The wrapper uses
+passwordless `sudo` to copy the source into protected staging and to pause the
+web service during the final commit.
+
+```bash
+./mcpanel.sh import-server /srv/minecraft/old-server
+./mcpanel.sh import-server /srv/minecraft/old-server.zip --dry-run
+```
+
+The source may be an unpacked directory, `.zip`, `.tar`, `.tar.gz`, or `.tgz`.
+It must be the exact server root and contain `server.properties`. Archives with
+a containing directory are rejected. The importer also rejects links, special
+files, duplicate archive paths, absolute paths, and parent-directory paths.
+
+The wizard asks for the server kind, version, launch target, Java runtime,
+heap size, port, optional JVM arguments, and EULA acceptance. It does not read
+or execute old start scripts. For scripts and configuration management, pass
+the matching flags with `--non-interactive`; add `--json` for a single JSON
+result. Run `./mcpanel.sh help` for the complete option list.
+
+The source remains unchanged. MC Panel writes the selected port and EULA only
+to the managed copy, then registers it as stopped with start-on-boot disabled.
+It does not import an old panel database, schedules, backup records, console
+history, or Gate configuration.
+The wrapper stops and restarts `mcpanel.service` only if it was active. It
+never stops `mcpanel-runtime.service`, so existing managed servers remain
+online. Repeat custom installation path and service-name options on the import
+command.
+
 ## Backups and recovery
 
 The Backups page can snapshot and restore one server. MC Panel pauses world
