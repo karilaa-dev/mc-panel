@@ -19,7 +19,8 @@ public sealed class BackupService(
     AsyncKeyedLock keyedLock,
     SafePathResolver resolver,
     IOptions<PanelOptions> options,
-    InstancePermissionService? permissions = null)
+    InstancePermissionService? permissions = null,
+    ILogger<BackupService>? logger = null)
 {
     private static readonly JsonSerializerOptions MetadataJsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -66,6 +67,8 @@ public sealed class BackupService(
         var backup = await db.Backups.SingleOrDefaultAsync(x => x.ServerId == serverId && x.Id == backupId, cancellationToken) ?? throw PanelProblems.NotFound("Backup");
         var path = Path.Combine(paths.ServerBackups(serverId), backup.FileName);
         if (File.Exists(path)) File.Delete(path);
+        var modpack = BackupModpackState(serverId, backupId);
+        if (Directory.Exists(modpack)) Directory.Delete(modpack, true);
         db.Backups.Remove(backup); await db.SaveChangesAsync(cancellationToken);
     }
 
@@ -83,7 +86,9 @@ public sealed class BackupService(
         EnsureCreateAllowed(server.State, running);
         var softwareMetadataJson = JsonSerializer.Serialize(
             SoftwareActivationService.SoftwareMetadataSnapshot.Capture(server), MetadataJsonOptions);
-        var stage = Path.Combine(paths.Staging, $"backup-{serverId:N}-{Guid.NewGuid():N}");
+        var id = Guid.NewGuid();
+        var stage = Path.Combine(paths.Staging, $"backup-{serverId:N}-{id:N}");
+        var modpackStage = stage + "-modpack";
         Directory.CreateDirectory(stage);
         server.State = ServerState.BackingUp; await db.SaveChangesAsync(cancellationToken);
         var saveDisabled = false;
@@ -105,6 +110,8 @@ public sealed class BackupService(
                 }
                 await operations.ProgressAsync(jobId, 35, "Staging a consistent file snapshot", cancellationToken);
                 CopySnapshot(paths.Instance(serverId), stage);
+                if (Directory.Exists(paths.ServerModpack(serverId)))
+                    CopySnapshot(paths.ServerModpack(serverId), modpackStage);
             }
             finally
             {
@@ -124,9 +131,9 @@ public sealed class BackupService(
             }
             await operations.ProgressAsync(jobId, 65, "Compressing snapshot after saves resumed", cancellationToken);
             var directory = paths.ServerBackups(serverId); Directory.CreateDirectory(directory);
-            var id = Guid.NewGuid();
             var fileName = $"{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}-{id:N}.zip";
             var destination = Path.Combine(directory, fileName);
+            var modpackDestination = BackupModpackState(serverId, id);
             var temporary = Path.Combine(directory, $".{fileName}.{Guid.NewGuid():N}.tmp");
             var committed = false;
             try
@@ -134,6 +141,7 @@ public sealed class BackupService(
                 ZipFile.CreateFromDirectory(stage, temporary, CompressionLevel.Fastest, false);
                 using (var archive = ZipFile.OpenRead(temporary)) ValidateArchiveLimits(archive);
                 File.Move(temporary, destination);
+                if (Directory.Exists(modpackStage)) Directory.Move(modpackStage, modpackDestination);
                 var backup = new BackupEntity
                 {
                     Id = id,
@@ -152,9 +160,14 @@ public sealed class BackupService(
             {
                 if (File.Exists(temporary)) File.Delete(temporary);
                 if (!committed && File.Exists(destination)) File.Delete(destination);
+                if (!committed && Directory.Exists(modpackDestination)) Directory.Delete(modpackDestination, true);
             }
         }
-        finally { if (Directory.Exists(stage)) Directory.Delete(stage, true); }
+        finally
+        {
+            if (Directory.Exists(stage)) Directory.Delete(stage, true);
+            if (Directory.Exists(modpackStage)) Directory.Delete(modpackStage, true);
+        }
     }
 
     private async Task RestoreAsync(Guid serverId, Guid backupId, Guid jobId, CancellationToken cancellationToken)
@@ -165,35 +178,68 @@ public sealed class BackupService(
         if (server.State != ServerState.Stopped || supervisor.IsRunning(serverId)) throw PanelProblems.Conflict("SERVER_NOT_STOPPED", "Stop the server before restoring a backup.");
         var backup = await db.Backups.AsNoTracking().SingleOrDefaultAsync(x => x.ServerId == serverId && x.Id == backupId, cancellationToken) ?? throw PanelProblems.NotFound("Backup");
         var backupMetadata = ReadSoftwareMetadata(backup);
+        var originalMetadata = SoftwareActivationService.SoftwareMetadataSnapshot.Capture(server);
+        var modpackBackup = BackupModpackState(serverId, backupId);
+        var restoreModpack = backupMetadata?.ModpackName is not null && Directory.Exists(modpackBackup);
+        var targetMetadata = backupMetadata ?? (originalMetadata with { RestartRequired = false });
+        if (backupMetadata?.ModpackName is not null && !restoreModpack)
+            targetMetadata = WithoutModpack(targetMetadata);
         var archivePath = Path.Combine(paths.ServerBackups(serverId), backup.FileName);
         if (!File.Exists(archivePath)) throw PanelProblems.NotFound("Backup file");
         await operations.ProgressAsync(jobId, 5, "Creating mandatory safety backup", cancellationToken);
         await CreateLockedAsync(serverId, jobId, "Pre-restore safety", cancellationToken);
-        var stage = Path.Combine(paths.Staging, $"restore-{serverId:N}-{Guid.NewGuid():N}");
-        var old = paths.Instance(serverId) + $".restore-old-{Guid.NewGuid():N}";
-        Directory.CreateDirectory(stage);
+        var restore = new RestoreTransaction(paths, Guid.NewGuid(), serverId, originalMetadata,
+            targetMetadata, backupMetadata is not null, restoreModpack);
+        Directory.CreateDirectory(restore.Stage);
         try
         {
             await operations.ProgressAsync(jobId, 40, "Validating and extracting backup", cancellationToken);
-            await ExtractSafeAsync(archivePath, stage, cancellationToken);
-            var launchTarget = ProcessSupervisor.ResolveLaunchTarget(stage, backupMetadata?.LaunchTarget ?? server.LaunchTarget);
+            await ExtractSafeAsync(archivePath, restore.Stage, cancellationToken);
+            if (restoreModpack) CopySnapshot(modpackBackup, restore.ModpackStage);
+            var launchTarget = ProcessSupervisor.ResolveLaunchTarget(restore.Stage, targetMetadata.LaunchTarget);
             if (!File.Exists(launchTarget))
                 throw new PanelException(400, "OPERATION_FAILED", "The backup does not contain this server's launch target.");
-            var current = paths.Instance(serverId);
-            Directory.Move(current, old);
-            try { Directory.Move(stage, current); }
-            catch { Directory.Move(old, current); throw; }
-            Directory.Delete(old, true);
+            restore.Activate();
             if (permissions is not null) await permissions.NormalizeInstanceAsync(serverId, cancellationToken);
-            if (backupMetadata is not null) backupMetadata.Restore(server);
-            else { server.RestartRequired = false; server.UpdatedAt = DateTimeOffset.UtcNow; }
+            targetMetadata.Restore(server);
             await db.SaveChangesAsync(cancellationToken);
-            await console.AppendAsync(serverId, "system", $"Restored backup {backup.FileName}.", cancellationToken);
+            restore.MarkCommitted();
+            try { restore.Commit(); }
+            catch (Exception exception)
+            {
+                logger?.LogWarning(exception,
+                    "Backup restore committed for {ServerId}, but cleanup will be retried at startup", serverId);
+            }
+            try { await console.AppendAsync(serverId, "system", $"Restored backup {backup.FileName}.", cancellationToken); }
+            catch (Exception exception)
+            { logger?.LogWarning(exception, "Could not append backup restore log for {ServerId}", serverId); }
+        }
+        catch (Exception exception)
+        {
+            if (!restore.IsCommitRecorded && restore.IsStarted)
+            {
+                try
+                {
+                    restore.RollbackFiles();
+                    originalMetadata.Restore(server);
+                    await db.SaveChangesAsync(CancellationToken.None);
+                    restore.FinishRollback();
+                }
+                catch (Exception rollbackException)
+                {
+                    server.State = ServerState.Error;
+                    server.ProcessId = null;
+                    try { await db.SaveChangesAsync(CancellationToken.None); } catch { }
+                    throw new AggregateException(
+                        "The backup restore failed and the original server could not be fully recovered.",
+                        exception, rollbackException);
+                }
+            }
+            throw;
         }
         finally
         {
-            if (Directory.Exists(stage)) Directory.Delete(stage, true);
-            // If rollback itself failed, preserve the old directory beside the instance for manual recovery.
+            if (!restore.HasJournal) restore.CleanupStaging();
         }
     }
 
@@ -211,6 +257,252 @@ public sealed class BackupService(
             throw new PanelException(400, "BACKUP_METADATA_INVALID",
                 "The backup's server core metadata is invalid.");
         }
+    }
+
+    private static SoftwareActivationService.SoftwareMetadataSnapshot WithoutModpack(
+        SoftwareActivationService.SoftwareMetadataSnapshot metadata) => metadata with
+    {
+        ModpackName = null,
+        ModpackVersion = null,
+        ProjectId = null,
+        VersionId = null,
+        ModpackSource = null
+    };
+
+    private string BackupModpackState(Guid serverId, Guid backupId) =>
+        Path.Combine(paths.ServerBackups(serverId), $".modpack-{backupId:N}");
+
+    public async Task<IReadOnlySet<Guid>> RecoverInterruptedRestoresAsync(
+        StateDbContext state, CancellationToken cancellationToken)
+    {
+        var unrecovered = new HashSet<Guid>();
+        if (!Directory.Exists(paths.Staging)) return unrecovered;
+        foreach (var journal in Directory.EnumerateFiles(
+                     paths.Staging, "backup-restore-*.json", SearchOption.TopDirectoryOnly))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RestoreTransaction? restore = null;
+            Guid? serverId = null;
+            try
+            {
+                restore = RestoreTransaction.Open(paths, journal);
+                serverId = restore.ServerId;
+                var server = await state.Servers.SingleOrDefaultAsync(
+                                 entity => entity.Id == restore.ServerId, cancellationToken)
+                             ?? throw new InvalidDataException("The restored server no longer exists.");
+                if (restore.IsCommitRecorded)
+                {
+                    restore.TargetMetadata.Restore(server);
+                    await state.SaveChangesAsync(cancellationToken);
+                    if (permissions is not null)
+                        await permissions.NormalizeInstanceAsync(restore.ServerId, cancellationToken);
+                    restore.Commit();
+                    logger?.LogInformation("Finalized interrupted backup restore for {ServerId}", restore.ServerId);
+                }
+                else
+                {
+                    restore.RollbackFiles();
+                    restore.OriginalMetadata.Restore(server);
+                    await state.SaveChangesAsync(cancellationToken);
+                    restore.FinishRollback();
+                    logger?.LogWarning("Rolled back interrupted backup restore for {ServerId}", restore.ServerId);
+                }
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                if (serverId is { } id)
+                {
+                    unrecovered.Add(id);
+                    try
+                    {
+                        var server = await state.Servers.SingleOrDefaultAsync(
+                            entity => entity.Id == id, cancellationToken);
+                        if (server is not null)
+                        {
+                            server.State = ServerState.Error;
+                            server.ProcessId = null;
+                            server.UpdatedAt = DateTimeOffset.UtcNow;
+                            await state.SaveChangesAsync(cancellationToken);
+                        }
+                    }
+                    catch (Exception stateException) when (stateException is not OperationCanceledException)
+                    { logger?.LogError(stateException, "Could not block server {ServerId} after backup restore recovery failed", id); }
+                }
+                logger?.LogError(exception,
+                    "Could not recover backup restore journal {Journal}; preserving it for recovery", journal);
+            }
+        }
+        return unrecovered;
+    }
+
+    internal sealed class RestoreTransaction
+    {
+        private const int JournalVersion = 1;
+        private readonly PanelPaths _paths;
+        private RestoreJournal _journal;
+        private bool _started;
+        private bool _finished;
+
+        public RestoreTransaction(
+            PanelPaths paths,
+            Guid operationId,
+            Guid serverId,
+            SoftwareActivationService.SoftwareMetadataSnapshot originalMetadata,
+            SoftwareActivationService.SoftwareMetadataSnapshot targetMetadata,
+            bool changeModpackState,
+            bool restoreModpack)
+        {
+            _paths = paths;
+            _journal = new RestoreJournal(JournalVersion, operationId, serverId, false,
+                originalMetadata, targetMetadata, changeModpackState, restoreModpack,
+                Directory.Exists(paths.ServerModpack(serverId)));
+        }
+
+        private RestoreTransaction(PanelPaths paths, RestoreJournal journal)
+        {
+            _paths = paths;
+            _journal = journal;
+            _started = true;
+        }
+
+        public Guid ServerId => _journal.ServerId;
+        public bool IsStarted => _started;
+        public bool IsCommitRecorded => _journal.CommitRecorded;
+        public bool HasJournal => File.Exists(JournalPath);
+        public SoftwareActivationService.SoftwareMetadataSnapshot OriginalMetadata => _journal.OriginalMetadata;
+        public SoftwareActivationService.SoftwareMetadataSnapshot TargetMetadata => _journal.TargetMetadata;
+        public string Stage => Path.Combine(_paths.Staging, $"backup-restore-stage-{_journal.OperationId:N}");
+        public string ModpackStage => Path.Combine(_paths.Staging, $"backup-restore-modpack-stage-{_journal.OperationId:N}");
+        private string Old => Path.Combine(_paths.Staging, $"backup-restore-old-{_journal.OperationId:N}");
+        private string ModpackOld => Path.Combine(_paths.Staging, $"backup-restore-modpack-old-{_journal.OperationId:N}");
+        private string Current => _paths.Instance(ServerId);
+        private string CurrentModpack => _paths.ServerModpack(ServerId);
+        private string JournalPath => Path.Combine(_paths.Staging, $"backup-restore-{_journal.OperationId:N}.json");
+
+        public void Activate()
+        {
+            if (_started) throw new InvalidOperationException("The backup restore is already activated.");
+            WriteJournal(_journal);
+            _started = true;
+            Directory.Move(Current, Old);
+            Directory.Move(Stage, Current);
+            if (!_journal.ChangeModpackState) return;
+            if (Directory.Exists(CurrentModpack)) Directory.Move(CurrentModpack, ModpackOld);
+            if (_journal.RestoreModpack) Directory.Move(ModpackStage, CurrentModpack);
+        }
+
+        public void MarkCommitted()
+        {
+            if (!_started || _finished) throw new InvalidOperationException("The backup restore is not active.");
+            var committed = _journal with { CommitRecorded = true };
+            WriteJournal(committed);
+            _journal = committed;
+        }
+
+        public void Commit()
+        {
+            if (_finished) return;
+            if (!_journal.CommitRecorded) throw new InvalidOperationException("The backup restore is not committed.");
+            DeleteDirectory(Old);
+            DeleteDirectory(ModpackOld);
+            DeleteDirectory(Stage);
+            DeleteDirectory(ModpackStage);
+            File.Delete(JournalPath);
+            _finished = true;
+        }
+
+        public void RollbackFiles()
+        {
+            if (_finished || _journal.CommitRecorded)
+                throw new InvalidOperationException("The backup restore cannot be rolled back.");
+            RestoreOriginal(Current, Old, originalRequired: true);
+            if (_journal.ChangeModpackState)
+                RestoreOriginal(CurrentModpack, ModpackOld, _journal.HadOriginalModpack);
+            DeleteDirectory(Stage);
+            DeleteDirectory(ModpackStage);
+        }
+
+        public void FinishRollback()
+        {
+            if (_journal.CommitRecorded) throw new InvalidOperationException("A committed backup restore cannot finish rollback.");
+            File.Delete(JournalPath);
+            _finished = true;
+        }
+
+        public void CleanupStaging()
+        {
+            if (HasJournal) return;
+            DeleteDirectory(Stage);
+            DeleteDirectory(ModpackStage);
+        }
+
+        public static RestoreTransaction Open(PanelPaths paths, string journalPath)
+        {
+            var name = Path.GetFileNameWithoutExtension(journalPath);
+            const string prefix = "backup-restore-";
+            if (!name.StartsWith(prefix, StringComparison.Ordinal) ||
+                !Guid.TryParseExact(name.AsSpan(prefix.Length), "N", out var operationId))
+                throw new InvalidDataException("The backup restore journal name is invalid.");
+            var journal = JsonSerializer.Deserialize<RestoreJournal>(
+                              File.ReadAllText(journalPath), MetadataJsonOptions)
+                          ?? throw new InvalidDataException("The backup restore journal is empty.");
+            if (journal.Version != JournalVersion || journal.OperationId != operationId ||
+                journal.ServerId == Guid.Empty || journal.OriginalMetadata is null || journal.TargetMetadata is null ||
+                journal.RestoreModpack && !journal.ChangeModpackState)
+                throw new InvalidDataException("The backup restore journal is invalid.");
+            return new RestoreTransaction(paths, journal);
+        }
+
+        private void WriteJournal(RestoreJournal journal)
+        {
+            Directory.CreateDirectory(_paths.Staging);
+            var temporary = JournalPath + $".{Guid.NewGuid():N}.tmp";
+            try
+            {
+                using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                    JsonSerializer.Serialize(stream, journal, MetadataJsonOptions);
+                    stream.Flush(true);
+                }
+                File.Move(temporary, JournalPath, true);
+                ServerImportService.FlushJournalDirectory(_paths.Staging);
+            }
+            finally { try { if (File.Exists(temporary)) File.Delete(temporary); } catch { } }
+        }
+
+        private static void RestoreOriginal(string current, string old, bool originalRequired)
+        {
+            if (Directory.Exists(old))
+            {
+                DeleteDirectory(current);
+                Directory.Move(old, current);
+                return;
+            }
+            if (!originalRequired)
+            {
+                DeleteDirectory(current);
+                return;
+            }
+            if (!Directory.Exists(current))
+                throw new DirectoryNotFoundException($"The original restore directory is missing: {current}");
+        }
+
+        private static void DeleteDirectory(string directory)
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, true);
+            else if (File.Exists(directory)) throw new IOException($"A file blocks restore recovery: {directory}");
+        }
+
+        private sealed record RestoreJournal(
+            int Version,
+            Guid OperationId,
+            Guid ServerId,
+            bool CommitRecorded,
+            SoftwareActivationService.SoftwareMetadataSnapshot OriginalMetadata,
+            SoftwareActivationService.SoftwareMetadataSnapshot TargetMetadata,
+            bool ChangeModpackState,
+            bool RestoreModpack,
+            bool HadOriginalModpack);
     }
 
     private async Task ExtractSafeAsync(string archivePath, string destination, CancellationToken cancellationToken)

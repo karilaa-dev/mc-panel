@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text.Json;
 using McPanel.Api.Data;
 using McPanel.Api.Services;
@@ -151,7 +152,10 @@ public sealed class ServerImportCommandTests : IAsyncLifetime
         var source = Path.Combine(_root, "staged-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(source);
         File.WriteAllText(Path.Combine(source, "server.properties"), "server-port=25578\n");
-        File.WriteAllBytes(Path.Combine(source, "server.jar"), [0x50, 0x4b, 0x05, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        using var archive = ZipFile.Open(Path.Combine(source, "server.jar"), ZipArchiveMode.Create);
+        var manifest = archive.CreateEntry("META-INF/MANIFEST.MF");
+        using var writer = new StreamWriter(manifest.Open());
+        writer.Write("Manifest-Version: 1.0\r\nMain-Class: example.Main\r\n");
         return source;
     }
 }

@@ -199,7 +199,17 @@ public sealed class SoftwareActivationService(
         public void Commit()
         {
             if (_finished) return;
-            if (Directory.Exists(_rollback)) Directory.Delete(_rollback, true);
+            if (Directory.Exists(_rollback))
+            {
+                var cleanup = Path.Combine(Path.GetDirectoryName(_rollback)!,
+                    $"software-committed-cleanup-{Guid.NewGuid():N}");
+                Directory.Move(_rollback, cleanup);
+                ServerImportService.FlushJournalDirectory(Path.GetDirectoryName(_rollback)!);
+                _finished = true;
+                Directory.Delete(cleanup, true);
+                ServerImportService.FlushJournalDirectory(Path.GetDirectoryName(_rollback)!);
+                return;
+            }
             _finished = true;
         }
 
@@ -298,6 +308,7 @@ public sealed class SoftwareActivationService(
                 stream.Flush(true);
             }
             File.Move(temporary, ManifestPath, true);
+            ServerImportService.FlushJournalDirectory(_rollback);
         }
 
         private static string NormalizeRelative(string relative) =>

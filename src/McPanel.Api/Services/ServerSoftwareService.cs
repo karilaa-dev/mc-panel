@@ -32,7 +32,7 @@ public sealed class ServerSoftwareService(
         return new ServerSoftwareDto(
             server.Kind, server.Version, server.DistributionBuild, server.LoaderVersion, server.InstallerVersion,
             server.LaunchMode, server.LaunchTarget, server.JavaRuntimeId, server.RequiredJavaMajor,
-            server.IsExperimental, customJars.Candidates(paths.Instance(serverId)));
+            server.IsExperimental, customJars.Candidates(paths.Instance(serverId), server.LaunchTarget));
     }
 
     public async Task<JobDto> QueueChangeAsync(Guid serverId, ChangeServerSoftwareRequest request, CancellationToken cancellationToken)
@@ -191,6 +191,7 @@ public sealed class ServerSoftwareService(
         catch (Exception exception)
         {
             Exception? rollbackFailure = null;
+            Exception? claimRestoreFailure = null;
             if (!committed)
             {
                 try
@@ -206,10 +207,24 @@ public sealed class ServerSoftwareService(
                 }
                 original.Restore(server);
                 try { await db.SaveChangesAsync(CancellationToken.None); } catch { }
+                if (claim is not null)
+                {
+                    try
+                    {
+                        claim.Restore();
+                        claim = null;
+                    }
+                    catch (Exception restoreException)
+                    {
+                        claimRestoreFailure = restoreException;
+                        logger.LogError(restoreException,
+                            "Could not restore the custom JAR upload after a failed core change for {ServerId}", serverId);
+                    }
+                }
             }
-            if (rollbackFailure is not null)
-                throw new AggregateException("The server core change failed and its launch files could not be fully restored.",
-                    exception, rollbackFailure);
+            if (rollbackFailure is not null || claimRestoreFailure is not null)
+                throw new AggregateException("The server core change failed and its recovery could not be completed.",
+                    new[] { exception, rollbackFailure, claimRestoreFailure }.OfType<Exception>());
             throw;
         }
         finally

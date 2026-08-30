@@ -12,6 +12,7 @@ public sealed class CustomJarService(
     SafePathResolver resolver,
     IOptions<PanelOptions> options)
 {
+    private const int MaximumCandidates = 64;
     private static readonly TimeSpan Lifetime = TimeSpan.FromHours(1);
 
     public async Task<CustomJarImportDto> PrepareAsync(IFormFile file, CancellationToken cancellationToken)
@@ -83,20 +84,35 @@ public sealed class CustomJarService(
         return new ClaimedCustomJar(claimedRoot, root, jar, metadata.FileName, metadata.Size);
     }
 
-    public IReadOnlyList<CustomJarCandidateDto> Candidates(string instanceRoot)
+    public IReadOnlyList<CustomJarCandidateDto> Candidates(string instanceRoot, string? currentLaunchTarget = null)
     {
         if (!Directory.Exists(instanceRoot)) return [];
         var result = new List<CustomJarCandidateDto>();
-        var enumeration = new EnumerationOptions
+        var inspected = 0;
+        var seen = new HashSet<string>(OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        if (!string.IsNullOrWhiteSpace(currentLaunchTarget) &&
+            currentLaunchTarget.EndsWith(".jar", StringComparison.OrdinalIgnoreCase))
         {
-            RecurseSubdirectories = true,
-            AttributesToSkip = FileAttributes.ReparsePoint,
-            IgnoreInaccessible = true,
-            MaxRecursionDepth = 32
-        };
-        foreach (var file in Directory.EnumerateFiles(instanceRoot, "*", enumeration)
-                     .Where(file => Path.GetExtension(file).Equals(".jar", StringComparison.OrdinalIgnoreCase)))
+            try { AddCandidate(resolver.Resolve(instanceRoot, currentLaunchTarget, false)); }
+            catch (PanelException) { }
+        }
+        try
         {
+            foreach (var file in Directory.EnumerateFiles(instanceRoot, "*", SearchOption.TopDirectoryOnly))
+            {
+                if (inspected >= MaximumCandidates) break;
+                if (Path.GetExtension(file).Equals(".jar", StringComparison.OrdinalIgnoreCase)) AddCandidate(file);
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return result.OrderBy(x => x.Path, StringComparer.OrdinalIgnoreCase).ToList();
+
+        void AddCandidate(string file)
+        {
+            if (inspected >= MaximumCandidates || !seen.Add(Path.GetFullPath(file))) return;
+            inspected++;
             try
             {
                 resolver.Resolve(instanceRoot, resolver.Relative(instanceRoot, file), false);
@@ -106,8 +122,8 @@ public sealed class CustomJarService(
             catch (PanelException) { }
             catch (InvalidDataException) { }
             catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
-        return result.OrderBy(x => x.Path, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     public string ResolveExisting(string instanceRoot, string relativePath)

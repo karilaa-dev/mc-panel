@@ -177,6 +177,8 @@ static async Task InitializeAsync(IServiceProvider services)
             scope.ServiceProvider.GetRequiredService<PanelPaths>(), state,
             scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger<ServerImportService>(),
             CancellationToken.None);
+        await scope.ServiceProvider.GetRequiredService<BackupService>()
+            .RecoverInterruptedRestoresAsync(state, CancellationToken.None);
         var unrecoveredActivations = await scope.ServiceProvider.GetRequiredService<SoftwareActivationService>()
             .RecoverInterruptedAsync(state, CancellationToken.None);
         var staleJobs = await state.Jobs.Where(x => x.State == JobState.Running || x.State == JobState.Queued).ToListAsync();

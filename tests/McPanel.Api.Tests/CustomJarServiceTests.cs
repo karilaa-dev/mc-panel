@@ -77,6 +77,34 @@ public sealed class CustomJarServiceTests : IDisposable
         Assert.Equal("paper.JAR", candidate.Path);
     }
 
+    [Fact]
+    public void Candidates_include_the_current_nested_launcher_without_scanning_other_nested_jars()
+    {
+        var (service, paths) = CreateService();
+        var instance = Path.Combine(paths.Instances, "bounded-candidates");
+        Directory.CreateDirectory(Path.Combine(instance, "run"));
+        Directory.CreateDirectory(Path.Combine(instance, "mods"));
+        File.WriteAllBytes(Path.Combine(instance, "run", "current.jar"), CreateJar(true));
+        File.WriteAllBytes(Path.Combine(instance, "mods", "library.jar"), CreateJar(true));
+
+        var candidates = service.Candidates(instance, "run/current.jar");
+
+        var candidate = Assert.Single(candidates);
+        Assert.Equal("run/current.jar", candidate.Path.Replace(Path.DirectorySeparatorChar, '/'));
+    }
+
+    [Fact]
+    public void Candidates_are_capped()
+    {
+        var (service, paths) = CreateService();
+        var instance = Path.Combine(paths.Instances, "capped-candidates");
+        Directory.CreateDirectory(instance);
+        for (var index = 0; index < 70; index++)
+            File.WriteAllBytes(Path.Combine(instance, $"server-{index:D2}.jar"), CreateJar(true));
+
+        Assert.Equal(64, service.Candidates(instance).Count);
+    }
+
     [Theory]
     [InlineData("Manifest-Version: 1.0\r\n\r\nName: library\r\nMain-Class: example.Main\r\n")]
     [InlineData("Manifest-Version: 1.0\r\nMain-Class:example.Main\r\n")]

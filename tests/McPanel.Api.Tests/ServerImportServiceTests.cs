@@ -264,8 +264,7 @@ public sealed class ServerImportServiceTests : IAsyncLifetime
         var source = Path.Combine(_root, "nested-launcher-source");
         Directory.CreateDirectory(Path.Combine(source, "run"));
         await File.WriteAllTextAsync(Path.Combine(source, "server.properties"), "server-port=25582\n");
-        await File.WriteAllBytesAsync(Path.Combine(source, "run", "server.jar"),
-            [0x50, 0x4b, 0x05, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        CreateExecutableJar(Path.Combine(source, "run", "server.jar"));
 
         var validation = await _service.ValidateAsync(source,
             Request("Nested launcher", 25582) with { LaunchTarget = Path.Combine("run", "server.jar") },
@@ -273,6 +272,23 @@ public sealed class ServerImportServiceTests : IAsyncLifetime
 
         Assert.Equal(Path.Combine("run", "server.jar"), validation.LaunchTarget);
         Assert.Equal(LaunchMode.Jar, validation.LaunchMode);
+    }
+
+    [Fact]
+    public async Task Rejects_a_non_executable_jar_launcher_during_inspection_and_validation()
+    {
+        var source = Path.Combine(_root, "invalid-launcher-source");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(Path.Combine(source, "server.properties"), "server-port=25587\n");
+        await File.WriteAllTextAsync(Path.Combine(source, "server.jar"), "not a jar");
+
+        var inspection = await Assert.ThrowsAsync<ServerImportException>(() =>
+            _service.InspectAsync(source, CancellationToken.None));
+        var validation = await Assert.ThrowsAsync<ServerImportException>(() =>
+            _service.ValidateAsync(source, Request("Invalid launcher", 25587), CancellationToken.None));
+
+        Assert.Equal("IMPORT_LAUNCHER_MISSING", inspection.Code);
+        Assert.Equal("IMPORT_LAUNCHER_INVALID", validation.Code);
     }
 
     [Fact]
@@ -420,9 +436,17 @@ public sealed class ServerImportServiceTests : IAsyncLifetime
         var source = Path.Combine(_root, name);
         Directory.CreateDirectory(Path.Combine(source, "world"));
         File.WriteAllText(Path.Combine(source, "server.properties"), $"server-port={port}\n");
-        File.WriteAllBytes(Path.Combine(source, "server.jar"), [0x50, 0x4b, 0x05, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        CreateExecutableJar(Path.Combine(source, "server.jar"));
         File.WriteAllText(Path.Combine(source, "world", "level.dat"), "world data");
         return source;
+    }
+
+    private static void CreateExecutableJar(string path)
+    {
+        using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
+        var manifest = archive.CreateEntry("META-INF/MANIFEST.MF");
+        using var writer = new StreamWriter(manifest.Open());
+        writer.Write("Manifest-Version: 1.0\r\nMain-Class: example.Main\r\n");
     }
 
     private static void CreateArchive(string source, string archive, string format)

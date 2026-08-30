@@ -675,6 +675,7 @@ public sealed partial class ServerImportService(
             : Path.GetFileName(launchTarget).Equals("unix_args.txt", StringComparison.OrdinalIgnoreCase)
                 ? LaunchMode.ArgumentFile
                 : throw Usage("IMPORT_LAUNCHER_INVALID", "The launch target must be a .jar file or Forge-style unix_args.txt.", "launch-target");
+        if (launchMode == LaunchMode.Jar) ValidateExecutableJarLauncher(launchPath);
         ValidateLauncherKind(request.Kind, launchTarget, launchMode);
 
         await using (var conflictDb = await stateFactory.CreateDbContextAsync(cancellationToken))
@@ -882,7 +883,7 @@ public sealed partial class ServerImportService(
         }
     }
 
-    private static void FlushJournalDirectory(string directory)
+    internal static void FlushJournalDirectory(string directory)
     {
         if (!OperatingSystem.IsLinux()) return;
         var descriptor = ServerImportSource.NativeMethods.OpenAt(
@@ -973,6 +974,8 @@ public sealed partial class ServerImportService(
                      .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
         {
             RejectManagedLink(file, root);
+            try { CustomJarService.ValidateExecutableJar(file); }
+            catch (PanelException) { continue; }
             var name = Path.GetFileName(file);
             ServerKind? kind = name.Contains("fabric", StringComparison.OrdinalIgnoreCase) ? ServerKind.Fabric
                 : name.Contains("paper", StringComparison.OrdinalIgnoreCase) || name.Contains("purpur", StringComparison.OrdinalIgnoreCase) || name.Contains("spigot", StringComparison.OrdinalIgnoreCase) ? ServerKind.Paper
@@ -995,6 +998,16 @@ public sealed partial class ServerImportService(
             }
         }
         return launchers;
+    }
+
+    private static void ValidateExecutableJarLauncher(string path)
+    {
+        try { CustomJarService.ValidateExecutableJar(path); }
+        catch (PanelException exception)
+        {
+            throw Invalid("IMPORT_LAUNCHER_INVALID",
+                "The selected JAR is not a readable executable server launcher.", exception);
+        }
     }
 
     private static string? SuggestedLoader(IReadOnlyList<ServerImportLauncher> launchers)
