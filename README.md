@@ -1,200 +1,106 @@
 # MC Panel
 
-MC Panel is a focused Minecraft server management panel built with ASP.NET
-Core/.NET 10 and React 19 with shadcn/ui. It provides the useful Minecraft
-workflows of a general game-server panel without containers, multi-user
-administration, or a dense operator interface.
+MC Panel manages Minecraft servers from a web browser. It supports Vanilla,
+Paper, Fabric, Forge, NeoForge, Modrinth packs, and Minekube Gate proxies. The
+panel handles installs, Java selection, console access, files, players,
+backups, schedules, mods, and plugins.
 
-> **Private-LAN software:** the built-in web endpoint is HTTP. Do not expose it
-> directly to the Internet or forward its port from a router. Bind it to a
-> trusted LAN address and enforce access with the host/network firewall. Read
-> [SECURITY.md](SECURITY.md) before deployment.
+It runs Java processes directly under systemd. Docker is not required. MC
+Panel finds Java runtimes already installed on the host but does not install
+Java itself.
 
-## Capabilities
+> MC Panel is for a trusted private network. Its built-in web server uses
+> HTTP. Do not expose the panel port to the Internet. Read
+> [SECURITY.md](SECURITY.md) before installing it.
 
-- Multiple Vanilla, Paper, Fabric, Forge, and NeoForge servers installed from
-  verified upstream metadata and downloads.
-- Java processes supervised by a dedicated unprivileged runtime service—no Docker daemon or privileged runtime.
-- Discovery and validation of installed Java runtimes, including multiple Java
-  major versions on one host.
-- Start, graceful stop, restart, crash recovery, cgroup v2 total-memory limits and metrics, and
-  start-on-boot behavior.
-- Persistent live console with reconnect cursors, search, command history, and
-  separate stdout/stderr display.
-- Multiple Minekube Gate proxies as normal managed servers, each with an
-  isolated verified binary, lifecycle, configuration, managed or arbitrary
-  address backends, secrets, logs, routes, and rollback state.
-- A Panel Settings global server host plus an optional advertised connection
-  address per Minecraft or Gate server, with copy-ready IPv4/IPv6 formatting.
-- One server RAM control that sets Xms and Xmx equally, version-aware sectioned `server.properties`,
-  cropped server icons, player actions, and a confined file manager.
-- Read-only player inventory and Ender Chest viewing, online-safe manual or
-  scheduled snapshots with previews, and offline-only atomic restore with
-  optimistic concurrency.
-- Read-only Fabric, Forge, and NeoForge mod inventories with metadata details
-  parsed directly from each instance's top-level mod JARs.
-- Paper plugin inventory and verified Modrinth plugin installation.
-- Filtered Modrinth mod/plugin browsing with list and gallery views, plus server
-  creation from public Modrinth packs or uploaded `.mrpack` archives.
-- Retained modpack baselines that report modified or removed pack files and
-  added top-level mod JARs without flagging generated worlds, logs, or configs.
-- Per-server backups and time-based automations.
-- One local administrator protected by cookie authentication, global session
-  revocation, and antiforgery tokens.
+## Requirements
 
-There is intentionally no sleep mode, Docker integration, Java auto-installer,
-multi-admin role system, or adoption of arbitrary existing server directories.
-
-AMP is a CubeCoders product and trademark. MC Panel is an independent,
-clean-room implementation informed by publicly documented behavior; it does
-not include AMP code, assets, or branding.
-
-## Layout and process model
-
-The production panel and companion runtime services run as the non-login
-`mcpanel` account. The runtime starts each Minecraft server with a probed Java
-executable inside a dedicated delegated cgroup and owns its redirected console
-streams. Stopping or updating only the web panel therefore leaves active
-servers online and lets the panel reconnect when it returns. No shell, `sudo`,
-or container runtime is involved. The cgroup accounts the full workload and
-enforces its total RAM limit; `-Xmx` independently caps only the Java heap.
-
-| Path | Ownership and purpose |
-| --- | --- |
-| `/opt/mcpanel` | Root-owned, read-only published application |
-| `/etc/mcpanel` | Root-owned service configuration and first-run secret |
-| `/var/lib/mcpanel` | `mcpanel`-owned databases, keys, instances, staging, backups, logs, and managed Gate state |
-| `/etc/systemd/system/mcpanel.service` | Root-owned hardened systemd unit |
-| `/etc/systemd/system/mcpanel-runtime.service` | Persistent Java process and console supervisor |
-
-Every Minecraft server and every installed plugin/mod runs under the same Unix
-UID. This protects the host from ordinary writes outside the data directory,
-but it is **not isolation between instances**: malicious server extensions can
-read or alter sibling instances. Install only trusted plugins and mods.
-
-Gate is not installed as part of panel deployment. An administrator explicitly
-creates a Gate Proxy from the normal Create Server flow; MC Panel selects the
-official Linux asset, verifies Minekube's SHA-256 checksum, validates the
-reported version, and keeps the preceding version available for that instance's
-rollback. Gate is Apache-2.0 licensed; see
-Minekube's [binary checksum guidance](https://gate.minekube.com/guide/install/binaries)
-and [Gate repository](https://github.com/minekube/gate).
-
-Player inventory reads and writes use the pinned, BSD-licensed
-[fNbt 1.0.0](https://www.nuget.org/packages/fNbt/1.0.0) package.
-
-MC Panel intentionally has no arbitrary Server Links editor. Without a plugin,
-mod, or custom Gate build, the supported server kinds do not provide a
-persistent native arbitrary-link configuration. The version-aware
-`bug-report-link` property remains available through Server Properties where
-Minecraft supports it.
-
-The HTTP/realtime contract is documented in
-[src/McPanel.Api/CONTRACT.md](src/McPanel.Api/CONTRACT.md). Production
-operations are covered in [deploy/README.md](deploy/README.md).
-
-## Development
-
-Prerequisites:
-
+- Debian or Ubuntu with systemd and cgroup v2
+- An x86-64 or ARM64 processor
 - .NET 10 SDK
 - Node.js 22 or newer with npm
-- One or more locally installed Java runtimes for exercising server startup
+- Passwordless `sudo` for the installer
+- A 64-bit Java runtime supported by each Minecraft version you plan to run
 
-### Quick local-network start
+The SDK and Node.js are needed to build from source. The installed panel is a
+self-contained .NET application.
 
-On Linux, the included scripts build the web client and expose MC Panel on port
-8080 to devices on the same local network:
+## Install
 
-```bash
-./start-local.sh
-```
-
-The script prints the LAN URL and one-time setup token. Use that token in the
-setup screen, then choose your own username and password. Subsequent normal
-starts preserve the local database and use the same command.
-
-To erase the repo-local development database and all other repo-local panel
-data, then start with a fresh setup token and administrator account:
-
-```bash
-./reset-and-start-local.sh
-```
-
-The reset script only removes `.mcpanel-local` in this repository. It does not
-touch a production installation under `/var/lib/mcpanel` or `/etc/mcpanel`.
-Because the server listens on every network interface, use it only on a trusted
-LAN and do not forward port 8080 from your router.
-
-Install the locked frontend dependencies, build the web client, and run the
-tests:
-
-```bash
-npm ci --prefix src/McPanel.Web
-npm run typecheck --prefix src/McPanel.Web
-npm run build --prefix src/McPanel.Web
-npm run lint --prefix src/McPanel.Web
-npm test --prefix src/McPanel.Web
-dotnet test McPanel.slnx --configuration Release
-```
-
-For a non-root local run, use temporary data/configuration rather than the
-production paths. Building the frontend first lets ASP.NET Core serve the
-bundled UI from the same origin:
-
-```bash
-MCPANEL_DEV_ROOT="$(mktemp -d /tmp/mcpanel-dev.XXXXXX)"
-export MCPANEL_DATA_DIR="$MCPANEL_DEV_ROOT/data"
-export MCPANEL_CONFIG_DIR="$MCPANEL_DEV_ROOT/config"
-export MCPANEL_SETUP_TOKEN="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
-export ASPNETCORE_URLS="http://127.0.0.1:8080"
-
-npm ci --prefix src/McPanel.Web
-npm run build --prefix src/McPanel.Web
-dotnet run --project src/McPanel.Api/McPanel.Api.csproj
-```
-
-Open `http://127.0.0.1:8080` and use the value of
-`MCPANEL_SETUP_TOKEN` to create the single administrator. The temporary
-directory printed in `MCPANEL_DEV_ROOT` can be removed after the process has
-stopped.
-
-## Build and install
-
-Install directly from the current checkout with one command. Run it as your
-regular development user; the script builds without privileges and invokes
-passwordless `sudo` only for system changes:
+Run the installer as your regular user:
 
 ```bash
 ./mcpanel.sh install
 ```
 
-Binding to one LAN address is safer than the all-interface default:
+The default address is `http://0.0.0.0:8080`, which listens on every network
+interface. You can bind the panel to one private address instead:
 
 ```bash
-./mcpanel.sh install \
-  --listen-address 192.168.1.20 \
-  --port 8080
+./mcpanel.sh install --listen-address 192.168.1.20 --port 8080
 ```
 
-The installer prints a random first-run token and stores root-only copies in
-`/etc/mcpanel`. The token remains readable only by root and is permanently
-ignored by the application after the first administrator is created.
+The installer prints a setup token. Open the panel from another device on the
+same network and use that token to create the administrator account. Root can
+read the token again before setup:
 
-Future deployments from the current checkout are equally direct:
+```bash
+sudo cat /etc/mcpanel/setup-token
+```
+
+The panel has one administrator account. The setup token stops working after
+that account exists.
+
+## Maintenance
 
 ```bash
 ./mcpanel.sh update
 ./mcpanel.sh status
-./mcpanel.sh uninstall  # preserves configuration, worlds, and databases
+./mcpanel.sh uninstall
 ```
 
-Use `./mcpanel.sh build OUTPUT_DIRECTORY` when a transferable self-contained
-artifact is needed instead. Source builds require Node.js and the .NET SDK;
-the installed target does not. The host still needs every Java major required
-by the Minecraft versions it will run because MC Panel discovers Java but
-never installs it.
+`update` builds the current checkout and replaces the installed application.
+Running Minecraft servers stay online during a normal panel update.
 
-See [deploy/README.md](deploy/README.md) for Java compatibility, firewall
-responsibility, service operation, backup/restore, updates, rollback, and safe
-uninstallation.
+`uninstall` removes the services and application but keeps configuration,
+worlds, databases, and backups. `purge --yes-really-purge` deletes those files
+too. Back them up first.
+
+The default installation paths are:
+
+| Path | Contents |
+| --- | --- |
+| `/opt/mcpanel` | Application files |
+| `/etc/mcpanel` | Service configuration and setup token |
+| `/var/lib/mcpanel` | Databases, server instances, logs, and backups |
+
+See [deploy/README.md](deploy/README.md) for Java discovery, service commands,
+updates, backups, and recovery.
+
+## Local development
+
+Start a repo-local instance on port 8080:
+
+```bash
+./start-local.sh
+```
+
+The script prints the local-network URL and setup token. It stores its data in
+`.mcpanel-local`. To erase only that development data and start again, run:
+
+```bash
+./reset-and-start-local.sh
+```
+
+Run the checks with:
+
+```bash
+npm ci --prefix src/McPanel.Web
+npm run typecheck --prefix src/McPanel.Web
+npm run lint --prefix src/McPanel.Web
+npm test --prefix src/McPanel.Web
+npm run build --prefix src/McPanel.Web
+dotnet test McPanel.slnx --configuration Release
+```
+
+The API notes are in [src/McPanel.Api/CONTRACT.md](src/McPanel.Api/CONTRACT.md).
