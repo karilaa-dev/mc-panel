@@ -180,21 +180,36 @@ public sealed class ServerSoftwareService(
             catch (Exception exception) { logger.LogWarning(exception, "Could not append software change log for {ServerId}", serverId); }
             await operations.ProgressAsync(jobId, 95, "Software change complete", cancellationToken);
         }
-        catch
+        catch (Exception exception)
         {
+            Exception? rollbackFailure = null;
             if (!committed)
             {
-                try { activation?.Rollback(); } catch { }
+                try { activation?.Rollback(); }
+                catch (Exception rollbackException)
+                {
+                    rollbackFailure = rollbackException;
+                    logger.LogError(rollbackException,
+                        "Software activation rollback failed for {ServerId}; preserving rollback files", serverId);
+                }
                 original.Restore(server);
                 try { await db.SaveChangesAsync(CancellationToken.None); } catch { }
             }
+            if (rollbackFailure is not null)
+                throw new AggregateException("The software change failed and its launch files could not be fully restored.",
+                    exception, rollbackFailure);
             throw;
         }
         finally
         {
             claim?.Dispose();
             try { if (Directory.Exists(stage)) Directory.Delete(stage, true); } catch { }
-            try { if (Directory.Exists(rollback)) Directory.Delete(rollback, true); } catch { }
+            try
+            {
+                if ((activation is null || activation.IsFinished) && Directory.Exists(rollback))
+                    Directory.Delete(rollback, true);
+            }
+            catch { }
         }
     }
 

@@ -435,10 +435,29 @@ public static class ServerImportSource
         }
     }
 
-    private static long AvailableBytes(string path)
+    internal static long AvailableBytes(string path)
     {
-        try { return new DriveInfo(Path.GetPathRoot(Path.GetFullPath(path))!).AvailableFreeSpace; }
+        try
+        {
+            var fullPath = Path.GetFullPath(path);
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            var drive = DriveInfo.GetDrives()
+                .Where(candidate => candidate.IsReady && IsWithinMount(fullPath, candidate.RootDirectory.FullName, comparison))
+                .OrderByDescending(candidate => Path.GetFullPath(candidate.RootDirectory.FullName).Length)
+                .FirstOrDefault()
+                ?? throw new DriveNotFoundException($"No mounted filesystem contains {fullPath}.");
+            return drive.AvailableFreeSpace;
+        }
         catch (Exception exception) { throw Invalid("IMPORT_DISK_SPACE", "Free disk space could not be determined.", exception); }
+    }
+
+    private static bool IsWithinMount(string path, string mount, StringComparison comparison)
+    {
+        var fullMount = Path.GetFullPath(mount);
+        var trimmedMount = Path.TrimEndingDirectorySeparator(fullMount);
+        if (path.Equals(trimmedMount, comparison)) return true;
+        var prefix = Path.EndsInDirectorySeparator(fullMount) ? fullMount : fullMount + Path.DirectorySeparatorChar;
+        return path.StartsWith(prefix, comparison);
     }
 
     private static void EnsureBytes(long bytes, long byteLimit)
@@ -667,8 +686,8 @@ public sealed partial class ServerImportService(
             db.Servers.Add(entity);
             await db.SaveChangesAsync(cancellationToken);
             Directory.Move(root, destination);
-            if (!OperatingSystem.IsWindows()) InstancePermissionService.NormalizeTree(destination, false);
             activated = true;
+            if (!OperatingSystem.IsWindows()) InstancePermissionService.NormalizeTree(destination, false);
             await transaction.CommitAsync(cancellationToken);
         }
         catch (ServerImportException) { throw; }

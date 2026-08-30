@@ -66,6 +66,20 @@ public sealed class CustomJarServiceTests : IDisposable
     }
 
     [Fact]
+    public void Cleanup_does_not_delete_an_upload_with_an_active_lease()
+    {
+        var (service, paths) = CreateService();
+        var root = Path.Combine(paths.CustomJarImports, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        using var lease = new FileStream(Path.Combine(root, ".uploading"),
+            FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+
+        service.CleanupExpiredImports();
+
+        Assert.True(Directory.Exists(root));
+    }
+
+    [Fact]
     public async Task Permission_repair_opens_only_regular_instances_to_the_group()
     {
         if (OperatingSystem.IsWindows()) return;

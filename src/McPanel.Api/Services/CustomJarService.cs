@@ -28,27 +28,35 @@ public sealed class CustomJarService(
         var root = Path.Combine(paths.CustomJarImports, token);
         Directory.CreateDirectory(root);
         var jarPath = Path.Combine(root, "server.jar");
+        var uploadLeasePath = Path.Combine(root, ".uploading");
         try
         {
-            await using (var input = file.OpenReadStream())
-            await using (var output = new FileStream(jarPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024, FileOptions.Asynchronous))
+            CustomJarImportDto result;
+            await using (var uploadLease = new FileStream(uploadLeasePath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
             {
-                var buffer = new byte[64 * 1024];
-                long written = 0;
-                int read;
-                while ((read = await input.ReadAsync(buffer, cancellationToken)) > 0)
+                await using (var input = file.OpenReadStream())
+                await using (var output = new FileStream(jarPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024, FileOptions.Asynchronous))
                 {
-                    written += read;
-                    if (written > options.Value.MaxUploadBytes)
-                        throw new PanelException(413, "UPLOAD_TOO_LARGE", "The JAR exceeds the configured upload limit.");
-                    await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                    var buffer = new byte[64 * 1024];
+                    long written = 0;
+                    int read;
+                    while ((read = await input.ReadAsync(buffer, cancellationToken)) > 0)
+                    {
+                        written += read;
+                        if (written > options.Value.MaxUploadBytes)
+                            throw new PanelException(413, "UPLOAD_TOO_LARGE", "The JAR exceeds the configured upload limit.");
+                        await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                    }
+                    await output.FlushAsync(cancellationToken);
                 }
+                ValidateExecutableJar(jarPath);
+                var createdAt = DateTimeOffset.UtcNow;
+                var metadata = new ImportMetadata(fileName, new FileInfo(jarPath).Length, createdAt);
+                await File.WriteAllTextAsync(Path.Combine(root, "metadata.json"), JsonSerializer.Serialize(metadata), cancellationToken);
+                result = new CustomJarImportDto(token, createdAt + Lifetime, fileName, metadata.Size);
             }
-            ValidateExecutableJar(jarPath);
-            var createdAt = DateTimeOffset.UtcNow;
-            var metadata = new ImportMetadata(fileName, new FileInfo(jarPath).Length, createdAt);
-            await File.WriteAllTextAsync(Path.Combine(root, "metadata.json"), JsonSerializer.Serialize(metadata), cancellationToken);
-            return new CustomJarImportDto(token, createdAt + Lifetime, fileName, metadata.Size);
+            File.Delete(uploadLeasePath);
+            return result;
         }
         catch
         {
@@ -118,14 +126,29 @@ public sealed class CustomJarService(
         {
             try
             {
+                if (UploadInProgress(root)) continue;
                 var metadataPath = Path.Combine(root, "metadata.json");
-                var expired = !File.Exists(metadataPath) ||
-                    JsonSerializer.Deserialize<ImportMetadata>(File.ReadAllText(metadataPath)) is not { } metadata ||
-                    metadata.CreatedAt + Lifetime <= DateTimeOffset.UtcNow;
+                var expired = File.Exists(metadataPath)
+                    ? JsonSerializer.Deserialize<ImportMetadata>(File.ReadAllText(metadataPath)) is not { } metadata ||
+                      metadata.CreatedAt + Lifetime <= DateTimeOffset.UtcNow
+                    : Directory.GetLastWriteTimeUtc(root) + Lifetime <= DateTime.UtcNow;
                 if (expired) Directory.Delete(root, true);
             }
             catch { }
         }
+    }
+
+    private static bool UploadInProgress(string root)
+    {
+        var leasePath = Path.Combine(root, ".uploading");
+        if (!File.Exists(leasePath)) return false;
+        try
+        {
+            using var lease = new FileStream(leasePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            return false;
+        }
+        catch (IOException) { return true; }
+        catch (UnauthorizedAccessException) { return true; }
     }
 
     internal static void ValidateExecutableJar(string path)

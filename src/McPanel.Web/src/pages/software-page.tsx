@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useParams } from "react-router-dom"
 import { AlertTriangleIcon, BoxIcon, CheckIcon, UploadIcon } from "lucide-react"
@@ -49,6 +49,24 @@ export function SoftwarePage() {
   const [createBackup, setCreateBackup] = useState(true)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [initializedServerId, setInitializedServerId] = useState("")
+  const [changeJobId, setChangeJobId] = useState("")
+  const changeJob = useQuery({
+    queryKey: ["job", changeJobId],
+    queryFn: () => api.job(changeJobId),
+    enabled: Boolean(changeJobId),
+    refetchInterval: (query) => {
+      const state = query.state.data?.state
+      return state === "Completed" || state === "Failed" ? false : 1_000
+    },
+  })
+
+  useEffect(() => {
+    if (!changeJobId || changeJob.data?.state !== "Completed" && changeJob.data?.state !== "Failed") return
+    if (changeJob.data.state === "Completed") {
+      void queryClient.invalidateQueries({ queryKey: ["server", serverId] })
+      void queryClient.invalidateQueries({ queryKey: ["software", serverId] })
+    } else toast.error("Software change failed", { description: changeJob.data.error ?? changeJob.data.message })
+  }, [changeJob.data, changeJobId, queryClient, serverId])
 
   if (software.data && initializedServerId !== serverId) {
     setInitializedServerId(serverId)
@@ -118,10 +136,10 @@ export function SoftwarePage() {
     }),
     onSuccess: (job) => {
       setRequestIdentity({ key: changeIntentKey, id: createClientRequestId() })
+      setChangeJobId(job.id)
       setConfirmOpen(false)
       toast.success("Software change queued", { description: `Job ${job.id.slice(0, 8)}` })
       void queryClient.invalidateQueries({ queryKey: ["server", serverId] })
-      void queryClient.invalidateQueries({ queryKey: ["software", serverId] })
     },
     onError: (error) => toast.error(error.message),
   })

@@ -12,6 +12,7 @@ vi.mock("@/lib/api", () => ({
     software: vi.fn(),
     catalog: vi.fn(),
     java: vi.fn(),
+    job: vi.fn(),
     changeSoftware: vi.fn(),
     uploadCustomJar: vi.fn(),
   },
@@ -46,6 +47,7 @@ describe("SoftwarePage", () => {
     })
     mockedApi.java.mockResolvedValue([{ id: "java-21", path: "/usr/bin/java", version: "21.0.7", major: 21, vendor: "OpenJDK", architecture: "x64", isCustom: false }])
     mockedApi.changeSoftware.mockResolvedValue({ id: "change-job", type: "ChangeSoftware", state: "Queued", progress: 0, serverId: "server-1" })
+    mockedApi.job.mockResolvedValue({ id: "change-job", type: "ChangeSoftware", state: "Completed", progress: 100, serverId: "server-1" })
   })
 
   it("defaults to a backup and confirms the exact official change", async () => {
@@ -94,5 +96,18 @@ describe("SoftwarePage", () => {
     const secondRequest = mockedApi.changeSoftware.mock.calls[1][1]
 
     expect(secondRequest.clientRequestId).toBe(firstRequest.clientRequestId)
+  })
+
+  it("refreshes software details after the queued change completes", async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    const review = await screen.findByRole("button", { name: "Review software change" })
+    await waitFor(() => expect(review).toBeEnabled())
+    await user.click(review)
+    await user.click(await screen.findByRole("button", { name: "Change software" }))
+
+    await waitFor(() => expect(mockedApi.job).toHaveBeenCalledWith("change-job"))
+    await waitFor(() => expect(mockedApi.software.mock.calls.length).toBeGreaterThan(1))
   })
 })

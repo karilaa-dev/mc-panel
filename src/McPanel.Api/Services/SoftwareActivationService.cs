@@ -88,6 +88,7 @@ public sealed class SoftwareActivationService(
             : this(serverId, Path.GetFullPath(source), destination, rollback, null, null) { }
 
         public Guid ServerId { get; }
+        public bool IsFinished => _finished;
         private string ManifestPath => Path.Combine(_rollback, "activation-manifest.json");
 
         public void Activate()

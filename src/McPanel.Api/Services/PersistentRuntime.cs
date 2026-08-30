@@ -201,8 +201,9 @@ public static class PersistentRuntimeUpgradeCommand
         var paths = new PanelPaths(new PanelOptions());
         try
         {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             var restarting = await PersistentRuntimeProtocol.SendAsync<bool>(
-                paths.RuntimeSocket, "upgradeWhenIdle", null, CancellationToken.None);
+                paths.RuntimeSocket, "upgradeWhenIdle", null, timeout.Token);
             Console.Out.WriteLine(restarting ? "restarting" : "busy");
             return 0;
         }
@@ -241,6 +242,8 @@ internal sealed class RuntimeSocketService(
 {
     private Socket? _listener;
     private byte[]? _startupExecutableHash;
+    private int _upgradeRequested;
+    internal TimeSpan UpgradePollInterval { get; set; } = TimeSpan.FromSeconds(30);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -276,12 +279,17 @@ internal sealed class RuntimeSocketService(
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+                await Task.Delay(UpgradePollInterval, cancellationToken);
                 if (engine.Snapshot().Any(x => PersistentRuntimeClient.IsActive(x.State))) continue;
                 var current = ExecutableHash();
-                if (_startupExecutableHash is not null && current is not null && !CryptographicOperations.FixedTimeEquals(_startupExecutableHash, current))
+                var binaryChanged = _startupExecutableHash is not null && current is not null &&
+                    !CryptographicOperations.FixedTimeEquals(_startupExecutableHash, current);
+                if (Volatile.Read(ref _upgradeRequested) != 0 || binaryChanged)
                 {
-                    logger.LogInformation("Runtime binary changed and no servers are active; restarting onto the updated binary");
+                    if (binaryChanged)
+                        logger.LogInformation("Runtime binary changed and no servers are active; restarting onto the updated binary");
+                    else
+                        logger.LogInformation("Runtime upgrade is pending and no servers are active; restarting now");
                     lifetime.StopApplication();
                     return;
                 }
@@ -352,6 +360,7 @@ internal sealed class RuntimeSocketService(
 
     private JsonElement UpgradeWhenIdle()
     {
+        Interlocked.Exchange(ref _upgradeRequested, 1);
         var idle = engine.Snapshot().All(x => !PersistentRuntimeClient.IsActive(x.State));
         return RuntimeWire.Element(idle);
     }

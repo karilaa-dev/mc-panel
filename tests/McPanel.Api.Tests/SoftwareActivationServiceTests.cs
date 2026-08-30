@@ -77,6 +77,29 @@ public sealed class SoftwareActivationServiceTests : IDisposable
         Assert.True(Directory.Exists(rollback));
     }
 
+    [Fact]
+    public async Task Failed_rollback_preserves_the_journal_and_displaced_file()
+    {
+        var (service, paths, options) = await CreateAsync(ServerState.Updating);
+        var serverId = await ServerIdAsync(options);
+        var instance = paths.Instance(serverId);
+        var stage = Path.Combine(paths.Staging, "software-stage");
+        var rollback = Path.Combine(paths.Staging, $"software-rollback-{serverId:N}-job");
+        Directory.CreateDirectory(stage);
+        await File.WriteAllTextAsync(Path.Combine(instance, "server.jar"), "old");
+        await File.WriteAllTextAsync(Path.Combine(stage, "server.jar"), "new");
+        var activation = service.Begin(serverId, stage, rollback);
+        activation.Activate();
+        File.Delete(Path.Combine(instance, "server.jar"));
+        Directory.CreateDirectory(Path.Combine(instance, "server.jar"));
+
+        Assert.ThrowsAny<IOException>(() => activation.Rollback());
+
+        Assert.False(activation.IsFinished);
+        Assert.True(File.Exists(Path.Combine(rollback, "server.jar")));
+        Assert.True(File.Exists(Path.Combine(rollback, "activation-manifest.json")));
+    }
+
     private async Task<(SoftwareActivationService Service, PanelPaths Paths, DbContextOptions<StateDbContext> Options)> CreateAsync(ServerState state)
     {
         var paths = new PanelPaths(new PanelOptions

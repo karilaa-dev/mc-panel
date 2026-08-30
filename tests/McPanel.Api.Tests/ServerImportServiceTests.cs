@@ -258,6 +258,19 @@ public sealed class ServerImportServiceTests : IAsyncLifetime
         Assert.Equal("IMPORT_HARD_LINK", exception.Code);
     }
 
+    [Fact]
+    public void Free_space_uses_the_most_specific_mounted_filesystem()
+    {
+        if (!OperatingSystem.IsLinux() || !Directory.Exists("/dev/shm")) return;
+        var mount = DriveInfo.GetDrives().FirstOrDefault(drive => drive.IsReady &&
+            Path.TrimEndingDirectorySeparator(drive.RootDirectory.FullName) == "/dev/shm");
+        if (mount is null) return;
+
+        var available = ServerImportSource.AvailableBytes("/dev/shm");
+
+        Assert.Equal(mount.AvailableFreeSpace, available);
+    }
+
     private ServerImportRequest Request(string name, int port) => new(
         name, ServerKind.Vanilla, "1.20.4", null, "server.jar", "/usr/bin/java", 4096, port, "", true);
 
