@@ -6,7 +6,7 @@ system installation.
 
 ## Host setup
 
-MC Panel supports x86-64 and ARM64 Debian or Ubuntu hosts with systemd and
+MC Panel supports x86-64 and ARM64 Debian or Ubuntu hosts with systemd 247 or newer and
 cgroup v2. Release installs need `curl`, GNU `tar`, and `sha256sum`. Source
 builds also need the .NET 10 SDK and Node.js 22 or newer.
 
@@ -98,12 +98,23 @@ The default paths are:
 | Path | Owner | Contents |
 | --- | --- | --- |
 | `/opt/mcpanel` | root | Read-only application files |
-| `/etc/mcpanel` | root | Environment file and setup token |
-| `/var/lib/mcpanel` | `mcpanel` | Panel state and managed servers |
+| `/etc/mcpanel` | root | Readable, non-secret environment configuration |
+| `/etc/credstore/mcpanel.setup-token` | root | Root-only setup credential loaded by systemd |
+| `/var/lib/mcpanel` | `mcpanel` | Private panel state and managed servers |
 
 Edit `/etc/mcpanel/mcpanel.env` with `sudoedit`, then restart the panel. Keep
-the file owned by root with mode `0600`. Its installed values set the HTTP URL,
-data directory, configuration directory, environment, and initial setup token.
+the file owned by root with mode `0644`. Its installed values set the HTTP URL,
+data directory, configuration directory, and environment; it contains no
+secrets. `/etc/mcpanel` is root-owned mode `0755`.
+
+Install and update add the invoking account to the `mcpanel` group. Sign out
+and back in before using the new membership. Regular instance directories are
+setgid and group-readable and writable, so that account can work in
+`/var/lib/mcpanel/instances/<id>` without root. Gate instance trees remain
+owner-only. The instances parent is mode `2750`, so group members cannot
+rename, delete, or replace its child directories. Databases, keys, backups,
+staging, logs, Modrinth baselines, and runtime internals remain private below
+the mode-`0750` data root.
 
 All Minecraft servers, plugins, mods, and Gate proxies run under the same Unix
 account. They cannot normally write outside `/var/lib/mcpanel`, but they can
@@ -150,9 +161,10 @@ stopped and creates a safety backup first.
 Panel backups normally live on the same disk as the worlds. Copy important
 backups elsewhere and test them.
 
-For a full offline backup, stop both services and copy `/etc/mcpanel` and
-`/var/lib/mcpanel` while preserving permissions. The first directory contains
-configuration and secrets. The second contains databases, keys, instances,
+For a full offline backup, stop both services and copy `/etc/mcpanel`,
+`/etc/credstore/mcpanel.setup-token`, and `/var/lib/mcpanel` while preserving
+permissions. The first directory contains non-secret configuration, the
+credential file contains the setup secret, and the data directory contains databases, keys, instances,
 worlds, Gate files, logs, and panel backups.
 
 To recover on another host, install the same or a newer trusted revision, stop
@@ -165,18 +177,23 @@ both services, restore both directories, and set the data tree owner to
 ./mcpanel.sh update
 ```
 
-An update downloads the newest commit from the selected release. It exits
-without restarting services when that commit is already installed. Otherwise,
+An update downloads the newest commit from the selected release. A same-version
+run still repairs the credential, unit files, group membership, and access
+permissions. Otherwise,
 it replaces the web application while the runtime keeps active servers online.
 The updater retains the previous application beside `/opt/mcpanel` in a dated
 rollback directory. It restores that copy if the new panel does not stay
-active. Updates do not replace `/etc/mcpanel` or `/var/lib/mcpanel`.
+active. Updates preserve application configuration and data while atomically
+migrating legacy setup tokens out of `mcpanel.env`.
 
 The normal uninstall keeps all state and the service account:
 
 ```bash
 ./mcpanel.sh uninstall
 ```
+
+It also preserves the setup credential. Purge removes the credential together
+with configuration and data.
 
 Permanent removal requires an explicit confirmation flag:
 

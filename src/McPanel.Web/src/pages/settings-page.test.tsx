@@ -16,6 +16,11 @@ vi.mock("@/lib/api", () => ({
     saveRuntime: vi.fn(),
     java: vi.fn(),
     systemInfo: vi.fn(),
+    software: vi.fn(),
+    catalog: vi.fn(),
+    job: vi.fn(),
+    changeSoftware: vi.fn(),
+    uploadCustomJar: vi.fn(),
   },
 }))
 
@@ -138,6 +143,19 @@ describe("RuntimeSettingsPage", () => {
     mockedApi.saveRuntime.mockImplementation(async (_id, value) => value)
     mockedApi.java.mockResolvedValue([{ id: "java-21", path: "/usr/bin/java", version: "21.0.7", major: 21, vendor: "OpenJDK", architecture: "x64", isCustom: false }])
     mockedApi.systemInfo.mockResolvedValue({ version: "1.0.0", dataDirectory: "/var/lib/mcpanel", instancesDirectory: "/var/lib/mcpanel/instances", memoryAllocationLimitBytes: 8 * 1024 ** 3 })
+    mockedApi.software.mockResolvedValue({
+      kind: "Paper", version: "1.21.8", build: "100", loaderVersion: null, installerVersion: null,
+      launchMode: "Jar", launchTarget: "server.jar", javaRuntimeId: "java-21", requiredJavaMajor: 21,
+      isExperimental: false, jarCandidates: [{ path: "server.jar", size: 123 }],
+    })
+    mockedApi.catalog.mockResolvedValue({
+      vanilla: ["1.21.8"], paper: ["1.21.8"], fabric: ["1.21.8"], forge: ["1.21.8"], neoForge: ["1.21.8"],
+      paperBuilds: { "1.21.8": [{ id: "100", channel: "STABLE", experimental: false }] },
+      fabricLoaders: [{ version: "0.16.14", stable: true }], fabricInstallers: [{ version: "1.0.3", stable: true }],
+      forgeBuilds: { "1.21.8": [{ version: "58.1.0", channel: "Recommended", experimental: false }] },
+      neoForgeBuilds: { "1.21.8": [{ version: "21.8.52", channel: "Stable", experimental: false }] },
+      fetchedAt: new Date().toISOString(),
+    })
   })
 
   it("shows one RAM slider and applies it equally to Xms and Xmx", async () => {
@@ -149,7 +167,7 @@ describe("RuntimeSettingsPage", () => {
     expect(slider).toHaveAttribute("aria-label", "RAM")
     fireEvent.change(slider, { target: { value: "3072" } })
     await user.click(screen.getByRole("switch", { name: "Use Aikar flags" }))
-    await user.click(screen.getByRole("button", { name: "Save changes" }))
+    await user.click(screen.getByRole("button", { name: "Save runtime settings" }))
 
     await waitFor(() => expect(mockedApi.saveRuntime).toHaveBeenCalledWith("server-1", expect.objectContaining({
       totalMemoryMb: 4096,
@@ -179,7 +197,7 @@ describe("RuntimeSettingsPage", () => {
     renderPage("runtime")
 
     expect(await screen.findByText("RAM: 64.0 GiB")).toBeInTheDocument()
-    await userEvent.setup().click(screen.getByRole("button", { name: "Save changes" }))
+    await userEvent.setup().click(screen.getByRole("button", { name: "Save runtime settings" }))
     await waitFor(() => expect(mockedApi.saveRuntime).toHaveBeenCalledWith("server-1", expect.objectContaining({
       totalMemoryMb: 69632,
       initialMemoryMb: 65536,

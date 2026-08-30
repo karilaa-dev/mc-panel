@@ -15,6 +15,7 @@ vi.mock("@/lib/api", () => ({
     createServer: vi.fn(),
     createModpackServer: vi.fn(),
     createGateServer: vi.fn(),
+    uploadCustomJar: vi.fn(),
     modrinthSearch: vi.fn(),
     modrinthVersions: vi.fn(),
     prepareModrinthPack: vi.fn(),
@@ -60,6 +61,7 @@ describe("CreateServerPage", () => {
     mockedApi.createServer.mockResolvedValue({ id: "job-12345678", type: "Install", state: "Queued", progress: 0, serverId: "server-1" })
     mockedApi.createModpackServer.mockResolvedValue({ id: "job-pack", type: "InstallModpack", state: "Queued", progress: 0, serverId: "pack-server" })
     mockedApi.createGateServer.mockResolvedValue({ id: "job-gate", type: "GateInstall", state: "Queued", progress: 0, serverId: "gate-server" })
+    mockedApi.uploadCustomJar.mockResolvedValue({ token: "jar-token", expiresAt: new Date(Date.now() + 60_000).toISOString(), fileName: "server.jar", size: 123 })
     mockedApi.modrinthSearch.mockResolvedValue({ projects: [], offset: 0, limit: 5, total: 0 })
     mockedApi.modrinthVersions.mockResolvedValue([])
     mockedApi.uploadModpack.mockResolvedValue({
@@ -73,7 +75,7 @@ describe("CreateServerPage", () => {
   it("creates Gate through the normal server flow without Minecraft-only fields", async () => {
     const user = userEvent.setup()
     renderPage()
-    await user.click(screen.getByRole("button", { name: "Gate Proxy" }))
+    await user.click(screen.getByRole("button", { name: "Proxy" }))
     await user.click(screen.getByRole("button", { name: /continue/i }))
     expect(await screen.findByText("Create Gate Proxy")).toBeInTheDocument()
     expect(screen.queryByText("Minecraft version")).not.toBeInTheDocument()
@@ -85,6 +87,26 @@ describe("CreateServerPage", () => {
       name: "Gate Proxy", port: 25570, startOnBoot: false, clientRequestId: expect.any(String),
     })))
     await waitFor(() => expect(screen.getByTestId("current-location")).toHaveTextContent("/servers/gate-server/creating/job-gate"))
+  })
+
+  it("creates a regular Custom JAR server from a single-use upload", async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(screen.getByRole("button", { name: "Custom JAR" }))
+    await user.click(screen.getByRole("button", { name: /continue/i }))
+    await user.type(screen.getByLabelText("Minecraft version"), "1.21.8")
+    await user.upload(screen.getByLabelText("Executable server JAR"), new File(["jar"], "server.jar", { type: "application/java-archive" }))
+    expect(await screen.findByText("Ready to install as Custom JAR.")).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: /continue/i }))
+    await screen.findByRole("combobox", { name: "Java runtime" })
+    await user.click(screen.getByRole("button", { name: /continue/i }))
+    await user.click(screen.getByRole("checkbox", { name: /I accept the Minecraft EULA/i }))
+    await user.click(screen.getByRole("button", { name: "Create server" }))
+
+    await waitFor(() => expect(mockedApi.createServer).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "CustomJar", version: "1.21.8", customJarImportToken: "jar-token", javaRuntimeId: "java-21",
+    })))
   })
 
   it("uses a simple host-bounded RAM slider", async () => {

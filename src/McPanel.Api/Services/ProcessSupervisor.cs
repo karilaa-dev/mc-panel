@@ -148,7 +148,7 @@ public sealed class ProcessSupervisor(
         var java = await db.JavaRuntimes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == server.JavaRuntimeId, cancellationToken)
             ?? throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
         var probed = await javaDiscovery.ProbeAsync(java.Path, java.IsCustom, cancellationToken);
-        var required = server.RequiredJavaMajor > 0 ? server.RequiredJavaMajor : RequiredJava(server.Version);
+        var required = server.RequiredJavaMajor > 0 ? server.RequiredJavaMajor : MinecraftJavaVersion.Required(server.Version);
         if (probed.Major < required) throw new PanelException(400, "JAVA_VERSION_INCOMPATIBLE", $"Minecraft {server.Version} requires Java {required} or newer.");
         if (server.Kind == ServerKind.Forge && required == 8 && probed.Major != 8)
             throw new PanelException(400, "JAVA_VERSION_INCOMPATIBLE", $"Legacy Forge for Minecraft {server.Version} requires Java 8.");
@@ -414,7 +414,7 @@ public sealed class ProcessSupervisor(
         var runtime = await db.JavaRuntimes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == server.JavaRuntimeId, cancellationToken)
             ?? throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
         var probed = await javaDiscovery.ProbeAsync(runtime.Path, runtime.IsCustom, cancellationToken);
-        var required = server.RequiredJavaMajor > 0 ? server.RequiredJavaMajor : RequiredJava(server.Version);
+        var required = server.RequiredJavaMajor > 0 ? server.RequiredJavaMajor : MinecraftJavaVersion.Required(server.Version);
         if (probed.Major < required)
             throw new PanelException(400, "JAVA_VERSION_INCOMPATIBLE", $"Minecraft {server.Version} requires Java {required} or newer.");
         if (server.Kind == ServerKind.Forge && required == 8 && probed.Major != 8)
@@ -790,15 +790,6 @@ public sealed class ProcessSupervisor(
     {
         try { await audience.PublishAsync(group => hub.Clients.Group(group).SendAsync("ServerStateChanged", new { serverId = server.Id, state = server.State.ToString() }, cancellationToken), cancellationToken); }
         catch (Exception exception) when (exception is not OperationCanceledException) { logger.LogDebug(exception, "Could not broadcast state for {ServerId}", server.Id); }
-    }
-
-    private static int RequiredJava(string version)
-    {
-        var pieces = version.Split('-', '+')[0].Split('.');
-        if (pieces.Length > 0 && int.TryParse(pieces[0], out var calendar) && calendar >= 26) return 25;
-        if (pieces.Length < 2 || !int.TryParse(pieces[1], out var minor)) return 21;
-        var patch = pieces.Length > 2 && int.TryParse(pieces[2], out var p) ? p : 0;
-        return minor > 20 || minor == 20 && patch >= 5 ? 21 : minor >= 18 ? 17 : minor == 17 ? 16 : 8;
     }
 
     private sealed record StartAttempt(long ReadinessCursor, ManagedProcess Managed);

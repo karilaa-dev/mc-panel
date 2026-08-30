@@ -1,4 +1,5 @@
 using McPanel.Api.Configuration;
+using McPanel.Api.Infrastructure;
 using McPanel.Api.Services;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
@@ -102,6 +103,74 @@ public sealed class PersistentRuntimeTests : IAsyncLifetime
                 _paths.RuntimeSocket, "upgradeWhenIdle", null, CancellationToken.None);
 
             Assert.True(restarting);
+            Assert.True(lifetime.ApplicationStopping.IsCancellationRequested);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Idle_upgrade_rejects_new_starts_after_the_restart_is_acknowledged()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var lifetime = new TestApplicationLifetime();
+        var service = new RuntimeSocketService(_paths, _engine, lifetime, NullLogger<RuntimeSocketService>.Instance);
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            for (var attempt = 0; attempt < 100 && !File.Exists(_paths.RuntimeSocket); attempt++)
+                await Task.Delay(10);
+            var restarting = await PersistentRuntimeProtocol.SendAsync<bool>(
+                _paths.RuntimeSocket, "upgradeWhenIdle", null, CancellationToken.None);
+            var id = Guid.NewGuid();
+            var instance = _paths.Instance(id);
+            Directory.CreateDirectory(instance);
+
+            var exception = await Assert.ThrowsAsync<PanelException>(() =>
+                PersistentRuntimeProtocol.SendAsync<RuntimeServerSnapshot>(
+                    _paths.RuntimeSocket, "start",
+                    new RuntimeLaunchRequest(id, _fakeJava, instance, ["-jar", "server.jar", "nogui"], 1024, 5),
+                    CancellationToken.None));
+
+            Assert.True(restarting);
+            Assert.Equal("RUNTIME_OPERATION_FAILED", exception.Code);
+            Assert.DoesNotContain(_engine.Snapshot(), snapshot => PersistentRuntimeClient.IsActive(snapshot.State));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Busy_upgrade_request_restarts_runtime_after_the_last_server_stops()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var lifetime = new TestApplicationLifetime();
+        var service = new RuntimeSocketService(_paths, _engine, lifetime, NullLogger<RuntimeSocketService>.Instance)
+        {
+            UpgradePollInterval = TimeSpan.FromMilliseconds(10)
+        };
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            for (var attempt = 0; attempt < 100 && !File.Exists(_paths.RuntimeSocket); attempt++)
+                await Task.Delay(10);
+            var id = Guid.NewGuid();
+            var instance = _paths.Instance(id); Directory.CreateDirectory(instance);
+            await _engine.StartAsync(new RuntimeLaunchRequest(id, _fakeJava, instance,
+                ["-jar", "server.jar", "nogui"], 1024, 5), CancellationToken.None);
+
+            var restarting = await PersistentRuntimeProtocol.SendAsync<bool>(
+                _paths.RuntimeSocket, "upgradeWhenIdle", null, CancellationToken.None);
+
+            Assert.False(restarting);
+            Assert.False(lifetime.ApplicationStopping.IsCancellationRequested);
+            await _engine.StopAsync(id, false, CancellationToken.None);
+            for (var attempt = 0; attempt < 100 && !lifetime.ApplicationStopping.IsCancellationRequested; attempt++)
+                await Task.Delay(10);
             Assert.True(lifetime.ApplicationStopping.IsCancellationRequested);
         }
         finally

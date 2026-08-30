@@ -60,6 +60,10 @@ export function LegacySettingsRedirect() {
   return <Navigate to="../properties" replace relative="path" />
 }
 
+export function LegacySoftwareRedirect() {
+  return <Navigate to="../runtime" replace relative="path" />
+}
+
 function AppRoutes() {
   const auth = useQuery({
     queryKey: ["auth-status"],
@@ -88,6 +92,7 @@ function AppRoutes() {
         <Route path="servers/:serverId/properties" element={<ServerPropertiesPage />} />
         <Route path="servers/:serverId/icon" element={<ServerIconPage />} />
         <Route path="servers/:serverId/runtime" element={<RuntimeSettingsPage />} />
+        <Route path="servers/:serverId/software" element={<LegacySoftwareRedirect />} />
         <Route path="servers/:serverId/mods" element={<ModsPage />} />
         <Route path="servers/:serverId/plugins" element={<PluginsPage />} />
         <Route path="servers/:serverId/settings" element={<LegacySettingsRedirect />} />

@@ -5,6 +5,7 @@ import { useParams } from "react-router-dom"
 import { toast } from "sonner"
 import { Page } from "@/components/page"
 import { api } from "@/lib/api"
+import { serverKindLabel } from "@/lib/server-kind"
 import { createClientRequestId } from "@/lib/client-request-id"
 import type { GateConfigurationWriteDto, GateExternalBackendDto, GateStatusDto, ServerSummaryDto } from "@/lib/contracts"
 import { Badge } from "@/components/ui/badge"
@@ -117,7 +118,7 @@ function GateBackendsEditor({ gate, servers }: { gate: GateStatusDto; servers: S
     <Card size="sm">
       <CardHeader><CardTitle>Managed servers</CardTitle><CardDescription>Select from Minecraft servers already managed by this panel. A server can belong to multiple Gate instances.</CardDescription></CardHeader>
       <CardContent>
-        {servers.length ? <FieldSet><FieldLegend variant="label">Available servers</FieldLegend><FieldGroup className="gap-3">{servers.map((server) => <Field key={server.id} orientation="horizontal"><Checkbox id={`gate-backend-${server.id}`} checked={selectedManaged.has(server.id)} onCheckedChange={(checked) => selectManaged(server.id, checked === true)} /><FieldContent><FieldLabel htmlFor={`gate-backend-${server.id}`}>{server.name}</FieldLabel><FieldDescription>{server.kind} {server.version} · 127.0.0.1:{server.port}</FieldDescription></FieldContent></Field>)}</FieldGroup></FieldSet> : <Empty><EmptyHeader><EmptyMedia variant="icon"><ServerIcon /></EmptyMedia><EmptyTitle>No managed Minecraft servers</EmptyTitle><EmptyDescription>Add an external address below, or create a Minecraft server in this panel.</EmptyDescription></EmptyHeader></Empty>}
+        {servers.length ? <FieldSet><FieldLegend variant="label">Available servers</FieldLegend><FieldGroup className="gap-3">{servers.map((server) => <Field key={server.id} orientation="horizontal"><Checkbox id={`gate-backend-${server.id}`} checked={selectedManaged.has(server.id)} onCheckedChange={(checked) => selectManaged(server.id, checked === true)} /><FieldContent><FieldLabel htmlFor={`gate-backend-${server.id}`}>{server.name}</FieldLabel><FieldDescription>{serverKindLabel(server.kind)} {server.version} · 127.0.0.1:{server.port}</FieldDescription></FieldContent></Field>)}</FieldGroup></FieldSet> : <Empty><EmptyHeader><EmptyMedia variant="icon"><ServerIcon /></EmptyMedia><EmptyTitle>No managed Minecraft servers</EmptyTitle><EmptyDescription>Add an external address below, or create a Minecraft server in this panel.</EmptyDescription></EmptyHeader></Empty>}
       </CardContent>
     </Card>
 

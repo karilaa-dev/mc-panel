@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text.Json;
 using McPanel.Api.Data;
 using McPanel.Api.Services;
@@ -16,6 +17,8 @@ public sealed class ServerImportCommandTests : IAsyncLifetime
         Directory.CreateDirectory(_root);
         Environment.SetEnvironmentVariable("MCPANEL_DATA_DIR", Path.Combine(_root, "data"));
         Environment.SetEnvironmentVariable("MCPANEL_CONFIG_DIR", Path.Combine(_root, "config"));
+        Environment.SetEnvironmentVariable("MCPANEL_IMPORT_READY_FILE", null);
+        Environment.SetEnvironmentVariable("MCPANEL_IMPORT_CONTINUE_FILE", null);
         _originalOut = Console.Out;
         return Task.CompletedTask;
     }
@@ -25,6 +28,8 @@ public sealed class ServerImportCommandTests : IAsyncLifetime
         Console.SetOut(_originalOut);
         Environment.SetEnvironmentVariable("MCPANEL_DATA_DIR", null);
         Environment.SetEnvironmentVariable("MCPANEL_CONFIG_DIR", null);
+        Environment.SetEnvironmentVariable("MCPANEL_IMPORT_READY_FILE", null);
+        Environment.SetEnvironmentVariable("MCPANEL_IMPORT_CONTINUE_FILE", null);
         if (Directory.Exists(_root)) Directory.Delete(_root, true);
         return Task.CompletedTask;
     }
@@ -82,12 +87,75 @@ public sealed class ServerImportCommandTests : IAsyncLifetime
         Assert.Equal("IMPORT_OPTION_REQUIRED", document.RootElement.GetProperty("code").GetString());
     }
 
+    [Fact]
+    public async Task Numeric_undefined_server_kind_is_rejected()
+    {
+        var source = CreateSource();
+        var output = new StringWriter();
+        Console.SetOut(output);
+
+        var exitCode = await ServerImportCommand.RunImportAsync([
+            "--mcpanel-import-server", source,
+            "--kind", "99",
+            "--json"
+        ]);
+
+        Assert.Equal((int)ServerImportFailureKind.Usage, exitCode);
+        using var document = JsonDocument.Parse(output.ToString());
+        Assert.False(document.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Equal("IMPORT_KIND_INVALID", document.RootElement.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task Coordinated_import_waits_for_the_privileged_commit_window()
+    {
+        var source = CreateSource();
+        var ready = Path.Combine(_root, "import-ready");
+        var proceed = Path.Combine(_root, "import-continue");
+        Environment.SetEnvironmentVariable("MCPANEL_IMPORT_READY_FILE", ready);
+        Environment.SetEnvironmentVariable("MCPANEL_IMPORT_CONTINUE_FILE", proceed);
+        var output = new StringWriter();
+        Console.SetOut(output);
+
+        var import = ServerImportCommand.RunImportAsync([
+            "--mcpanel-import-server", source,
+            "--name", "Coordinated world",
+            "--kind", "vanilla",
+            "--version", "1.20.4",
+            "--launch-target", "server.jar",
+            "--java-runtime", "/usr/bin/java",
+            "--memory-mb", "2048",
+            "--accept-eula",
+            "--json"
+        ]);
+        await WaitForFileAsync(ready);
+
+        var database = Path.Combine(_root, "data", "state.db");
+        var options = new DbContextOptionsBuilder<StateDbContext>().UseSqlite($"Data Source={database}").Options;
+        await using (var beforeCommit = new StateDbContext(options))
+            Assert.Empty(await beforeCommit.Servers.AsNoTracking().ToListAsync());
+
+        await File.WriteAllTextAsync(proceed, "continue");
+        Assert.Equal(0, await import);
+        await using var afterCommit = new StateDbContext(options);
+        Assert.Single(await afterCommit.Servers.AsNoTracking().ToListAsync());
+    }
+
+    private static async Task WaitForFileAsync(string path)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (!File.Exists(path)) await Task.Delay(25, timeout.Token);
+    }
+
     private string CreateSource()
     {
         var source = Path.Combine(_root, "staged-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(source);
         File.WriteAllText(Path.Combine(source, "server.properties"), "server-port=25578\n");
-        File.WriteAllBytes(Path.Combine(source, "server.jar"), [0x50, 0x4b, 0x05, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        using var archive = ZipFile.Open(Path.Combine(source, "server.jar"), ZipArchiveMode.Create);
+        var manifest = archive.CreateEntry("META-INF/MANIFEST.MF");
+        using var writer = new StreamWriter(manifest.Open());
+        writer.Write("Manifest-Version: 1.0\r\nMain-Class: example.Main\r\n");
         return source;
     }
 }

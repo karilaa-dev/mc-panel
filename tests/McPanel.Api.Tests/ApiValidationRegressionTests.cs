@@ -1255,6 +1255,239 @@ END;
     }
 
     [Fact]
+    public async Task Backup_restore_uses_the_software_metadata_captured_before_a_core_change()
+    {
+        await using (var scope = _factory!.Services.CreateAsyncScope())
+        {
+            var stateFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+            await using var db = await stateFactory.CreateDbContextAsync();
+            var server = await db.Servers.SingleAsync(x => x.Id == _serverId);
+            server.RestartRequired = true;
+            await db.SaveChangesAsync();
+        }
+        using (var response = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/backups", "{}"))
+        {
+            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var creation = await WaitForJobAsync(document.RootElement.GetProperty("id").GetGuid());
+            Assert.Equal("Completed", creation.GetProperty("state").GetString());
+        }
+
+        Guid backupId;
+        await using (var scope = _factory!.Services.CreateAsyncScope())
+        {
+            var stateFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+            await using var db = await stateFactory.CreateDbContextAsync();
+            var backup = Assert.Single(await db.Backups.AsNoTracking().ToListAsync());
+            Assert.False(string.IsNullOrWhiteSpace(backup.SoftwareMetadataJson));
+            backupId = backup.Id;
+            var server = await db.Servers.SingleAsync(x => x.Id == _serverId);
+            server.Kind = ServerKind.CustomJar;
+            server.Version = "1.21.8";
+            server.LaunchTarget = "custom-server.jar";
+            server.RequiredJavaMajor = 21;
+            await db.SaveChangesAsync();
+        }
+        await File.WriteAllBytesAsync(Path.Combine(_paths!.Instance(_serverId), "custom-server.jar"), []);
+
+        using var restore = await SendJsonAsync(HttpMethod.Post,
+            $"/api/v1/servers/{_serverId}/backups/{backupId}/restore", "{}");
+        Assert.Equal(HttpStatusCode.Accepted, restore.StatusCode);
+        using var restoreDocument = JsonDocument.Parse(await restore.Content.ReadAsStringAsync());
+        var restoration = await WaitForJobAsync(restoreDocument.RootElement.GetProperty("id").GetGuid());
+
+        Assert.Equal("Completed", restoration.GetProperty("state").GetString());
+        var restored = await ReadServerAsync();
+        Assert.Equal(ServerKind.Paper, restored.Kind);
+        Assert.Equal("1.20.4", restored.Version);
+        Assert.Equal("server.jar", restored.LaunchTarget);
+        Assert.False(restored.RestartRequired);
+        Assert.False(File.Exists(Path.Combine(_paths.Instance(_serverId), "custom-server.jar")));
+        Assert.True(File.Exists(Path.Combine(_paths.Instance(_serverId), "server.jar")));
+    }
+
+    [Fact]
+    public async Task Failed_custom_jar_change_restores_the_upload_for_retry()
+    {
+        string token;
+        using (var upload = await UploadCustomJarAsync("retry.jar", CreateExecutableJar()))
+        {
+            Assert.Equal(HttpStatusCode.OK, upload.StatusCode);
+            using var document = JsonDocument.Parse(await upload.Content.ReadAsStringAsync());
+            token = document.RootElement.GetProperty("token").GetString()!;
+        }
+        var conflict = Path.Combine(_paths!.Instance(_serverId), "custom-server.jar");
+        Directory.CreateDirectory(conflict);
+        var request = new
+        {
+            kind = "CustomJar",
+            version = "1.21.8",
+            javaRuntimeId = JavaId,
+            includeExperimental = false,
+            createBackup = false,
+            customJarImportToken = token,
+            clientRequestId = Guid.NewGuid()
+        };
+        using (var response = await SendJsonAsync(HttpMethod.Post,
+                   $"/api/v1/servers/{_serverId}/software/change", JsonSerializer.Serialize(request)))
+        {
+            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var failed = await WaitForJobAsync(document.RootElement.GetProperty("id").GetGuid());
+            Assert.Equal("Failed", failed.GetProperty("state").GetString());
+        }
+        Directory.Delete(conflict);
+
+        using var retry = await SendJsonAsync(HttpMethod.Post,
+            $"/api/v1/servers/{_serverId}/software/change",
+            JsonSerializer.Serialize(request with { clientRequestId = Guid.NewGuid() }));
+        Assert.Equal(HttpStatusCode.Accepted, retry.StatusCode);
+        using var retryDocument = JsonDocument.Parse(await retry.Content.ReadAsStringAsync());
+        var completed = await WaitForJobAsync(retryDocument.RootElement.GetProperty("id").GetGuid());
+
+        Assert.Equal("Completed", completed.GetProperty("state").GetString());
+        Assert.Equal(ServerKind.CustomJar, (await ReadServerAsync()).Kind);
+    }
+
+    [Fact]
+    public async Task Backup_restore_recovers_the_modpack_baseline_with_its_link_metadata()
+    {
+        await using (var scope = _factory!.Services.CreateAsyncScope())
+        {
+            var stateFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+            await using var db = await stateFactory.CreateDbContextAsync();
+            var server = await db.Servers.SingleAsync(x => x.Id == _serverId);
+            server.ModpackName = "Review Pack";
+            server.ModpackVersion = "1.0.0";
+            server.ModrinthProjectId = "project";
+            server.ModrinthVersionId = "version";
+            server.ModpackSource = "Modrinth";
+            await db.SaveChangesAsync();
+        }
+        var modpack = _paths!.ServerModpack(_serverId);
+        Directory.CreateDirectory(modpack);
+        await File.WriteAllTextAsync(Path.Combine(modpack, "baseline.json"), "baseline-state");
+        await File.WriteAllTextAsync(Path.Combine(modpack, "source.mrpack"), "pack-archive");
+
+        Guid backupId;
+        using (var response = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/backups", "{}"))
+        {
+            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var creation = await WaitForJobAsync(document.RootElement.GetProperty("id").GetGuid());
+            Assert.Equal("Completed", creation.GetProperty("state").GetString());
+        }
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var stateFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+            await using var db = await stateFactory.CreateDbContextAsync();
+            backupId = (await db.Backups.AsNoTracking().SingleAsync()).Id;
+            var server = await db.Servers.SingleAsync(x => x.Id == _serverId);
+            server.ModpackName = null;
+            server.ModpackVersion = null;
+            server.ModrinthProjectId = null;
+            server.ModrinthVersionId = null;
+            server.ModpackSource = null;
+            await db.SaveChangesAsync();
+        }
+        Directory.Delete(modpack, true);
+
+        using var restore = await SendJsonAsync(HttpMethod.Post,
+            $"/api/v1/servers/{_serverId}/backups/{backupId}/restore", "{}");
+        Assert.Equal(HttpStatusCode.Accepted, restore.StatusCode);
+        using var restoreDocument = JsonDocument.Parse(await restore.Content.ReadAsStringAsync());
+        var restoration = await WaitForJobAsync(restoreDocument.RootElement.GetProperty("id").GetGuid());
+
+        Assert.Equal("Completed", restoration.GetProperty("state").GetString());
+        var restored = await ReadServerAsync();
+        Assert.Equal("Review Pack", restored.ModpackName);
+        Assert.Equal("1.0.0", restored.ModpackVersion);
+        Assert.Equal("baseline-state", await File.ReadAllTextAsync(Path.Combine(modpack, "baseline.json")));
+        Assert.Equal("pack-archive", await File.ReadAllTextAsync(Path.Combine(modpack, "source.mrpack")));
+    }
+
+    [Fact]
+    public async Task Startup_recovery_rolls_back_a_restore_interrupted_before_its_commit_marker()
+    {
+        var backups = _factory!.Services.GetRequiredService<BackupService>();
+        SoftwareActivationService.SoftwareMetadataSnapshot original;
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var stateFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+            await using var db = await stateFactory.CreateDbContextAsync();
+            original = SoftwareActivationService.SoftwareMetadataSnapshot.Capture(
+                await db.Servers.SingleAsync(x => x.Id == _serverId));
+        }
+        var target = original with
+        {
+            Kind = ServerKind.CustomJar,
+            Version = "1.21.8",
+            LaunchTarget = "custom-server.jar"
+        };
+        var transaction = new BackupService.RestoreTransaction(
+            _paths!, Guid.NewGuid(), _serverId, original, target, false, false);
+        Directory.CreateDirectory(transaction.Stage);
+        await File.WriteAllTextAsync(Path.Combine(transaction.Stage, "custom-server.jar"), "custom");
+        transaction.Activate();
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var stateFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+            await using var db = await stateFactory.CreateDbContextAsync();
+            target.Restore(await db.Servers.SingleAsync(x => x.Id == _serverId));
+            await db.SaveChangesAsync();
+            await backups.RecoverInterruptedRestoresAsync(db, CancellationToken.None);
+        }
+
+        var restored = await ReadServerAsync();
+        Assert.Equal(ServerKind.Paper, restored.Kind);
+        Assert.Equal("server.jar", restored.LaunchTarget);
+        Assert.True(File.Exists(Path.Combine(_paths!.Instance(_serverId), "server.jar")));
+        Assert.False(File.Exists(Path.Combine(_paths.Instance(_serverId), "custom-server.jar")));
+        Assert.Empty(Directory.EnumerateFiles(_paths.Staging, "backup-restore-*.json"));
+    }
+
+    [Fact]
+    public async Task Startup_recovery_finishes_a_restore_with_a_committed_marker()
+    {
+        var backups = _factory!.Services.GetRequiredService<BackupService>();
+        SoftwareActivationService.SoftwareMetadataSnapshot original;
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var stateFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+            await using var db = await stateFactory.CreateDbContextAsync();
+            original = SoftwareActivationService.SoftwareMetadataSnapshot.Capture(
+                await db.Servers.SingleAsync(x => x.Id == _serverId));
+        }
+        var target = original with
+        {
+            Kind = ServerKind.CustomJar,
+            Version = "1.21.8",
+            LaunchTarget = "custom-server.jar"
+        };
+        var transaction = new BackupService.RestoreTransaction(
+            _paths!, Guid.NewGuid(), _serverId, original, target, false, false);
+        Directory.CreateDirectory(transaction.Stage);
+        await File.WriteAllTextAsync(Path.Combine(transaction.Stage, "custom-server.jar"), "custom");
+        transaction.Activate();
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var stateFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();
+            await using var db = await stateFactory.CreateDbContextAsync();
+            target.Restore(await db.Servers.SingleAsync(x => x.Id == _serverId));
+            await db.SaveChangesAsync();
+            transaction.MarkCommitted();
+            await backups.RecoverInterruptedRestoresAsync(db, CancellationToken.None);
+        }
+
+        var restored = await ReadServerAsync();
+        Assert.Equal(ServerKind.CustomJar, restored.Kind);
+        Assert.Equal("custom-server.jar", restored.LaunchTarget);
+        Assert.False(File.Exists(Path.Combine(_paths!.Instance(_serverId), "server.jar")));
+        Assert.Equal("custom", await File.ReadAllTextAsync(Path.Combine(_paths.Instance(_serverId), "custom-server.jar")));
+        Assert.Empty(Directory.EnumerateFiles(_paths.Staging, "backup-restore-*.json"));
+    }
+
+    [Fact]
     public async Task Backup_creation_removes_activated_archive_when_metadata_commit_fails()
     {
         await using (var triggerScope = _factory!.Services.CreateAsyncScope())
@@ -1419,6 +1652,30 @@ END;
         using var request = new HttpRequestMessage(HttpMethod.Put, $"/api/v1/servers/{_serverId}/icon") { Content = multipart };
         request.Headers.Add("X-XSRF-TOKEN", csrf);
         return await _client!.SendAsync(request);
+    }
+
+    private async Task<HttpResponseMessage> UploadCustomJarAsync(string fileName, byte[] content)
+    {
+        var csrf = await GetAntiforgeryAsync();
+        using var multipart = new MultipartFormDataContent();
+        var file = new ByteArrayContent(content);
+        file.Headers.ContentType = new("application/java-archive");
+        multipart.Add(file, "file", fileName);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/server-jars/imports") { Content = multipart };
+        request.Headers.Add("X-XSRF-TOKEN", csrf);
+        return await _client!.SendAsync(request);
+    }
+
+    private static byte[] CreateExecutableJar()
+    {
+        using var output = new MemoryStream();
+        using (var archive = new ZipArchive(output, ZipArchiveMode.Create, true))
+        {
+            var manifest = archive.CreateEntry("META-INF/MANIFEST.MF");
+            using var writer = new StreamWriter(manifest.Open());
+            writer.Write("Manifest-Version: 1.0\r\nMain-Class: example.Main\r\n");
+        }
+        return output.ToArray();
     }
 
     private async Task<HttpResponseMessage> UploadLibraryIconAsync(byte[] content)

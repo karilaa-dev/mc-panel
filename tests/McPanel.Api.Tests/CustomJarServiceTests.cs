@@ -1,0 +1,245 @@
+using System.IO.Compression;
+using McPanel.Api.Configuration;
+using McPanel.Api.Data;
+using McPanel.Api.Infrastructure;
+using McPanel.Api.Services;
+using Microsoft.AspNetCore.Http;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+
+namespace McPanel.Api.Tests;
+
+public sealed class CustomJarServiceTests : IDisposable
+{
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "mcpanel-jar-tests-" + Guid.NewGuid().ToString("N"));
+
+    [Fact]
+    public async Task Upload_is_validated_and_claimed_once()
+    {
+        var (service, _) = CreateService();
+        var jar = CreateJar(true);
+        await using var stream = new MemoryStream(jar);
+        var upload = new FormFile(stream, 0, jar.Length, "file", "my-server.jar");
+
+        var staged = await service.PrepareAsync(upload, CancellationToken.None);
+
+        Assert.Equal("my-server.jar", staged.FileName);
+        using var claim = await service.ClaimAsync(staged.Token, CancellationToken.None);
+        Assert.True(File.Exists(claim.JarPath));
+        var exception = await Assert.ThrowsAsync<PanelException>(
+            () => service.ClaimAsync(staged.Token, CancellationToken.None));
+        Assert.Equal("IMPORT_NOT_FOUND", exception.Code);
+    }
+
+    [Fact]
+    public async Task Claimed_upload_can_be_restored_before_server_creation_commits()
+    {
+        var (service, _) = CreateService();
+        var jar = CreateJar(true);
+        await using var stream = new MemoryStream(jar);
+        var staged = await service.PrepareAsync(
+            new FormFile(stream, 0, jar.Length, "file", "server.jar"), CancellationToken.None);
+        var claim = await service.ClaimAsync(staged.Token, CancellationToken.None);
+
+        claim.Restore();
+
+        var restored = await service.InspectAsync(staged.Token, CancellationToken.None);
+        Assert.Equal(staged.Token, restored.Token);
+    }
+
+    [Theory]
+    [InlineData("server.zip", true)]
+    [InlineData("server.jar", false)]
+    public async Task Upload_requires_jar_name_and_executable_manifest(string fileName, bool executable)
+    {
+        var (service, _) = CreateService();
+        var jar = CreateJar(executable);
+        await using var stream = new MemoryStream(jar);
+        var upload = new FormFile(stream, 0, jar.Length, "file", fileName);
+
+        var exception = await Assert.ThrowsAsync<PanelException>(
+            () => service.PrepareAsync(upload, CancellationToken.None));
+
+        Assert.Equal("VALIDATION_FAILED", exception.Code);
+    }
+
+    [Fact]
+    public async Task Upload_rejects_a_manifest_with_noncanonical_entry_casing()
+    {
+        var (service, _) = CreateService();
+        var jar = CreateJar("Manifest-Version: 1.0\r\nMain-Class: example.Main\r\n", "meta-inf/manifest.mf");
+        await using var stream = new MemoryStream(jar);
+
+        var exception = await Assert.ThrowsAsync<PanelException>(() => service.PrepareAsync(
+            new FormFile(stream, 0, jar.Length, "file", "server.jar"), CancellationToken.None));
+
+        Assert.Equal("VALIDATION_FAILED", exception.Code);
+    }
+
+    [Fact]
+    public void Candidates_include_executable_jars_with_uppercase_extensions()
+    {
+        var (service, paths) = CreateService();
+        var instance = Path.Combine(paths.Instances, "uppercase-candidate");
+        Directory.CreateDirectory(instance);
+        File.WriteAllBytes(Path.Combine(instance, "paper.JAR"), CreateJar(true));
+
+        var candidate = Assert.Single(service.Candidates(instance));
+
+        Assert.Equal("paper.JAR", candidate.Path);
+    }
+
+    [Fact]
+    public void Candidates_include_the_current_nested_launcher_without_scanning_other_nested_jars()
+    {
+        var (service, paths) = CreateService();
+        var instance = Path.Combine(paths.Instances, "bounded-candidates");
+        Directory.CreateDirectory(Path.Combine(instance, "run"));
+        Directory.CreateDirectory(Path.Combine(instance, "mods"));
+        File.WriteAllBytes(Path.Combine(instance, "run", "current.jar"), CreateJar(true));
+        File.WriteAllBytes(Path.Combine(instance, "mods", "library.jar"), CreateJar(true));
+
+        var candidates = service.Candidates(instance, "run/current.jar");
+
+        var candidate = Assert.Single(candidates);
+        Assert.Equal("run/current.jar", candidate.Path.Replace(Path.DirectorySeparatorChar, '/'));
+    }
+
+    [Fact]
+    public void Candidates_are_capped()
+    {
+        var (service, paths) = CreateService();
+        var instance = Path.Combine(paths.Instances, "capped-candidates");
+        Directory.CreateDirectory(instance);
+        for (var index = 0; index < 70; index++)
+            File.WriteAllBytes(Path.Combine(instance, $"server-{index:D2}.jar"), CreateJar(true));
+
+        Assert.Equal(64, service.Candidates(instance).Count);
+    }
+
+    [Theory]
+    [InlineData("Manifest-Version: 1.0\r\n\r\nName: library\r\nMain-Class: example.Main\r\n")]
+    [InlineData("Manifest-Version: 1.0\r\nMain-Class:example.Main\r\n")]
+    public async Task Upload_rejects_main_class_outside_a_valid_main_manifest_section(string manifest)
+    {
+        var (service, _) = CreateService();
+        var jar = CreateJar(manifest);
+        await using var stream = new MemoryStream(jar);
+
+        var exception = await Assert.ThrowsAsync<PanelException>(() => service.PrepareAsync(
+            new FormFile(stream, 0, jar.Length, "file", "library.jar"), CancellationToken.None));
+
+        Assert.Equal("VALIDATION_FAILED", exception.Code);
+    }
+
+    [Fact]
+    public async Task Expired_upload_is_rejected_and_removed()
+    {
+        var (service, paths) = CreateService();
+        var jar = CreateJar(true);
+        await using var stream = new MemoryStream(jar);
+        var staged = await service.PrepareAsync(new FormFile(stream, 0, jar.Length, "file", "server.jar"), CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(paths.CustomJarImports, staged.Token, "metadata.json"),
+            $"{{\"FileName\":\"server.jar\",\"Size\":{jar.Length},\"CreatedAt\":\"{DateTimeOffset.UtcNow.AddHours(-2):O}\"}}");
+
+        var exception = await Assert.ThrowsAsync<PanelException>(
+            () => service.InspectAsync(staged.Token, CancellationToken.None));
+
+        Assert.Equal("IMPORT_EXPIRED", exception.Code);
+        Assert.False(Directory.Exists(Path.Combine(paths.CustomJarImports, staged.Token)));
+    }
+
+    [Fact]
+    public void Cleanup_does_not_delete_an_upload_with_an_active_lease()
+    {
+        var (service, paths) = CreateService();
+        var root = Path.Combine(paths.CustomJarImports, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        using var lease = new FileStream(Path.Combine(root, ".uploading"),
+            FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+
+        service.CleanupExpiredImports();
+
+        Assert.True(Directory.Exists(root));
+    }
+
+    [Fact]
+    public async Task Permission_repair_opens_only_regular_instances_to_the_group()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var (_, paths) = CreateService();
+        var options = new DbContextOptionsBuilder<StateDbContext>()
+            .UseSqlite($"Data Source={Path.Combine(_root, "permissions.db")}").Options;
+        IDbContextFactory<StateDbContext> factory = new TestStateDbContextFactory(options);
+        var regularId = Guid.NewGuid();
+        var gateId = Guid.NewGuid();
+        await using (var db = await factory.CreateDbContextAsync())
+        {
+            await db.Database.EnsureCreatedAsync();
+            db.Servers.AddRange(
+                new ServerEntity { Id = regularId, Name = "Regular", Kind = ServerKind.Paper, Version = "1.21.8", JavaRuntimeId = "java" },
+                new ServerEntity { Id = gateId, Name = "Gate", Kind = ServerKind.Gate, Version = "1", JavaRuntimeId = "" });
+            await db.SaveChangesAsync();
+        }
+        Directory.CreateDirectory(paths.Instance(regularId));
+        Directory.CreateDirectory(paths.Instance(gateId));
+        await File.WriteAllTextAsync(Path.Combine(paths.Instance(regularId), "server.jar"), "regular");
+        await File.WriteAllTextAsync(Path.Combine(paths.Instance(gateId), "secret"), "gate");
+        var permissions = new InstancePermissionService(paths, factory, NullLogger<InstancePermissionService>.Instance);
+
+        await permissions.NormalizeAllAsync(CancellationToken.None);
+
+        var regularDirectory = File.GetUnixFileMode(paths.Instance(regularId));
+        var regularFile = File.GetUnixFileMode(Path.Combine(paths.Instance(regularId), "server.jar"));
+        var gateDirectory = File.GetUnixFileMode(paths.Instance(gateId));
+        var gateFile = File.GetUnixFileMode(Path.Combine(paths.Instance(gateId), "secret"));
+        Assert.True(regularDirectory.HasFlag(UnixFileMode.SetGroup));
+        Assert.True(regularDirectory.HasFlag(UnixFileMode.GroupWrite));
+        Assert.True(regularFile.HasFlag(UnixFileMode.GroupRead));
+        Assert.True(regularFile.HasFlag(UnixFileMode.GroupWrite));
+        Assert.False(gateDirectory.HasFlag(UnixFileMode.GroupRead));
+        Assert.False(gateFile.HasFlag(UnixFileMode.GroupRead));
+    }
+
+    private (CustomJarService Service, PanelPaths Paths) CreateService()
+    {
+        var options = new PanelOptions
+        {
+            DataDirectory = Path.Combine(_root, "data"),
+            ConfigDirectory = Path.Combine(_root, "config"),
+            MaxUploadBytes = 1024 * 1024
+        };
+        var paths = new PanelPaths(options);
+        paths.EnsureCreated();
+        return (new CustomJarService(paths, new SafePathResolver(), Options.Create(options)), paths);
+    }
+
+    private static byte[] CreateJar(bool executable) => CreateJar(
+        executable ? "Manifest-Version: 1.0\r\nMain-Class: example.Main\r\n" : "Manifest-Version: 1.0\r\n");
+
+    private static byte[] CreateJar(string manifestText, string manifestPath = "META-INF/MANIFEST.MF")
+    {
+        using var output = new MemoryStream();
+        using (var archive = new ZipArchive(output, ZipArchiveMode.Create, true))
+        {
+            var manifest = archive.CreateEntry(manifestPath);
+            using var writer = new StreamWriter(manifest.Open());
+            writer.Write(manifestText);
+        }
+        return output.ToArray();
+    }
+
+    private sealed class TestStateDbContextFactory(DbContextOptions<StateDbContext> options)
+        : IDbContextFactory<StateDbContext>
+    {
+        public StateDbContext CreateDbContext() => new(options);
+        public Task<StateDbContext> CreateDbContextAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new StateDbContext(options));
+    }
+
+    public void Dispose()
+    {
+        try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { }
+    }
+}

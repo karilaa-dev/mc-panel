@@ -37,6 +37,7 @@ public sealed class PanelPaths
         Icons = Path.Combine(Data, "icons");
         Modpacks = Path.Combine(Data, "modpacks");
         ModpackImports = Path.Combine(Data, "modpack-imports");
+        CustomJarImports = Path.Combine(Data, "custom-jar-imports");
         Gate = Path.Combine(Data, "gate");
         LegacyGateVersions = Path.Combine(Gate, "versions");
         StateDatabase = Path.Combine(Data, "state.db");
@@ -59,6 +60,7 @@ public sealed class PanelPaths
     public string Icons { get; }
     public string Modpacks { get; }
     public string ModpackImports { get; }
+    public string CustomJarImports { get; }
     public string Gate { get; }
     public string LegacyGateVersions { get; }
     public string LegacyGateConfig => Path.Combine(Gate, "config.json");
@@ -74,7 +76,7 @@ public sealed class PanelPaths
 
     public void EnsureCreated()
     {
-        foreach (var directory in new[] { Data, Config, Instances, Staging, Backups, Logs, Runtime, RuntimeState, Keys, Icons, Modpacks, ModpackImports, Gate, LegacyGateVersions })
+        foreach (var directory in new[] { Data, Config, Instances, Staging, Backups, Logs, Runtime, RuntimeState, Keys, Icons, Modpacks, ModpackImports, CustomJarImports, Gate, LegacyGateVersions })
             Directory.CreateDirectory(directory);
     }
 

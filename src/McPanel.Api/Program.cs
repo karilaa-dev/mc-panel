@@ -22,6 +22,7 @@ if (PersistentRuntimeHost.IsInvocation(args)) return await PersistentRuntimeHost
 if (PersistentRuntimeUpgradeCommand.IsInvocation(args)) return await PersistentRuntimeUpgradeCommand.RunAsync();
 if (ServerImportCommand.IsStageInvocation(args)) return await ServerImportCommand.RunStageAsync(args);
 if (ServerImportCommand.IsImportInvocation(args)) return await ServerImportCommand.RunImportAsync(args);
+if (InstancePermissionRepairCommand.IsInvocation(args)) return await InstancePermissionRepairCommand.RunAsync(args);
 
 // systemd intentionally uses the writable data directory as its working directory.
 // Anchor configuration and bundled web assets to the executable instead of the CWD.
@@ -89,6 +90,8 @@ builder.Services.AddHttpClient("minecraft-profile", client =>
 }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, AutomaticDecompression = System.Net.DecompressionMethods.All });
 
 builder.Services.AddSingleton<AsyncKeyedLock>(); builder.Services.AddSingleton<SafePathResolver>(); builder.Services.AddSingleton<SessionAudience>();
+builder.Services.AddSingleton<InstancePermissionService>(); builder.Services.AddHostedService<InstancePermissionRepairService>();
+builder.Services.AddSingleton<CustomJarService>(); builder.Services.AddSingleton<SoftwareActivationService>();
 builder.Services.AddSingleton<CgroupMemoryService>();
 builder.Services.AddSingleton<ValidatedDownloadClient>(); builder.Services.AddSingleton<DistributionCatalogService>();
 builder.Services.AddSingleton<JavaDiscoveryService>(); builder.Services.AddSingleton<ConsoleService>();
@@ -105,6 +108,7 @@ builder.Services.AddSingleton<HostMetricsService>(); builder.Services.AddHostedS
 builder.Services.AddSingleton<SchedulerService>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<SchedulerService>());
 builder.Services.AddSingleton<ModrinthService>(); builder.Services.AddSingleton<ModpackService>(); builder.Services.AddSingleton<ModrinthModInstallerService>();
 builder.Services.AddSingleton<ServerInstallerService>(); builder.Services.AddSingleton<PropertiesService>(); builder.Services.AddSingleton<ServerIconService>(); builder.Services.AddSingleton<FileManagerService>(); builder.Services.AddSingleton<ModMetadataService>();
+builder.Services.AddSingleton<ServerSoftwareService>();
 builder.Services.AddSingleton<BackupService>(); builder.Services.AddSingleton<PlayerService>(); builder.Services.AddSingleton<PlayerInventoryService>(); builder.Services.AddSingleton<ServerQueryService>(); builder.Services.AddSingleton<AdminAuthService>();
 builder.Services.AddSingleton<IPasswordHasher<AdminEntity>, PasswordHasher<AdminEntity>>();
 
@@ -170,11 +174,22 @@ static async Task InitializeAsync(IServiceProvider services)
         await state.EnsureCompatibleSchemaAsync();
         await scope.ServiceProvider.GetRequiredService<LegacyGateMigrationService>().MigrateAsync(state, CancellationToken.None);
         await state.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
+        await ServerImportService.RecoverInterruptedActivationsAsync(
+            scope.ServiceProvider.GetRequiredService<PanelPaths>(), state,
+            scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger<ServerImportService>(),
+            CancellationToken.None);
+        await scope.ServiceProvider.GetRequiredService<BackupService>()
+            .RecoverInterruptedRestoresAsync(state, CancellationToken.None);
+        var unrecoveredActivations = await scope.ServiceProvider.GetRequiredService<SoftwareActivationService>()
+            .RecoverInterruptedAsync(state, CancellationToken.None);
         var staleJobs = await state.Jobs.Where(x => x.State == JobState.Running || x.State == JobState.Queued).ToListAsync();
         foreach (var job in staleJobs) { job.State = JobState.Failed; job.Progress = 100; job.Message = "Interrupted"; job.Error = "The panel restarted before this operation completed."; }
+        var interruptedUpdates = await state.Servers.Where(x => x.State == ServerState.Updating).ToListAsync();
+        foreach (var server in interruptedUpdates.Where(server => !unrecoveredActivations.Contains(server.Id)))
+        { server.State = ServerState.Stopped; server.ProcessId = null; }
         if (!services.GetRequiredService<PersistentRuntimeClient>().Enabled)
         {
-            var staleServers = await state.Servers.Where(x => x.State == ServerState.Running || x.State == ServerState.Starting || x.State == ServerState.Stopping || x.State == ServerState.BackingUp || x.State == ServerState.Updating).ToListAsync();
+            var staleServers = await state.Servers.Where(x => x.State == ServerState.Running || x.State == ServerState.Starting || x.State == ServerState.Stopping || x.State == ServerState.BackingUp).ToListAsync();
             foreach (var server in staleServers) { server.State = ServerState.Stopped; server.ProcessId = null; server.StartedAt = null; }
         }
         var interruptedInstalls = await state.Servers.Where(x => x.State == ServerState.Installing).ToListAsync();
@@ -186,6 +201,7 @@ static async Task InitializeAsync(IServiceProvider services)
     }
     services.GetRequiredService<SessionAudience>().Initialize(sessionStamp);
     services.GetRequiredService<ModpackService>().CleanupExpiredImports();
+    services.GetRequiredService<CustomJarService>().CleanupExpiredImports();
     await scope.ServiceProvider.GetRequiredService<ServerIconService>().BackfillAsync(CancellationToken.None);
     await using (var console = await consoleFactory.CreateDbContextAsync())
     {
@@ -199,8 +215,7 @@ static async Task InitializeAsync(IServiceProvider services)
     }
     var consoleService = scope.ServiceProvider.GetRequiredService<ConsoleService>();
     foreach (var serverId in serverIds) await consoleService.PruneAsync(serverId, CancellationToken.None);
-    var panelPaths = scope.ServiceProvider.GetRequiredService<PanelPaths>();
-    try { foreach (var directory in Directory.EnumerateDirectories(panelPaths.Staging)) Directory.Delete(directory, true); } catch { }
+    scope.ServiceProvider.GetRequiredService<SoftwareActivationService>().CleanupOrphanedStaging();
 }
 
 public partial class Program { }

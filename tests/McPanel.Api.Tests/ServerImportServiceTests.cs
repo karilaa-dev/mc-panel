@@ -71,6 +71,54 @@ public sealed class ServerImportServiceTests : IAsyncLifetime
         Assert.Equal("server.jar", server.LaunchTarget);
         Assert.Equal(LaunchMode.Jar, server.LaunchMode);
         Assert.NotEmpty(await db.JavaRuntimes.AsNoTracking().ToListAsync());
+        Assert.Empty(Directory.EnumerateFiles(_paths.Staging, "import-activation-*.json"));
+    }
+
+    [Fact]
+    public async Task Startup_recovery_removes_an_imported_directory_without_a_committed_server()
+    {
+        var serverId = Guid.NewGuid();
+        var destination = _paths.Instance(serverId);
+        Directory.CreateDirectory(destination);
+        await File.WriteAllTextAsync(Path.Combine(destination, "server.jar"), "orphan");
+        var journal = _service.CreateActivationJournal(serverId);
+
+        await using (var db = _factory.CreateDbContext())
+            await ServerImportService.RecoverInterruptedActivationsAsync(
+                _paths, db, NullLogger.Instance, CancellationToken.None);
+
+        Assert.False(Directory.Exists(destination));
+        Assert.False(File.Exists(journal));
+    }
+
+    [Fact]
+    public async Task Startup_recovery_keeps_a_committed_import_and_removes_its_journal()
+    {
+        var serverId = Guid.NewGuid();
+        var destination = _paths.Instance(serverId);
+        Directory.CreateDirectory(destination);
+        await File.WriteAllTextAsync(Path.Combine(destination, "server.jar"), "committed");
+        await using (var db = _factory.CreateDbContext())
+        {
+            db.Servers.Add(new ServerEntity
+            {
+                Id = serverId,
+                Name = "Committed import",
+                Kind = ServerKind.Paper,
+                Version = "1.21.8",
+                JavaRuntimeId = "java",
+                State = ServerState.Stopped
+            });
+            await db.SaveChangesAsync();
+        }
+        var journal = _service.CreateActivationJournal(serverId);
+
+        await using (var db = _factory.CreateDbContext())
+            await ServerImportService.RecoverInterruptedActivationsAsync(
+                _paths, db, NullLogger.Instance, CancellationToken.None);
+
+        Assert.True(Directory.Exists(destination));
+        Assert.False(File.Exists(journal));
     }
 
     [Theory]
@@ -91,6 +139,36 @@ public sealed class ServerImportServiceTests : IAsyncLifetime
         Assert.Equal(25572, inspection.PropertiesPort);
         Assert.Contains(inspection.Launchers, launcher => launcher.Path == "server.jar");
         Assert.True(File.Exists(archive));
+    }
+
+    [Fact]
+    public async Task Discovers_top_level_launchers_with_an_uppercase_jar_extension()
+    {
+        var source = CreateVanillaSource("uppercase-launcher-source", 25583);
+        File.Move(Path.Combine(source, "server.jar"), Path.Combine(source, "server.JAR"));
+
+        var inspection = await _service.InspectAsync(source, CancellationToken.None);
+
+        Assert.Contains(inspection.Launchers, launcher => launcher.Path == "server.JAR");
+    }
+
+    [Fact]
+    public async Task Directory_staging_preserves_owner_execute_without_group_or_other_permissions()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var source = CreateVanillaSource("executable-source", 25581);
+        var script = Path.Combine(source, "maintenance.sh");
+        await File.WriteAllTextAsync(script, "#!/bin/sh\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite |
+            UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+        var stage = Path.Combine(_paths.Staging, "executable-stage");
+
+        await ServerImportSource.StageAsync(source, stage, CancellationToken.None);
+
+        var mode = File.GetUnixFileMode(Path.Combine(stage, "maintenance.sh"));
+        Assert.True(mode.HasFlag(UnixFileMode.UserExecute));
+        Assert.False(mode.HasFlag(UnixFileMode.GroupExecute));
+        Assert.False(mode.HasFlag(UnixFileMode.OtherExecute));
     }
 
     [Fact]
@@ -181,6 +259,39 @@ public sealed class ServerImportServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Validates_an_explicit_nested_jar_without_a_top_level_launcher()
+    {
+        var source = Path.Combine(_root, "nested-launcher-source");
+        Directory.CreateDirectory(Path.Combine(source, "run"));
+        await File.WriteAllTextAsync(Path.Combine(source, "server.properties"), "server-port=25582\n");
+        CreateExecutableJar(Path.Combine(source, "run", "server.jar"));
+
+        var validation = await _service.ValidateAsync(source,
+            Request("Nested launcher", 25582) with { LaunchTarget = Path.Combine("run", "server.jar") },
+            CancellationToken.None);
+
+        Assert.Equal(Path.Combine("run", "server.jar"), validation.LaunchTarget);
+        Assert.Equal(LaunchMode.Jar, validation.LaunchMode);
+    }
+
+    [Fact]
+    public async Task Rejects_a_non_executable_jar_launcher_during_inspection_and_validation()
+    {
+        var source = Path.Combine(_root, "invalid-launcher-source");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(Path.Combine(source, "server.properties"), "server-port=25587\n");
+        await File.WriteAllTextAsync(Path.Combine(source, "server.jar"), "not a jar");
+
+        var inspection = await Assert.ThrowsAsync<ServerImportException>(() =>
+            _service.InspectAsync(source, CancellationToken.None));
+        var validation = await Assert.ThrowsAsync<ServerImportException>(() =>
+            _service.ValidateAsync(source, Request("Invalid launcher", 25587), CancellationToken.None));
+
+        Assert.Equal("IMPORT_LAUNCHER_MISSING", inspection.Code);
+        Assert.Equal("IMPORT_LAUNCHER_INVALID", validation.Code);
+    }
+
+    [Fact]
     public async Task Reports_name_and_port_conflicts_without_activating_files()
     {
         await using (var db = _factory.CreateDbContext())
@@ -258,6 +369,65 @@ public sealed class ServerImportServiceTests : IAsyncLifetime
         Assert.Equal("IMPORT_HARD_LINK", exception.Code);
     }
 
+    [Fact]
+    public void Directory_copy_opener_rejects_a_file_replaced_by_a_symbolic_link()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var source = CreateVanillaSource("file-swap-source", 25584);
+        var outside = Path.Combine(_root, "outside.jar");
+        File.WriteAllText(outside, "outside");
+        File.Delete(Path.Combine(source, "server.jar"));
+        File.CreateSymbolicLink(Path.Combine(source, "server.jar"), outside);
+
+        var exception = Assert.Throws<ServerImportException>(() =>
+            ServerImportSource.OpenDirectoryFile(source, "server.jar"));
+
+        Assert.Equal("IMPORT_SOURCE_CHANGED", exception.Code);
+    }
+
+    [Fact]
+    public void Directory_copy_opener_rejects_a_parent_replaced_by_a_symbolic_link()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var source = CreateVanillaSource("parent-swap-source", 25585);
+        var outside = Path.Combine(_root, "outside-world");
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "level.dat"), "outside");
+        Directory.Delete(Path.Combine(source, "world"), true);
+        Directory.CreateSymbolicLink(Path.Combine(source, "world"), outside);
+
+        var exception = Assert.Throws<ServerImportException>(() =>
+            ServerImportSource.OpenDirectoryFile(source, Path.Combine("world", "level.dat")));
+
+        Assert.Equal("IMPORT_SOURCE_CHANGED", exception.Code);
+    }
+
+    [Fact]
+    public void Directory_copy_opener_verifies_the_opened_file_link_count()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var source = CreateVanillaSource("opened-hard-link-source", 25586);
+        Assert.Equal(0, Link(Path.Combine(source, "server.jar"), Path.Combine(source, "server-copy.jar")));
+
+        var exception = Assert.Throws<ServerImportException>(() =>
+            ServerImportSource.OpenDirectoryFile(source, "server.jar"));
+
+        Assert.Equal("IMPORT_HARD_LINK", exception.Code);
+    }
+
+    [Fact]
+    public void Free_space_uses_the_most_specific_mounted_filesystem()
+    {
+        if (!OperatingSystem.IsLinux() || !Directory.Exists("/dev/shm")) return;
+        var mount = DriveInfo.GetDrives().FirstOrDefault(drive => drive.IsReady &&
+            Path.TrimEndingDirectorySeparator(drive.RootDirectory.FullName) == "/dev/shm");
+        if (mount is null) return;
+
+        var available = ServerImportSource.AvailableBytes("/dev/shm");
+
+        Assert.Equal(mount.AvailableFreeSpace, available);
+    }
+
     private ServerImportRequest Request(string name, int port) => new(
         name, ServerKind.Vanilla, "1.20.4", null, "server.jar", "/usr/bin/java", 4096, port, "", true);
 
@@ -266,9 +436,17 @@ public sealed class ServerImportServiceTests : IAsyncLifetime
         var source = Path.Combine(_root, name);
         Directory.CreateDirectory(Path.Combine(source, "world"));
         File.WriteAllText(Path.Combine(source, "server.properties"), $"server-port={port}\n");
-        File.WriteAllBytes(Path.Combine(source, "server.jar"), [0x50, 0x4b, 0x05, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        CreateExecutableJar(Path.Combine(source, "server.jar"));
         File.WriteAllText(Path.Combine(source, "world", "level.dat"), "world data");
         return source;
+    }
+
+    private static void CreateExecutableJar(string path)
+    {
+        using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
+        var manifest = archive.CreateEntry("META-INF/MANIFEST.MF");
+        using var writer = new StreamWriter(manifest.Open());
+        writer.Write("Manifest-Version: 1.0\r\nMain-Class: example.Main\r\n");
     }
 
     private static void CreateArchive(string source, string archive, string format)

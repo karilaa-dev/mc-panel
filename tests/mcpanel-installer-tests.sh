@@ -164,8 +164,8 @@ test_retry_and_handoff() {
 
   export MCPANEL_HANDOFF_LOG="$handoff_log"
   invoke_prepared_installer "$prepared/mcpanel-$commit.sh" update "$prepared/artifact" "$release" "$commit" linux-x64 \
-    /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel '' ''
-  [[ "$(< "$handoff_log")" == "__apply-prepared update $prepared/artifact $release $commit linux-x64 /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel  " ]] || \
+    /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel '' '' tester
+  [[ "$(< "$handoff_log")" == "__apply-prepared update $prepared/artifact $release $commit linux-x64 /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel   tester" ]] || \
     fail "refreshed installer handoff arguments were incorrect"
   [[ "$(wc -l < "$handoff_log")" -eq 1 ]] || fail "refreshed installer ran more than once"
 
@@ -185,10 +185,10 @@ test_retry_and_handoff() {
   export PATH="$fake_bin:$PATH"
   MCPANEL_SOURCE_ONLY=0 invoke_prepared_installer "$actual_prepared/mcpanel-$actual_commit.sh" update \
     "$actual_prepared/artifact" "$actual_release" "$actual_commit" linux-x64 \
-    /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel '' ''
+    /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel '' '' tester
   export PATH="$current_path"
   [[ "$(wc -l < "$sudo_log")" -eq 1 ]] || fail "the refreshed installer did not perform one privileged handoff"
-  [[ "$(< "$sudo_log")" == "-n -- $actual_prepared/mcpanel-$actual_commit.sh __update $actual_prepared/artifact /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel" ]] || \
+  [[ "$(< "$sudo_log")" == "-n -- $actual_prepared/mcpanel-$actual_commit.sh __update $actual_prepared/artifact /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel tester" ]] || \
     fail "the refreshed installer did not apply the prepared artifact"
 }
 
@@ -226,6 +226,82 @@ test_import_option_parsing() {
   )
 }
 
+test_import_wrapper_flag_detection() {
+  assert_equal "0 0" \
+    "$(detect_import_wrapper_flags --jvm-args --dry-run --name --json)" \
+    "import flags used as option values"
+  assert_equal "1 1" \
+    "$(detect_import_wrapper_flags --accept-eula --dry-run --json)" \
+    "standalone import wrapper flags"
+}
+
+test_import_restart_json() {
+  local result='{"ok":true,"serverId":"server-123","name":"Imported world","instanceDirectory":"/var/lib/mcpanel/instances/server-123"}'
+  assert_equal \
+    '{"ok":false,"code":"IMPORT_PANEL_RESTART_FAILED","message":"The import command finished, but the web panel did not become ready.","committed":true,"importResult":{"ok":true,"serverId":"server-123","name":"Imported world","instanceDirectory":"/var/lib/mcpanel/instances/server-123"}}' \
+    "$(print_import_json_result "$result" 0 5)" \
+    "restart failure preserves committed import details"
+}
+
+test_import_stops_panel_after_validation() {
+  local fixture="$test_root/coordinated-import" install_dir config_dir data_dir source unit stop_marker output
+  install_dir="$fixture/install"
+  config_dir="$fixture/config"
+  data_dir="$fixture/data"
+  source="$fixture/source"
+  unit="$fixture/mcpanel.service"
+  stop_marker="$fixture/panel-stopped"
+  mkdir -p -- "$install_dir" "$config_dir" "$data_dir/staging" "$source"
+  printf 'ASPNETCORE_URLS=http://0.0.0.0:6050\n' > "$config_dir/mcpanel.env"
+  printf '[Service]\n' > "$unit"
+  printf 'server-port=25565\n' > "$source/server.properties"
+  # shellcheck disable=SC2016
+  printf '#!/usr/bin/env bash\nif [[ "$1" == "--mcpanel-import-stage" ]]; then mkdir -p -- "$3"; exit 0; fi\nexit 99\n' \
+    > "$install_dir/McPanel.Api"
+  chmod 0755 "$install_dir/McPanel.Api"
+
+  (
+    require_root() { :; }
+    require_commands() { :; }
+    systemd_service_unit() { printf '%s\n' "$unit"; }
+    getent() { [[ "$1" == "passwd" && "$2" == "$PANEL_USER" ]] && printf '%s:x:999:999::/nonexistent:/usr/sbin/nologin\n' "$PANEL_USER"; }
+    # shellcheck disable=SC2032
+    chown() { :; }
+    wait_for_active() { :; }
+    wait_for_http() { :; }
+    systemctl() {
+      case "$1" in
+        is-active) return 0 ;;
+        stop)
+          find "$data_dir/staging" -name import-ready -type f -print -quit | grep -q . || return 1
+          : > "$stop_marker"
+          ;;
+        start) return 0 ;;
+      esac
+    }
+    runuser() {
+      local argument ready="" proceed="" attempt
+      for argument in "$@"; do
+        case "$argument" in
+          MCPANEL_IMPORT_READY_FILE=*) ready="${argument#*=}" ;;
+          MCPANEL_IMPORT_CONTINUE_FILE=*) proceed="${argument#*=}" ;;
+        esac
+      done
+      [[ -n "$ready" && -n "$proceed" ]] || return 90
+      : > "$ready"
+      for attempt in {1..200}; do [[ -f "$proceed" ]] && break; sleep 0.01; done
+      [[ -f "$proceed" && -f "$stop_marker" ]] || return 91
+      printf '{"ok":true,"serverId":"server-123"}\n'
+    }
+
+    output="$(root_import_server "$source" "$install_dir" "$config_dir" "$data_dir" mcpanel \
+      --name Imported --kind vanilla --version 1.21.8 --launch-target server.jar \
+      --java-runtime /usr/bin/java --memory-mb 2048 --port 25565 --accept-eula --non-interactive --json)"
+    assert_equal '{"ok":true,"serverId":"server-123"}' "$output" "coordinated import result"
+    [[ -f "$stop_marker" ]] || fail "panel was not stopped for the import commit window"
+  )
+}
+
 test_runtime_generation_wait() {
   (
     local pid_reads="$test_root/runtime-pid-reads"
@@ -244,6 +320,42 @@ test_runtime_generation_wait() {
   )
 }
 
+test_service_security_contract() {
+  local panel_unit runtime_unit instances_mode_count
+  panel_unit="$(render_panel_unit /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel)"
+  runtime_unit="$(render_runtime_unit /opt/mcpanel /etc/mcpanel /var/lib/mcpanel)"
+  [[ "$panel_unit" == *"LoadCredential=mcpanel.setup-token"* ]] || fail "panel unit does not load the setup credential"
+  [[ "$panel_unit" == *'Environment=MCPANEL_SETUP_TOKEN_FILE=%d/mcpanel.setup-token'* ]] || fail "panel unit does not expose the credential file"
+  [[ "$panel_unit" == *"UMask=0077"* ]] || fail "panel private umask changed"
+  [[ "$panel_unit" != *"RestrictSUIDSGID=yes"* ]] || fail "panel unit blocks regular-instance setgid permission repair"
+  [[ "$runtime_unit" == *"UMask=0007"* ]] || fail "runtime group-writable umask is missing"
+  [[ "$runtime_unit" == *"RestrictSUIDSGID=yes"* ]] || fail "runtime setuid/setgid restriction is missing"
+  [[ "$runtime_unit" != *"LoadCredential="* ]] || fail "runtime service should not receive the setup credential"
+  # Match the literal installer variable, not its value in this test process.
+  # shellcheck disable=SC2016
+  instances_mode_count="$(grep -c -- '-m 2750 -- "$data_dir/instances"' "$test_repo_root/mcpanel.sh")"
+  [[ "$instances_mode_count" -eq 2 ]] || fail "instances parent must be setgid and group-readable, but not group-writable"
+  # Match the literal installer variables, not their values in this test process.
+  # shellcheck disable=SC2016
+  [[ "$(grep -c -- 'repair_instance_permissions "$install_dir" "$data_dir"' "$test_repo_root/mcpanel.sh")" -eq 3 ]] ||
+    fail "install, update, and no-op repair must normalize database-classified instances"
+}
+
+test_systemd_minimum() {
+  (
+    # validate_host invokes this test stub indirectly.
+    # shellcheck disable=SC2317,SC2329
+    systemctl() { printf 'systemd 246 (246.1)\n'; }
+    assert_fails "systemd 246" validate_host
+  )
+  (
+    # validate_host invokes this test stub indirectly.
+    # shellcheck disable=SC2317,SC2329
+    systemctl() { printf 'systemd 247 (247.1)\n'; }
+    validate_host >/dev/null || fail "systemd 247 was rejected"
+  )
+}
+
 test_option_parsing
 test_rid_detection
 test_release_validation
@@ -251,5 +363,10 @@ test_unsafe_archive
 test_retry_and_handoff
 test_release_identity
 test_import_option_parsing
+test_import_wrapper_flag_detection
+test_import_restart_json
+test_import_stops_panel_after_validation
 test_runtime_generation_wait
+test_service_security_contract
+test_systemd_minimum
 printf 'MC Panel installer tests passed.\n'

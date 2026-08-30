@@ -11,6 +11,7 @@ using McPanel.Api.Data;
 using McPanel.Api.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Microsoft.Win32.SafeHandles;
 
 namespace McPanel.Api.Services;
 
@@ -133,7 +134,8 @@ public static class ServerImportSource
         long byteLimit,
         CancellationToken cancellationToken)
     {
-        var entries = new List<(string Source, string Relative, bool Directory, long Length, DateTime LastWriteUtc)>();
+        using var sourceRoot = OperatingSystem.IsLinux() ? OpenDirectoryHandle(source, source) : null;
+        var entries = new List<(string Source, string Relative, bool Directory, long Length, DateTime LastWriteUtc, bool Executable)>();
         var pending = new Stack<(string Path, string Relative)>();
         pending.Push((source, ""));
         long total = 0;
@@ -152,7 +154,7 @@ public static class ServerImportSource
                 if (++total > MaximumEntries) throw Invalid("IMPORT_ENTRY_LIMIT", $"The source contains more than {MaximumEntries:N0} entries.");
                 if (child is DirectoryInfo directory)
                 {
-                    entries.Add((directory.FullName, relative, true, 0, directory.LastWriteTimeUtc));
+                    entries.Add((directory.FullName, relative, true, 0, directory.LastWriteTimeUtc, false));
                     pending.Push((directory.FullName, relative));
                 }
                 else if (child is FileInfo file)
@@ -162,7 +164,9 @@ public static class ServerImportSource
                     try { length = file.Length; }
                     catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                     { throw Invalid("IMPORT_SOURCE_UNREADABLE", $"The source file could not be read: {file.FullName}", exception); }
-                    entries.Add((file.FullName, relative, false, length, file.LastWriteTimeUtc));
+                    var executable = !OperatingSystem.IsWindows() &&
+                        (File.GetUnixFileMode(file.FullName) & UnixFileMode.UserExecute) != 0;
+                    entries.Add((file.FullName, relative, false, length, file.LastWriteTimeUtc, executable));
                 }
                 else throw Invalid("IMPORT_SPECIAL_FILE", $"The source contains an unsupported file: {relative}");
             }
@@ -191,11 +195,13 @@ public static class ServerImportSource
             cancellationToken.ThrowIfCancellationRequested();
             var target = ResolveDestination(destination, entry.Relative);
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            await using var input = new FileStream(entry.Source, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            await using var input = sourceRoot is null
+                ? OpenPortableDirectoryFile(entry.Source)
+                : OpenDirectoryFile(sourceRoot, entry.Relative);
             await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
             copiedBytes = await CopyLimitedAsync(input, output, copiedBytes, byteLimit, cancellationToken);
             File.SetLastWriteTimeUtc(target, entry.LastWriteUtc);
-            SetFileMode(target);
+            SetFileMode(target, entry.Executable);
         }
     }
 
@@ -247,7 +253,9 @@ public static class ServerImportSource
                 await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
                 extractedBytes = await CopyLimitedAsync(input, output, extractedBytes, byteLimit, cancellationToken);
                 if (entry.LastWriteTime != default) File.SetLastWriteTimeUtc(target, entry.LastWriteTime.UtcDateTime);
-                SetFileMode(target);
+                var executable = !OperatingSystem.IsWindows() &&
+                    ((entry.ExternalAttributes >> 16) & 0x40) != 0;
+                SetFileMode(target, executable);
             }
         }
         catch (ServerImportException) { throw; }
@@ -298,7 +306,9 @@ public static class ServerImportSource
                     await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
                     extractedBytes = await CopyLimitedAsync(entry.DataStream ?? Stream.Null, output, extractedBytes, byteLimit, cancellationToken);
                     if (entry.ModificationTime != default) File.SetLastWriteTimeUtc(target, entry.ModificationTime.UtcDateTime);
-                    SetFileMode(target);
+                    var executable = !OperatingSystem.IsWindows() &&
+                        (entry.Mode & UnixFileMode.UserExecute) != 0;
+                    SetFileMode(target, executable);
                 }
             }
         }
@@ -378,14 +388,125 @@ public static class ServerImportSource
         { throw Invalid("IMPORT_SOURCE_UNREADABLE", $"The source file link count could not be inspected: {path}", exception); }
     }
 
-    private static class NativeMethods
+    private static FileStream OpenPortableDirectoryFile(string path)
+    {
+        RejectLink(path);
+        RejectHardLink(path);
+        return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+    }
+
+    internal static FileStream OpenDirectoryFile(string sourceRoot, string relative)
+    {
+        if (!OperatingSystem.IsLinux())
+            return OpenPortableDirectoryFile(ResolveDestination(sourceRoot, relative));
+        using var root = OpenDirectoryHandle(sourceRoot, sourceRoot);
+        return OpenDirectoryFile(root, relative);
+    }
+
+    private static FileStream OpenDirectoryFile(SafeFileHandle sourceRoot, string relative)
+    {
+        if (string.IsNullOrWhiteSpace(relative) || Path.IsPathRooted(relative))
+            throw Invalid("IMPORT_SOURCE_CHANGED", "The source file path changed while the import was being staged.");
+        var segments = relative.Split(Path.DirectorySeparatorChar);
+        if (segments.Any(segment => segment is "" or "." or ".."))
+            throw Invalid("IMPORT_SOURCE_CHANGED", "The source file path changed while the import was being staged.");
+
+        SafeFileHandle? parent = null;
+        try
+        {
+            var parentDescriptor = sourceRoot.DangerousGetHandle().ToInt32();
+            for (var index = 0; index < segments.Length - 1; index++)
+            {
+                var next = OpenNoFollow(parentDescriptor, segments[index],
+                    NativeMethods.ReadOnly | NativeMethods.CloseOnExec | NativeMethods.NoFollowOpen | NativeMethods.Directory,
+                    NativeMethods.DirectoryType, relative);
+                parent?.Dispose();
+                parent = next;
+                parentDescriptor = next.DangerousGetHandle().ToInt32();
+            }
+
+            var file = OpenNoFollow(parentDescriptor, segments[^1],
+                NativeMethods.ReadOnly | NativeMethods.CloseOnExec | NativeMethods.NoFollowOpen,
+                NativeMethods.RegularFileType, relative);
+            try { return new FileStream(file, FileAccess.Read, 128 * 1024, isAsync: false); }
+            catch
+            {
+                file.Dispose();
+                throw;
+            }
+        }
+        finally
+        {
+            parent?.Dispose();
+        }
+    }
+
+    private static SafeFileHandle OpenDirectoryHandle(string path, string displayPath) =>
+        OpenNoFollow(NativeMethods.AtCurrentWorkingDirectory, path,
+            NativeMethods.ReadOnly | NativeMethods.CloseOnExec | NativeMethods.NoFollowOpen | NativeMethods.Directory,
+            NativeMethods.DirectoryType, displayPath);
+
+    private static SafeFileHandle OpenNoFollow(int parentDescriptor, string path, int flags, ushort expectedType, string displayPath)
+    {
+        var descriptor = NativeMethods.OpenAt(parentDescriptor, path, flags);
+        if (descriptor < 0)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            throw Invalid("IMPORT_SOURCE_CHANGED",
+                $"The source path changed or became unsafe while the import was being staged: {displayPath}",
+                new Win32Exception(error));
+        }
+
+        var handle = new SafeFileHandle((IntPtr)descriptor, ownsHandle: true);
+        try
+        {
+            if (NativeMethods.Statx(descriptor, "", NativeMethods.EmptyPath | NativeMethods.NoFollow,
+                    NativeMethods.FileType | NativeMethods.LinkCount, out var status) != 0)
+                throw new Win32Exception(Marshal.GetLastPInvokeError());
+            if ((status.Mask & NativeMethods.FileType) == 0 ||
+                (status.Mode & NativeMethods.FileTypeMask) != expectedType)
+                throw Invalid("IMPORT_SPECIAL_FILE", $"The source contains an unsupported file: {displayPath}");
+            if (expectedType == NativeMethods.RegularFileType &&
+                ((status.Mask & NativeMethods.LinkCount) == 0 || status.LinkCountValue != 1))
+                throw Invalid("IMPORT_HARD_LINK", $"The source contains a hard-linked file: {displayPath}");
+            return handle;
+        }
+        catch (ServerImportException)
+        {
+            handle.Dispose();
+            throw;
+        }
+        catch (Exception exception) when (exception is Win32Exception or EntryPointNotFoundException)
+        {
+            handle.Dispose();
+            throw Invalid("IMPORT_SOURCE_UNREADABLE", $"The opened source path could not be verified: {displayPath}", exception);
+        }
+    }
+
+    internal static class NativeMethods
     {
         public const int AtCurrentWorkingDirectory = -100;
         public const int NoFollow = 0x100;
+        public const int EmptyPath = 0x1000;
+        public const int ReadOnly = 0;
+        public const int Directory = 0x10000;
+        public const int NoFollowOpen = 0x20000;
+        public const int CloseOnExec = 0x80000;
+        public const ushort FileTypeMask = 0xF000;
+        public const ushort DirectoryType = 0x4000;
+        public const ushort RegularFileType = 0x8000;
+        public const uint FileType = 0x00000001;
         public const uint LinkCount = 0x00000004;
+
+        [DllImport("libc", EntryPoint = "openat", SetLastError = true, CharSet = CharSet.Ansi)]
+        public static extern int OpenAt(int directoryFileDescriptor, string path, int flags);
 
         [DllImport("libc", EntryPoint = "statx", SetLastError = true, CharSet = CharSet.Ansi)]
         public static extern int Statx(int directoryFileDescriptor, string path, int flags, uint mask, out StatxBuffer buffer);
+
+        [DllImport("libc", EntryPoint = "fsync", SetLastError = true)]
+        public static extern int Fsync(int fileDescriptor);
 
         [StructLayout(LayoutKind.Sequential)]
         public struct StatxTimestamp
@@ -435,10 +556,29 @@ public static class ServerImportSource
         }
     }
 
-    private static long AvailableBytes(string path)
+    internal static long AvailableBytes(string path)
     {
-        try { return new DriveInfo(Path.GetPathRoot(Path.GetFullPath(path))!).AvailableFreeSpace; }
+        try
+        {
+            var fullPath = Path.GetFullPath(path);
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            var drive = DriveInfo.GetDrives()
+                .Where(candidate => candidate.IsReady && IsWithinMount(fullPath, candidate.RootDirectory.FullName, comparison))
+                .OrderByDescending(candidate => Path.GetFullPath(candidate.RootDirectory.FullName).Length)
+                .FirstOrDefault()
+                ?? throw new DriveNotFoundException($"No mounted filesystem contains {fullPath}.");
+            return drive.AvailableFreeSpace;
+        }
         catch (Exception exception) { throw Invalid("IMPORT_DISK_SPACE", "Free disk space could not be determined.", exception); }
+    }
+
+    private static bool IsWithinMount(string path, string mount, StringComparison comparison)
+    {
+        var fullMount = Path.GetFullPath(mount);
+        var trimmedMount = Path.TrimEndingDirectorySeparator(fullMount);
+        if (path.Equals(trimmedMount, comparison)) return true;
+        var prefix = Path.EndsInDirectorySeparator(fullMount) ? fullMount : fullMount + Path.DirectorySeparatorChar;
+        return path.StartsWith(prefix, comparison);
     }
 
     private static void EnsureBytes(long bytes, long byteLimit)
@@ -454,9 +594,12 @@ public static class ServerImportSource
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
-    private static void SetFileMode(string path)
+    private static void SetFileMode(string path, bool executable)
     {
-        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        if (OperatingSystem.IsWindows()) return;
+        var mode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        if (executable) mode |= UnixFileMode.UserExecute;
+        File.SetUnixFileMode(path, mode);
     }
 
     private static ServerImportException Invalid(string code, string message, Exception? inner = null) =>
@@ -469,18 +612,13 @@ public sealed partial class ServerImportService(
     JavaDiscoveryService javaDiscovery,
     IOptions<PanelOptions> options)
 {
+    private const int ImportActivationVersion = 1;
+    private static readonly JsonSerializerOptions ImportActivationJsonOptions = new(JsonSerializerDefaults.Web);
+
     public async Task<ServerImportInspection> InspectAsync(string root, CancellationToken cancellationToken)
     {
         root = ValidateRoot(root);
-        var propertiesPath = Path.Combine(root, "server.properties");
-        if (!File.Exists(propertiesPath))
-            throw Invalid("IMPORT_PROPERTIES_MISSING", "The source root must contain server.properties. Archives with a containing folder are not supported.");
-        RejectManagedLink(propertiesPath, root);
-        PropertiesDocument properties;
-        try { properties = PropertiesDocument.Parse(await File.ReadAllTextAsync(propertiesPath, cancellationToken)); }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or DecoderFallbackException)
-        { throw Invalid("IMPORT_PROPERTIES_INVALID", "server.properties could not be read as text.", exception); }
-        int? port = int.TryParse(properties.Get("server-port"), out var parsedPort) && parsedPort is >= 1024 and <= 65535 ? parsedPort : null;
+        var port = await ReadPropertiesPortAsync(root, cancellationToken);
 
         var launchers = FindLaunchers(root);
         if (launchers.Count == 0)
@@ -497,8 +635,8 @@ public sealed partial class ServerImportService(
         CancellationToken cancellationToken)
     {
         root = ValidateRoot(root);
-        _ = await InspectAsync(root, cancellationToken);
         if (request is null) throw Usage("IMPORT_REQUEST_REQUIRED", "Import settings are required.");
+        _ = await ReadPropertiesPortAsync(root, cancellationToken);
         var name = request.Name?.Trim() ?? "";
         if (!NameRegex().IsMatch(name))
             throw Usage("IMPORT_NAME_INVALID", "Server names may contain letters, numbers, spaces, '-' and '_' and must be 2 to 48 characters.", "name");
@@ -537,6 +675,7 @@ public sealed partial class ServerImportService(
             : Path.GetFileName(launchTarget).Equals("unix_args.txt", StringComparison.OrdinalIgnoreCase)
                 ? LaunchMode.ArgumentFile
                 : throw Usage("IMPORT_LAUNCHER_INVALID", "The launch target must be a .jar file or Forge-style unix_args.txt.", "launch-target");
+        if (launchMode == LaunchMode.Jar) ValidateExecutableJarLauncher(launchPath);
         ValidateLauncherKind(request.Kind, launchTarget, launchMode);
 
         await using (var conflictDb = await stateFactory.CreateDbContextAsync(cancellationToken))
@@ -594,6 +733,20 @@ public sealed partial class ServerImportService(
             requiredJava, request.MemoryMb, totalLimitMb, request.Port, request.JvmArguments ?? "");
     }
 
+    private static async Task<int?> ReadPropertiesPortAsync(string root, CancellationToken cancellationToken)
+    {
+        var propertiesPath = Path.Combine(root, "server.properties");
+        if (!File.Exists(propertiesPath))
+            throw Invalid("IMPORT_PROPERTIES_MISSING", "The source root must contain server.properties. Archives with a containing folder are not supported.");
+        RejectManagedLink(propertiesPath, root);
+        PropertiesDocument properties;
+        try { properties = PropertiesDocument.Parse(await File.ReadAllTextAsync(propertiesPath, cancellationToken)); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or DecoderFallbackException)
+        { throw Invalid("IMPORT_PROPERTIES_INVALID", "server.properties could not be read as text.", exception); }
+        return int.TryParse(properties.Get("server-port"), out var parsedPort) && parsedPort is >= 1024 and <= 65535
+            ? parsedPort : null;
+    }
+
     public async Task<ServerImportResult> ImportAsync(
         string root,
         ServerImportRequest request,
@@ -638,6 +791,8 @@ public sealed partial class ServerImportService(
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var activated = false;
+        var committed = false;
+        string? activationJournal = null;
         try
         {
             var existingRuntime = await db.JavaRuntimes.FindAsync([validated.Runtime.Id], cancellationToken);
@@ -666,14 +821,24 @@ public sealed partial class ServerImportService(
             }
             db.Servers.Add(entity);
             await db.SaveChangesAsync(cancellationToken);
+            activationJournal = CreateActivationJournal(id);
             Directory.Move(root, destination);
             activated = true;
+            if (!OperatingSystem.IsWindows()) InstancePermissionService.NormalizeTree(destination, false);
             await transaction.CommitAsync(cancellationToken);
+            committed = true;
+            try { File.Delete(activationJournal); } catch { }
         }
         catch (ServerImportException) { throw; }
         catch (Exception exception)
         {
-            try { await transaction.RollbackAsync(CancellationToken.None); } catch { }
+            var databaseRolledBack = false;
+            try
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                databaseRolledBack = true;
+            }
+            catch { }
             if (activated)
             {
                 try { Directory.Move(destination, root); }
@@ -683,11 +848,117 @@ public sealed partial class ServerImportService(
                         $"The import failed and the activated directory could not be rolled back: {destination}", innerException: new AggregateException(exception, rollbackException));
                 }
             }
+            if (!committed && databaseRolledBack && activationJournal is not null)
+            {
+                try { File.Delete(activationJournal); } catch { }
+            }
             throw new ServerImportException(ServerImportFailureKind.Operation, "IMPORT_FAILED", "The server could not be registered.", innerException: exception);
         }
 
         return new(id, entity.Name, entity.Kind, entity.Version, destination, entity.State);
     }
+
+    internal string CreateActivationJournal(Guid serverId)
+    {
+        Directory.CreateDirectory(paths.Staging);
+        var destination = Path.GetFullPath(paths.Instance(serverId));
+        var journal = Path.Combine(paths.Staging, $"import-activation-{serverId:N}.json");
+        var temporary = journal + $".{Guid.NewGuid():N}.tmp";
+        try
+        {
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                JsonSerializer.Serialize(stream,
+                    new ImportActivationJournal(ImportActivationVersion, serverId, destination),
+                    ImportActivationJsonOptions);
+                stream.Flush(true);
+            }
+            File.Move(temporary, journal, false);
+            FlushJournalDirectory(paths.Staging);
+            return journal;
+        }
+        finally
+        {
+            try { if (File.Exists(temporary)) File.Delete(temporary); } catch { }
+        }
+    }
+
+    internal static void FlushJournalDirectory(string directory)
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var descriptor = ServerImportSource.NativeMethods.OpenAt(
+            ServerImportSource.NativeMethods.AtCurrentWorkingDirectory,
+            directory,
+            ServerImportSource.NativeMethods.ReadOnly |
+            ServerImportSource.NativeMethods.CloseOnExec |
+            ServerImportSource.NativeMethods.NoFollowOpen |
+            ServerImportSource.NativeMethods.Directory);
+        if (descriptor < 0) throw new Win32Exception(Marshal.GetLastPInvokeError());
+        using var handle = new SafeFileHandle((IntPtr)descriptor, ownsHandle: true);
+        if (ServerImportSource.NativeMethods.Fsync(descriptor) != 0)
+            throw new Win32Exception(Marshal.GetLastPInvokeError());
+    }
+
+    public static async Task RecoverInterruptedActivationsAsync(
+        PanelPaths paths,
+        StateDbContext state,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(paths.Staging)) return;
+        foreach (var journalPath in Directory.EnumerateFiles(
+                     paths.Staging, "import-activation-*.json", SearchOption.TopDirectoryOnly))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                ImportActivationJournal journal;
+                await using (var stream = new FileStream(journalPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    journal = await JsonSerializer.DeserializeAsync<ImportActivationJournal>(
+                                  stream, ImportActivationJsonOptions, cancellationToken)
+                              ?? throw new InvalidDataException("The import activation journal is empty.");
+                var destination = Path.GetFullPath(paths.Instance(journal.ServerId));
+                if (journal.Version != ImportActivationVersion || journal.ServerId == Guid.Empty ||
+                    !Path.GetFullPath(journal.Destination).Equals(destination, StringComparison.Ordinal))
+                    throw new InvalidDataException("The import activation journal is invalid.");
+
+                var server = await state.Servers.SingleOrDefaultAsync(x => x.Id == journal.ServerId, cancellationToken);
+                if (server is not null)
+                {
+                    if (!Directory.Exists(destination))
+                    {
+                        server.State = ServerState.Error;
+                        server.ProcessId = null;
+                        server.UpdatedAt = DateTimeOffset.UtcNow;
+                        await state.SaveChangesAsync(cancellationToken);
+                        logger.LogError("Imported server {ServerId} committed without its activated directory; preserving {JournalPath}",
+                            journal.ServerId, journalPath);
+                        continue;
+                    }
+                    File.Delete(journalPath);
+                    logger.LogInformation("Finalized interrupted server import activation for {ServerId}", journal.ServerId);
+                    continue;
+                }
+
+                if (Directory.Exists(destination))
+                {
+                    if ((File.GetAttributes(destination) & FileAttributes.ReparsePoint) != 0)
+                        throw new InvalidDataException("The imported server activation destination is a symbolic link.");
+                    Directory.Delete(destination, true);
+                }
+                else if (File.Exists(destination))
+                    throw new InvalidDataException("The imported server activation destination is not a directory.");
+                File.Delete(journalPath);
+                logger.LogWarning("Rolled back interrupted server import activation for {ServerId}", journal.ServerId);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogError(exception, "Could not recover server import activation journal {JournalPath}; preserving it for recovery", journalPath);
+            }
+        }
+    }
+
+    private sealed record ImportActivationJournal(int Version, Guid ServerId, string Destination);
 
     public async Task<IReadOnlyList<JavaRuntimeEntity>> JavaRuntimesAsync(CancellationToken cancellationToken)
     {
@@ -698,9 +969,13 @@ public sealed partial class ServerImportService(
     private static List<ServerImportLauncher> FindLaunchers(string root)
     {
         var launchers = new List<ServerImportLauncher>();
-        foreach (var file in Directory.EnumerateFiles(root, "*.jar", SearchOption.TopDirectoryOnly).OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
+        foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.TopDirectoryOnly)
+                     .Where(file => Path.GetExtension(file).Equals(".jar", StringComparison.OrdinalIgnoreCase))
+                     .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
         {
             RejectManagedLink(file, root);
+            try { CustomJarService.ValidateExecutableJar(file); }
+            catch (PanelException) { continue; }
             var name = Path.GetFileName(file);
             ServerKind? kind = name.Contains("fabric", StringComparison.OrdinalIgnoreCase) ? ServerKind.Fabric
                 : name.Contains("paper", StringComparison.OrdinalIgnoreCase) || name.Contains("purpur", StringComparison.OrdinalIgnoreCase) || name.Contains("spigot", StringComparison.OrdinalIgnoreCase) ? ServerKind.Paper
@@ -723,6 +998,16 @@ public sealed partial class ServerImportService(
             }
         }
         return launchers;
+    }
+
+    private static void ValidateExecutableJarLauncher(string path)
+    {
+        try { CustomJarService.ValidateExecutableJar(path); }
+        catch (PanelException exception)
+        {
+            throw Invalid("IMPORT_LAUNCHER_INVALID",
+                "The selected JAR is not a readable executable server launcher.", exception);
+        }
     }
 
     private static string? SuggestedLoader(IReadOnlyList<ServerImportLauncher> launchers)

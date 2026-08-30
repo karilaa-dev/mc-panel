@@ -2,7 +2,7 @@ using System.ComponentModel.DataAnnotations;
 
 namespace McPanel.Api.Data;
 
-public enum ServerKind { Vanilla, Paper, Fabric, Forge, NeoForge, Gate }
+public enum ServerKind { Vanilla, Paper, Fabric, Forge, NeoForge, CustomJar, Gate }
 public enum LaunchMode { Jar, ArgumentFile }
 public enum ServerState { Installing, Stopped, Starting, Running, Stopping, BackingUp, Updating, Crashed, Error }
 public enum JobState { Queued, Running, Completed, Failed }
@@ -149,6 +149,7 @@ public sealed class BackupEntity
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     [MaxLength(64)] public string Reason { get; set; } = "Manual";
     [MaxLength(32)] public string State { get; set; } = "Completed";
+    [MaxLength(8192)] public string? SoftwareMetadataJson { get; set; }
 }
 
 public sealed class ScheduleEntity

@@ -37,6 +37,27 @@ public sealed record CreateServerRequest(
     string? LoaderVersion = null,
     string? InstallerVersion = null,
     bool IncludeExperimental = false,
+    string? CustomJarImportToken = null,
+    string? ClientRequestId = null);
+
+public sealed record CustomJarImportDto(
+    string Token, DateTimeOffset ExpiresAt, string FileName, long Size);
+public sealed record CustomJarCandidateDto(string Path, long Size);
+public sealed record ServerSoftwareDto(
+    ServerKind Kind, string Version, string? Build, string? LoaderVersion, string? InstallerVersion,
+    LaunchMode LaunchMode, string LaunchTarget, string JavaRuntimeId, int RequiredJavaMajor,
+    bool IsExperimental, IReadOnlyList<CustomJarCandidateDto> JarCandidates);
+public sealed record ChangeServerSoftwareRequest(
+    ServerKind Kind,
+    [property: Required, StringLength(64)] string Version,
+    [property: Required] string JavaRuntimeId,
+    bool IncludeExperimental = false,
+    bool CreateBackup = true,
+    string? Build = null,
+    string? LoaderVersion = null,
+    string? InstallerVersion = null,
+    string? CustomJarImportToken = null,
+    string? ExistingJarPath = null,
     string? ClientRequestId = null);
 
 public sealed record CreateGateServerRequest(
