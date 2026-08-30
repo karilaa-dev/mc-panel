@@ -1,0 +1,239 @@
+name: Build and release
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/McPanel.Web/package-lock.json
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix src/McPanel.Web
+
+      - name: Check shell scripts
+        run: |
+          bash -n mcpanel.sh start-local.sh reset-and-start-local.sh tests/mcpanel-installer-tests.sh
+          shellcheck mcpanel.sh start-local.sh reset-and-start-local.sh tests/mcpanel-installer-tests.sh
+          tests/mcpanel-installer-tests.sh
+
+      - name: Type-check the frontend
+        run: npm run typecheck --prefix src/McPanel.Web
+
+      - name: Lint the frontend
+        run: npm run lint --prefix src/McPanel.Web
+
+      - name: Test the frontend
+        run: npm test --prefix src/McPanel.Web
+
+      - name: Build the frontend
+        run: npm run build --prefix src/McPanel.Web
+
+      - name: Test the API
+        run: dotnet test McPanel.slnx --configuration Release
+
+  package:
+    name: Package ${{ matrix.rid }}
+    needs: validate
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        rid:
+          - linux-x64
+          - linux-arm64
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/McPanel.Web/package-lock.json
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build the self-contained application
+        env:
+          RID: ${{ matrix.rid }}
+        run: |
+          artifact_dir="artifacts/mcpanel-$RID"
+          archive="release-assets/mcpanel-$GITHUB_SHA-$RID.tar.gz"
+          ./mcpanel.sh build --rid "$RID" "$artifact_dir"
+          {
+            printf 'schema=1\n'
+            printf 'release=main\n'
+            printf 'commit=%s\n' "$GITHUB_SHA"
+            printf 'rid=%s\n' "$RID"
+          } > "$artifact_dir/.mcpanel-release"
+          mkdir -p release-assets
+          tar --create --gzip --file "$archive" --directory "$artifact_dir" .
+
+      - name: Verify the release archive
+        env:
+          RID: ${{ matrix.rid }}
+        run: |
+          archive="release-assets/mcpanel-$GITHUB_SHA-$RID.tar.gz"
+          verify_dir="$RUNNER_TEMP/verify-$RID"
+          mkdir -p "$verify_dir"
+          tar --extract --gzip --file "$archive" --directory "$verify_dir" --no-same-owner
+          test -x "$verify_dir/McPanel.Api"
+          test -f "$verify_dir/wwwroot/index.html"
+          test -f "$verify_dir/.mcpanel-release"
+          ! find "$verify_dir" -type l -print -quit | grep -q .
+          ! find "$verify_dir" ! -type d ! -type f -print -quit | grep -q .
+          grep -Fx "release=main" "$verify_dir/.mcpanel-release"
+          grep -Fx "commit=$GITHUB_SHA" "$verify_dir/.mcpanel-release"
+          grep -Fx "rid=$RID" "$verify_dir/.mcpanel-release"
+
+      - name: Save the release archive
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.rid }}
+          path: release-assets/*.tar.gz
+          if-no-files-found: error
+          retention-days: 2
+
+  publish:
+    name: Publish rolling main release
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: mcpanel-main-release
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Download packaged applications
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release assets
+        run: |
+          git fetch --no-tags origin main
+          current_tip="$(git rev-parse refs/remotes/origin/main)"
+          if [[ "$current_tip" != "$GITHUB_SHA" ]]; then
+            printf 'Skipping release because main has advanced to %s.\n' "$current_tip"
+            exit 0
+          fi
+
+          release_exists=0
+          previous_commit=""
+          previous_dir="$RUNNER_TEMP/previous-release"
+          mkdir -p "$previous_dir"
+          if gh release view main >/dev/null 2>&1; then
+            release_exists=1
+            if gh release download main --pattern release-manifest.txt --dir "$previous_dir" --clobber >/dev/null 2>&1; then
+              previous_commit="$(awk -F= '$1 == "commit" { print $2 }' "$previous_dir/release-manifest.txt")"
+              if [[ ! "$previous_commit" =~ ^[a-f0-9]{40}$ ]]; then previous_commit=""; fi
+            fi
+          else
+            gh release create main --target "$GITHUB_SHA" --title "MC Panel main" \
+              --notes "Preparing the first rolling main build." --prerelease --draft
+          fi
+
+          if [[ "$previous_commit" == "$GITHUB_SHA" ]]; then
+            printf 'Commit %s is already published.\n' "$GITHUB_SHA"
+            exit 0
+          fi
+
+          installer="release-assets/mcpanel-$GITHUB_SHA.sh"
+          cp -- mcpanel.sh "$installer"
+          chmod 0755 "$installer"
+          x64_archive="release-assets/mcpanel-$GITHUB_SHA-linux-x64.tar.gz"
+          arm64_archive="release-assets/mcpanel-$GITHUB_SHA-linux-arm64.tar.gz"
+          test -f "$x64_archive"
+          test -f "$arm64_archive"
+
+          script_sha="$(sha256sum --binary -- "$installer" | awk '{print $1}')"
+          x64_sha="$(sha256sum --binary -- "$x64_archive" | awk '{print $1}')"
+          arm64_sha="$(sha256sum --binary -- "$arm64_archive" | awk '{print $1}')"
+          manifest="release-assets/release-manifest.txt"
+          {
+            printf 'schema=1\n'
+            printf 'commit=%s\n' "$GITHUB_SHA"
+            printf 'script_sha256=%s\n' "$script_sha"
+            printf 'linux_x64_sha256=%s\n' "$x64_sha"
+            printf 'linux_arm64_sha256=%s\n' "$arm64_sha"
+          } > "$manifest"
+
+          gh release upload main "$installer" "$x64_archive" "$arm64_archive" --clobber
+
+          git tag --force main "$GITHUB_SHA"
+          git push --force origin refs/tags/main
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          {
+            printf 'Rolling build from the `main` branch.\n\n'
+            printf 'Commit: [`%s`](https://github.com/%s/commit/%s)\n' "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          } > "$notes_file"
+          gh release edit main --title "MC Panel main" --notes-file "$notes_file" --prerelease
+
+          # The manifest is the release pointer. Replace it only after every referenced asset exists.
+          gh release upload main "$manifest" --clobber
+          if ((release_exists == 0)); then gh release edit main --draft=false --prerelease; fi
+
+          while IFS=$'\t' read -r asset_id asset_name; do
+            [[ "$asset_name" == "release-manifest.txt" ]] && continue
+            case "$asset_name" in
+              "mcpanel-$GITHUB_SHA.sh"|"mcpanel-$GITHUB_SHA-linux-x64.tar.gz"|"mcpanel-$GITHUB_SHA-linux-arm64.tar.gz")
+                continue
+                ;;
+            esac
+            if [[ -n "$previous_commit" ]]; then
+              case "$asset_name" in
+                "mcpanel-$previous_commit.sh"|"mcpanel-$previous_commit-linux-x64.tar.gz"|"mcpanel-$previous_commit-linux-arm64.tar.gz")
+                  continue
+                  ;;
+              esac
+            fi
+            case "$asset_name" in
+              mcpanel-*.sh|mcpanel-*-linux-x64.tar.gz|mcpanel-*-linux-arm64.tar.gz)
+                gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" || \
+                  printf 'warning: could not remove old release asset %s\n' "$asset_name" >&2
+                ;;
+            esac
+          done < <(gh api "repos/$GITHUB_REPOSITORY/releases/tags/main" --jq '.assets[] | [.id, .name] | @tsv')

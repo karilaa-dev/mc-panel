@@ -17,27 +17,43 @@ Java itself.
 
 - Debian or Ubuntu with systemd and cgroup v2
 - An x86-64 or ARM64 processor
-- .NET 10 SDK
-- Node.js 22 or newer with npm
+- `curl`, GNU `tar`, and `sha256sum`
 - Passwordless `sudo` for the installer
 - A 64-bit Java runtime supported by each Minecraft version you plan to run
 
-The SDK and Node.js are needed to build from source. The installed panel is a
-self-contained .NET application.
+The default installer downloads a self-contained application from GitHub. The
+.NET 10 SDK and Node.js 22 or newer are needed only for source builds.
 
 ## Install
 
-Run the installer as your regular user:
+Download the installer and run it as your regular user:
 
 ```bash
+curl --fail --location --show-error \
+  --output mcpanel.sh \
+  https://raw.githubusercontent.com/karilaa-dev/mc-panel/main/mcpanel.sh
+chmod +x mcpanel.sh
 ./mcpanel.sh install
 ```
 
-The default address is `http://0.0.0.0:8080`, which listens on every network
+The default release is the newest successful build from `main`. The script
+downloads its current release copy and the application for the host
+architecture, verifies both against the release manifest, and then installs
+them. A saved copy of `mcpanel.sh` can be reused for later updates.
+
+Select the rolling release or a future version tag explicitly with
+`--release`:
+
+```bash
+./mcpanel.sh install --release main
+./mcpanel.sh install --release v1.2.3
+```
+
+The default address is `http://0.0.0.0:6050`, which listens on every network
 interface. You can bind the panel to one private address instead:
 
 ```bash
-./mcpanel.sh install --listen-address 192.168.1.20 --port 8080
+./mcpanel.sh install --listen-address 192.168.1.20 --port 6050
 ```
 
 The installer prints a setup token. Open the panel from another device on the
@@ -59,8 +75,20 @@ that account exists.
 ./mcpanel.sh uninstall
 ```
 
-`update` builds the current checkout and replaces the installed application.
-Running Minecraft servers stay online during a normal panel update.
+`update` downloads the newest build from the selected release and replaces the
+installed application. It does nothing when that commit is already installed.
+Running Minecraft servers stay online during a normal panel update. You can
+rerun the saved installer without downloading it again:
+
+```bash
+./mcpanel.sh update
+```
+
+Developers can build and install the current checkout instead:
+
+```bash
+./mcpanel.sh update --source local
+```
 
 `uninstall` removes the services and application but keeps configuration,
 worlds, databases, and backups. `purge --yes-really-purge` deletes those files

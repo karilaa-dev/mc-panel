@@ -7,6 +7,13 @@ readonly DEFAULT_INSTALL_DIR="/opt/mcpanel"
 readonly DEFAULT_CONFIG_DIR="/etc/mcpanel"
 readonly DEFAULT_DATA_DIR="/var/lib/mcpanel"
 readonly DEFAULT_SERVICE_NAME="mcpanel"
+readonly DEFAULT_PORT="6050"
+readonly DEFAULT_INSTALL_SOURCE="github"
+readonly DEFAULT_RELEASE="main"
+readonly GITHUB_REPOSITORY="karilaa-dev/mc-panel"
+readonly RELEASE_MANIFEST_NAME="release-manifest.txt"
+readonly RELEASE_METADATA_NAME=".mcpanel-release"
+readonly GITHUB_RELEASE_BASE_URL="${MCPANEL_RELEASE_BASE_URL:-https://github.com/$GITHUB_REPOSITORY/releases/download}"
 readonly PANEL_USER="mcpanel"
 readonly PANEL_GROUP="mcpanel"
 
@@ -20,8 +27,8 @@ Usage: ./mcpanel.sh COMMAND [options]
 Build and manage MC Panel as a Debian/Ubuntu systemd installation.
 
 Commands:
-  install             Build this checkout and install MC Panel
-  update              Build this checkout and update MC Panel
+  install             Download and install MC Panel
+  update              Download and update MC Panel
   uninstall           Remove services and binaries, preserving all data
   purge               Permanently remove services, binaries, and all data
   build OUTPUT         Build a self-contained artifact without installing it
@@ -29,14 +36,24 @@ Commands:
   help                 Show this help
 
 Install options:
+  --source github|local    Artifact source (default: github)
+  --release REF            GitHub release tag (default: main)
   --listen-address ADDRESS  HTTP bind address (default: 0.0.0.0)
-  --port PORT               HTTP port (default: 8080)
+  --port PORT               HTTP port (default: 6050)
   --install-dir PATH        Binary directory (default: /opt/mcpanel)
   --config-dir PATH         Configuration directory (default: /etc/mcpanel)
   --data-dir PATH           Data directory (default: /var/lib/mcpanel)
   --service-name NAME       systemd unit name (default: mcpanel)
 
-Update/uninstall/purge options:
+Update options:
+  --source github|local    Artifact source (default: github)
+  --release REF            GitHub release tag (default: main)
+  --install-dir PATH        Binary directory (default: /opt/mcpanel)
+  --config-dir PATH         Configuration directory (default: /etc/mcpanel)
+  --data-dir PATH           Data directory (default: /var/lib/mcpanel)
+  --service-name NAME       systemd unit name (default: mcpanel)
+
+Uninstall/purge options:
   --install-dir PATH        Binary directory (default: /opt/mcpanel)
   --config-dir PATH         Configuration directory (default: /etc/mcpanel)
   --data-dir PATH           Data directory (default: /var/lib/mcpanel)
@@ -46,8 +63,9 @@ Purge additionally requires --yes-really-purge.
 Build accepts --rid linux-x64|linux-arm64; otherwise host architecture is used.
 Status accepts --config-dir and --service-name.
 
-Run install and update as your regular development user. The script builds
-without privileges and uses passwordless sudo only for system changes.
+Run install and update as a regular user. GitHub artifacts are used by default.
+Use --source local to build and install the current checkout. The script uses
+passwordless sudo only for system changes.
 EOF
 }
 
@@ -138,6 +156,176 @@ validate_artifact() {
   [[ -d "$artifact_dir" ]] || die "publish artifact is not a directory: $artifact_dir"
   [[ -f "$artifact_dir/McPanel.Api" && ! -L "$artifact_dir/McPanel.Api" ]] || \
     die "publish directory does not contain a regular McPanel.Api executable"
+  [[ -f "$artifact_dir/wwwroot/index.html" && ! -L "$artifact_dir/wwwroot/index.html" ]] || \
+    die "publish directory does not contain the web client"
+}
+
+validate_install_source() {
+  case "$1" in
+    github|local) ;;
+    *) die "install source must be github or local" ;;
+  esac
+}
+
+validate_release_ref() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die "invalid release tag: $1"
+}
+
+validate_rid() {
+  case "$1" in
+    linux-x64|linux-arm64) ;;
+    *) die "unsupported runtime identifier: $1" ;;
+  esac
+}
+
+manifest_commit=""
+manifest_script_sha256=""
+manifest_linux_x64_sha256=""
+manifest_linux_arm64_sha256=""
+
+parse_release_manifest() {
+  local manifest_file="$1"
+  local -a lines=()
+
+  [[ -f "$manifest_file" && ! -L "$manifest_file" ]] || die "release manifest is missing or unsafe"
+  mapfile -t lines < "$manifest_file"
+  [[ ${#lines[@]} -eq 5 ]] || die "release manifest must contain exactly five lines"
+  [[ "${lines[0]}" == "schema=1" ]] || die "unsupported release manifest schema"
+  [[ "${lines[1]}" == commit=* ]] || die "release manifest is missing commit"
+  [[ "${lines[2]}" == script_sha256=* ]] || die "release manifest is missing script checksum"
+  [[ "${lines[3]}" == linux_x64_sha256=* ]] || die "release manifest is missing linux-x64 checksum"
+  [[ "${lines[4]}" == linux_arm64_sha256=* ]] || die "release manifest is missing linux-arm64 checksum"
+
+  manifest_commit="${lines[1]#commit=}"
+  manifest_script_sha256="${lines[2]#script_sha256=}"
+  manifest_linux_x64_sha256="${lines[3]#linux_x64_sha256=}"
+  manifest_linux_arm64_sha256="${lines[4]#linux_arm64_sha256=}"
+  [[ "$manifest_commit" =~ ^[a-f0-9]{40}$ ]] || die "release manifest commit is invalid"
+  [[ "$manifest_script_sha256" =~ ^[a-f0-9]{64}$ ]] || die "release manifest script checksum is invalid"
+  [[ "$manifest_linux_x64_sha256" =~ ^[a-f0-9]{64}$ ]] || die "release manifest linux-x64 checksum is invalid"
+  [[ "$manifest_linux_arm64_sha256" =~ ^[a-f0-9]{64}$ ]] || die "release manifest linux-arm64 checksum is invalid"
+}
+
+metadata_release=""
+metadata_commit=""
+metadata_rid=""
+
+parse_release_metadata() {
+  local metadata_file="$1"
+  local -a lines=()
+
+  [[ -f "$metadata_file" && ! -L "$metadata_file" ]] || die "release metadata is missing or unsafe"
+  mapfile -t lines < "$metadata_file"
+  [[ ${#lines[@]} -eq 4 ]] || die "release metadata must contain exactly four lines"
+  [[ "${lines[0]}" == "schema=1" ]] || die "unsupported release metadata schema"
+  [[ "${lines[1]}" == release=* ]] || die "release metadata is missing release"
+  [[ "${lines[2]}" == commit=* ]] || die "release metadata is missing commit"
+  [[ "${lines[3]}" == rid=* ]] || die "release metadata is missing runtime identifier"
+
+  metadata_release="${lines[1]#release=}"
+  metadata_commit="${lines[2]#commit=}"
+  metadata_rid="${lines[3]#rid=}"
+  validate_release_ref "$metadata_release"
+  [[ "$metadata_commit" =~ ^[a-f0-9]{40}$ ]] || die "release metadata commit is invalid"
+  validate_rid "$metadata_rid"
+}
+
+validate_release_metadata() {
+  local artifact_dir="$1" expected_release="$2" expected_commit="$3" expected_rid="$4"
+  parse_release_metadata "$artifact_dir/$RELEASE_METADATA_NAME"
+  [[ "$metadata_release" == "$expected_release" ]] || die "artifact release metadata does not match $expected_release"
+  [[ "$metadata_commit" == "$expected_commit" ]] || die "artifact commit metadata does not match the release manifest"
+  [[ "$metadata_rid" == "$expected_rid" ]] || die "artifact runtime metadata does not match $expected_rid"
+}
+
+installed_release_matches() {
+  local artifact_dir="$1" install_dir="$2"
+  local incoming_identity installed_identity
+  [[ -f "$artifact_dir/$RELEASE_METADATA_NAME" && -f "$install_dir/$RELEASE_METADATA_NAME" ]] || return 1
+  incoming_identity="$(parse_release_metadata "$artifact_dir/$RELEASE_METADATA_NAME"; printf '%s/%s\n' "$metadata_commit" "$metadata_rid")" || return 1
+  installed_identity="$(parse_release_metadata "$install_dir/$RELEASE_METADATA_NAME"; printf '%s/%s\n' "$metadata_commit" "$metadata_rid")" || return 1
+  [[ "$incoming_identity" == "$installed_identity" ]]
+}
+
+verify_sha256() {
+  local expected="$1" file_path="$2" actual
+  actual="$(sha256sum --binary -- "$file_path")"
+  actual="${actual%% *}"
+  [[ "$actual" == "$expected" ]] || die "checksum mismatch for $(basename -- "$file_path")"
+}
+
+validate_archive_members() {
+  local archive="$1" listing="$2" member normalized
+  tar --list --gzip --file "$archive" > "$listing" || die "release archive could not be read"
+  while IFS= read -r member; do
+    normalized="${member#./}"
+    [[ -n "$normalized" ]] || continue
+    [[ "$normalized" != /* ]] || die "release archive contains an absolute path"
+    case "/$normalized/" in
+      */../*) die "release archive contains a parent-directory path" ;;
+    esac
+  done < "$listing"
+}
+
+validate_extracted_tree() {
+  local artifact_dir="$1"
+  if find "$artifact_dir" -type l -print -quit | grep -q .; then die "release archive contains symbolic links"; fi
+  if find "$artifact_dir" ! -type d ! -type f -print -quit | grep -q .; then die "release archive contains a special file"; fi
+}
+
+download_release_asset() {
+  local release="$1" asset_name="$2" destination="$3"
+  curl --location --fail --silent --show-error \
+    --retry 2 --retry-delay 1 --connect-timeout 15 --max-time 300 \
+    --output "$destination" \
+    "$GITHUB_RELEASE_BASE_URL/$release/$asset_name"
+}
+
+prepare_remote_release_attempt() {
+  local release="$1" rid="$2" attempt_dir="$3"
+  local manifest_file installer_file archive_file archive_name installer_name expected_archive_sha
+  local artifact_dir="$attempt_dir/artifact"
+
+  mkdir -p -- "$attempt_dir" "$artifact_dir"
+  manifest_file="$attempt_dir/$RELEASE_MANIFEST_NAME"
+  download_release_asset "$release" "$RELEASE_MANIFEST_NAME" "$manifest_file"
+  parse_release_manifest "$manifest_file"
+
+  installer_name="mcpanel-$manifest_commit.sh"
+  archive_name="mcpanel-$manifest_commit-$rid.tar.gz"
+  installer_file="$attempt_dir/$installer_name"
+  archive_file="$attempt_dir/$archive_name"
+  case "$rid" in
+    linux-x64) expected_archive_sha="$manifest_linux_x64_sha256" ;;
+    linux-arm64) expected_archive_sha="$manifest_linux_arm64_sha256" ;;
+    *) die "unsupported runtime identifier: $rid" ;;
+  esac
+
+  download_release_asset "$release" "$installer_name" "$installer_file"
+  download_release_asset "$release" "$archive_name" "$archive_file"
+  verify_sha256 "$manifest_script_sha256" "$installer_file"
+  verify_sha256 "$expected_archive_sha" "$archive_file"
+  validate_archive_members "$archive_file" "$attempt_dir/archive-members.txt"
+  tar --extract --gzip --file "$archive_file" --directory "$artifact_dir" \
+    --no-same-owner --no-same-permissions
+  validate_extracted_tree "$artifact_dir"
+  validate_artifact "$artifact_dir"
+  validate_release_metadata "$artifact_dir" "$release" "$manifest_commit" "$rid"
+  chmod 0755 "$installer_file"
+  printf '%s\n' "$manifest_commit" > "$attempt_dir/commit"
+}
+
+prepare_remote_release() {
+  local release="$1" rid="$2" work_root="$3" attempt attempt_dir
+  for attempt in 1 2 3; do
+    attempt_dir="$work_root/attempt-$attempt"
+    if (prepare_remote_release_attempt "$release" "$rid" "$attempt_dir"); then
+      printf '%s\n' "$attempt_dir"
+      return 0
+    fi
+    warn "release download attempt $attempt of 3 failed"
+  done
+  return 1
 }
 
 publish_artifact() {
@@ -574,6 +762,14 @@ root_update() {
   validate_artifact "$artifact_dir"
   [[ "$artifact_dir" != "$install_dir" && "$artifact_dir" != "$install_dir/"* ]] || die "artifact must be outside the active installation"
 
+  if installed_release_matches "$artifact_dir" "$install_dir"; then
+    parse_release_metadata "$artifact_dir/$RELEASE_METADATA_NAME"
+    update_succeeded=1
+    trap - EXIT
+    info "MC Panel is already at $metadata_release commit $metadata_commit for $metadata_rid."
+    return 0
+  fi
+
   install_parent="$(dirname -- "$install_dir")"
   stage_dir="$(mktemp -d "$install_parent/.mcpanel-update.XXXXXX")"
   cp -a -- "$artifact_dir/." "$stage_dir/"
@@ -694,8 +890,8 @@ build_for_system_command() {
   require_passwordless_sudo
   rid="$(detect_rid)"
   build_root="$(mktemp -d /tmp/mcpanel-system-build.XXXXXX)"
-  cleanup_system_build() { local rc=$? cleanup_root="$1"; rm -rf -- "$cleanup_root"; trap - EXIT; exit "$rc"; }
-  trap "cleanup_system_build '$build_root'" EXIT
+  cleanup_system_build() { local rc=$?; rm -rf -- "$build_root"; trap - EXIT; exit "$rc"; }
+  trap cleanup_system_build EXIT
   artifact="$build_root/artifact"
   publish_artifact "$rid" "$artifact"
   if [[ "$action" == "install" ]]; then
@@ -707,11 +903,76 @@ build_for_system_command() {
   trap - EXIT
 }
 
+invoke_prepared_installer() {
+  local installer="$1"
+  shift
+  "$installer" __apply-prepared "$@"
+}
+
+run_remote_system_command() {
+  local action="$1" release="$2" install_dir="$3" config_dir="$4" data_dir="$5" service_name="$6"
+  local listen_address="${7:-}" port="${8:-}"
+  local work_root prepared_dir rid commit installer artifact
+
+  require_regular_user
+  require_passwordless_sudo
+  require_commands basename chmod curl find grep mkdir mktemp realpath sha256sum tar tr uname
+  validate_release_ref "$release"
+  rid="$(detect_rid)"
+  work_root="$(mktemp -d /tmp/mcpanel-release.XXXXXX)"
+  cleanup_remote_system_command() {
+    local rc=$?
+    rm -rf -- "$work_root"
+    trap - EXIT
+    exit "$rc"
+  }
+  trap cleanup_remote_system_command EXIT
+
+  info "Downloading MC Panel release $release for $rid."
+  prepared_dir="$(prepare_remote_release "$release" "$rid" "$work_root")" || \
+    die "could not download a consistent MC Panel release after three attempts"
+  commit="$(tr -d '\r\n' < "$prepared_dir/commit")"
+  installer="$prepared_dir/mcpanel-$commit.sh"
+  artifact="$prepared_dir/artifact"
+  invoke_prepared_installer "$installer" "$action" "$artifact" "$release" "$commit" "$rid" \
+    "$install_dir" "$config_dir" "$data_dir" "$service_name" "$listen_address" "$port"
+  rm -rf -- "$work_root"
+  trap - EXIT
+}
+
+apply_prepared_system_command() {
+  local action="$1" artifact="$2" release="$3" commit="$4" rid="$5"
+  local install_dir="$6" config_dir="$7" data_dir="$8" service_name="$9"
+  local listen_address="${10}" port="${11}"
+
+  require_regular_user
+  require_passwordless_sudo
+  validate_release_ref "$release"
+  [[ "$commit" =~ ^[a-f0-9]{40}$ ]] || die "invalid prepared release commit"
+  validate_rid "$rid"
+  artifact="$(realpath -e -- "$artifact")"
+  validate_artifact "$artifact"
+  validate_release_metadata "$artifact" "$release" "$commit" "$rid"
+  case "$action" in
+    install)
+      sudo -n -- "$script_path" __install "$artifact" "$install_dir" "$config_dir" "$data_dir" \
+        "$service_name" "$listen_address" "$port"
+      ;;
+    update)
+      sudo -n -- "$script_path" __update "$artifact" "$install_dir" "$config_dir" "$data_dir" "$service_name"
+      ;;
+    *) die "invalid prepared release action: $action" ;;
+  esac
+}
+
 command_install() {
   local install_dir="$DEFAULT_INSTALL_DIR" config_dir="$DEFAULT_CONFIG_DIR" data_dir="$DEFAULT_DATA_DIR"
-  local service_name="$DEFAULT_SERVICE_NAME" listen_address="0.0.0.0" port="8080"
+  local service_name="$DEFAULT_SERVICE_NAME" listen_address="0.0.0.0" port="$DEFAULT_PORT"
+  local source="$DEFAULT_INSTALL_SOURCE" release="$DEFAULT_RELEASE" release_set=0
   while (($#)); do
     case "$1" in
+      --source) (($# >= 2)) || die "$1 requires a value"; source="$2"; shift 2 ;;
+      --release) (($# >= 2)) || die "$1 requires a value"; release="$2"; release_set=1; shift 2 ;;
       --listen-address) (($# >= 2)) || die "$1 requires a value"; listen_address="$2"; shift 2 ;;
       --port) (($# >= 2)) || die "$1 requires a value"; port="$2"; shift 2 ;;
       --install-dir) (($# >= 2)) || die "$1 requires a value"; install_dir="$2"; shift 2 ;;
@@ -722,13 +983,23 @@ command_install() {
       *) die "unknown install option: $1" ;;
     esac
   done
-  build_for_system_command install "$install_dir" "$config_dir" "$data_dir" "$service_name" "$listen_address" "$port"
+  validate_install_source "$source"
+  if [[ "$source" == "local" ]]; then
+    ((!release_set)) || die "--release cannot be used with --source local"
+    build_for_system_command install "$install_dir" "$config_dir" "$data_dir" "$service_name" "$listen_address" "$port"
+  else
+    validate_release_ref "$release"
+    run_remote_system_command install "$release" "$install_dir" "$config_dir" "$data_dir" "$service_name" "$listen_address" "$port"
+  fi
 }
 
 command_update() {
   local install_dir="$DEFAULT_INSTALL_DIR" config_dir="$DEFAULT_CONFIG_DIR" data_dir="$DEFAULT_DATA_DIR" service_name="$DEFAULT_SERVICE_NAME"
+  local source="$DEFAULT_INSTALL_SOURCE" release="$DEFAULT_RELEASE" release_set=0
   while (($#)); do
     case "$1" in
+      --source) (($# >= 2)) || die "$1 requires a value"; source="$2"; shift 2 ;;
+      --release) (($# >= 2)) || die "$1 requires a value"; release="$2"; release_set=1; shift 2 ;;
       --install-dir) (($# >= 2)) || die "$1 requires a value"; install_dir="$2"; shift 2 ;;
       --config-dir) (($# >= 2)) || die "$1 requires a value"; config_dir="$2"; shift 2 ;;
       --data-dir) (($# >= 2)) || die "$1 requires a value"; data_dir="$2"; shift 2 ;;
@@ -737,7 +1008,14 @@ command_update() {
       *) die "unknown update option: $1" ;;
     esac
   done
-  build_for_system_command update "$install_dir" "$config_dir" "$data_dir" "$service_name"
+  validate_install_source "$source"
+  if [[ "$source" == "local" ]]; then
+    ((!release_set)) || die "--release cannot be used with --source local"
+    build_for_system_command update "$install_dir" "$config_dir" "$data_dir" "$service_name"
+  else
+    validate_release_ref "$release"
+    run_remote_system_command update "$release" "$install_dir" "$config_dir" "$data_dir" "$service_name"
+  fi
 }
 
 command_remove() {
@@ -802,6 +1080,11 @@ command_status() {
   return "$rc"
 }
 
+if [[ "${MCPANEL_SOURCE_ONLY:-0}" == "1" ]]; then
+  # shellcheck disable=SC2317
+  return 0 2>/dev/null || exit 0
+fi
+
 command="${1:-help}"
 if (($#)); then shift; fi
 case "$command" in
@@ -812,6 +1095,7 @@ case "$command" in
   build) command_build "$@" ;;
   status) command_status "$@" ;;
   help|-h|--help) usage ;;
+  __apply-prepared) [[ $# -eq 11 ]] || die "invalid prepared release invocation"; apply_prepared_system_command "$@" ;;
   __install) [[ $# -eq 7 ]] || die "invalid internal install invocation"; root_install "$@" ;;
   __update) [[ $# -eq 5 ]] || die "invalid internal update invocation"; root_update "$@" ;;
   __uninstall) [[ $# -eq 5 ]] || die "invalid internal uninstall invocation"; root_uninstall "$@" ;;
