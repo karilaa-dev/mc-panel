@@ -46,7 +46,7 @@ public sealed class ServerSoftwareService(
             if (requestId is not null && await db.Jobs.AsNoTracking()
                     .SingleOrDefaultAsync(x => x.ClientRequestId == requestId, cancellationToken) is { } existing)
                 return await operations.GetAsync(existing.Id, cancellationToken)
-                    ?? throw new PanelException(500, "OPERATION_FAILED", "The existing software change job could not be loaded.");
+                    ?? throw new PanelException(500, "OPERATION_FAILED", "The existing server core change job could not be loaded.");
             var server = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == serverId, cancellationToken)
                 ?? throw PanelProblems.NotFound("Server");
             EnsureRegular(server);
@@ -72,7 +72,7 @@ public sealed class ServerSoftwareService(
         if (request.CreateBackup)
         {
             await operations.ProgressAsync(jobId, 5, "Creating the pre-change backup", cancellationToken);
-            await backups.CreateLockedAsync(serverId, jobId, "Before software change", cancellationToken);
+            await backups.CreateLockedAsync(serverId, jobId, "Before server core change", cancellationToken);
             await db.Entry(server).ReloadAsync(cancellationToken);
             EnsureStopped(server);
         }
@@ -113,13 +113,13 @@ public sealed class ServerSoftwareService(
             }
             else
             {
-                await operations.ProgressAsync(jobId, 15, "Resolving official software metadata", cancellationToken);
+                await operations.ProgressAsync(jobId, 15, "Resolving official server core metadata", cancellationToken);
                 var plan = await catalog.ResolveAsync(request.Kind, request.Version, request.Build,
                     request.LoaderVersion, request.InstallerVersion, request.IncludeExperimental, cancellationToken);
                 requiredJava = plan.RequiredJavaMajor;
                 EnsureJava(runtime.Major, requiredJava, request.Kind, request.Version);
                 var artifact = Path.Combine(stage, plan.Artifact.FileName);
-                await operations.ProgressAsync(jobId, 30, "Downloading and verifying server software", cancellationToken);
+                await operations.ProgressAsync(jobId, 30, "Downloading and verifying server core", cancellationToken);
                 await downloads.DownloadAsync(plan.Artifact, artifact, cancellationToken);
                 if (ServerInstallerService.IsModLoader(request.Kind))
                 {
@@ -175,18 +175,18 @@ public sealed class ServerSoftwareService(
             catch (Exception cleanupException)
             {
                 logger.LogWarning(cleanupException,
-                    "Software activation committed for {ServerId}, but rollback cleanup will be retried at startup", serverId);
+                    "Server core activation committed for {ServerId}, but rollback cleanup will be retried at startup", serverId);
             }
             try { modpacks.Delete(serverId); }
             catch (Exception exception) { logger.LogWarning(exception, "Could not remove stale modpack baseline for {ServerId}", serverId); }
             try
             {
                 await console.AppendAsync(serverId, "system",
-                    $"Changed server software to {(request.Kind == ServerKind.CustomJar ? "Custom JAR" : request.Kind)} for Minecraft {server.Version}. Existing worlds and content were preserved.",
+                    $"Changed server core to {(request.Kind == ServerKind.CustomJar ? "Custom JAR" : request.Kind)} for Minecraft {server.Version}. Existing worlds and content were preserved.",
                     cancellationToken);
             }
-            catch (Exception exception) { logger.LogWarning(exception, "Could not append software change log for {ServerId}", serverId); }
-            await operations.ProgressAsync(jobId, 95, "Software change complete", cancellationToken);
+            catch (Exception exception) { logger.LogWarning(exception, "Could not append server core change log for {ServerId}", serverId); }
+            await operations.ProgressAsync(jobId, 95, "Server core change complete", cancellationToken);
         }
         catch (Exception exception)
         {
@@ -202,13 +202,13 @@ public sealed class ServerSoftwareService(
                 {
                     rollbackFailure = rollbackException;
                     logger.LogError(rollbackException,
-                        "Software activation rollback failed for {ServerId}; preserving rollback files", serverId);
+                        "Server core activation rollback failed for {ServerId}; preserving rollback files", serverId);
                 }
                 original.Restore(server);
                 try { await db.SaveChangesAsync(CancellationToken.None); } catch { }
             }
             if (rollbackFailure is not null)
-                throw new AggregateException("The software change failed and its launch files could not be fully restored.",
+                throw new AggregateException("The server core change failed and its launch files could not be fully restored.",
                     exception, rollbackFailure);
             throw;
         }
@@ -228,13 +228,13 @@ public sealed class ServerSoftwareService(
     private void EnsureStopped(ServerEntity server)
     {
         if (server.State != ServerState.Stopped || processStatus.IsRunning(server.Id))
-            throw PanelProblems.Conflict("SERVER_NOT_STOPPED", "Stop the server before changing its software.");
+            throw PanelProblems.Conflict("SERVER_NOT_STOPPED", "Stop the server before changing its server core.");
     }
 
     private static void EnsureRegular(ServerEntity server)
     {
         if (server.Kind == ServerKind.Gate)
-            throw PanelProblems.Conflict("GATE_SOFTWARE_UNSUPPORTED", "Gate proxy software is managed from the Gate page.");
+            throw PanelProblems.Conflict("GATE_SOFTWARE_UNSUPPORTED", "Gate proxy configuration is managed from the Gate page.");
     }
 
     private static void EnsureJava(int actual, int required, ServerKind kind, string version)
@@ -245,8 +245,8 @@ public sealed class ServerSoftwareService(
 
     private static void Validate(ChangeServerSoftwareRequest request)
     {
-        if (request is null) throw PanelProblems.Validation("A software change request is required.");
-        if (request.Kind == ServerKind.Gate) throw PanelProblems.Validation("Gate is not regular server software.");
+        if (request is null) throw PanelProblems.Validation("A server core change request is required.");
+        if (request.Kind == ServerKind.Gate) throw PanelProblems.Validation("Gate is not a regular server core.");
         if (string.IsNullOrWhiteSpace(request.Version) || request.Version.Length > 64 || string.IsNullOrWhiteSpace(request.JavaRuntimeId))
             throw PanelProblems.Validation("Minecraft version and Java runtime are required.");
         var upload = !string.IsNullOrWhiteSpace(request.CustomJarImportToken);
@@ -254,9 +254,9 @@ public sealed class ServerSoftwareService(
         if (request.Kind == ServerKind.CustomJar && upload == existing)
             throw PanelProblems.Validation("Choose exactly one custom JAR source: a new upload or an existing JAR.");
         if (request.Kind != ServerKind.CustomJar && (upload || existing))
-            throw PanelProblems.Validation("Custom JAR sources are only valid for Custom JAR software.");
+            throw PanelProblems.Validation("Custom JAR sources are only valid for a Custom JAR server core.");
         if (request.Build?.Length > 64 || request.LoaderVersion?.Length > 64 || request.InstallerVersion?.Length > 64)
-            throw PanelProblems.Validation("Software metadata values are too long.");
+            throw PanelProblems.Validation("Server core metadata values are too long.");
     }
 
     private static string? NormalizeRequestId(string? value)

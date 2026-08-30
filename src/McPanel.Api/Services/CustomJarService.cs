@@ -22,7 +22,7 @@ public sealed class CustomJarService(
             throw new PanelException(413, "UPLOAD_TOO_LARGE", "The JAR exceeds the configured upload limit.");
         var fileName = Path.GetFileName(file.FileName);
         if (!fileName.EndsWith(".jar", StringComparison.OrdinalIgnoreCase))
-            throw PanelProblems.Validation("Custom server software must use a .jar file name.");
+            throw PanelProblems.Validation("A custom server core must use a .jar file name.");
 
         var token = Guid.NewGuid().ToString("N");
         var root = Path.Combine(paths.CustomJarImports, token);

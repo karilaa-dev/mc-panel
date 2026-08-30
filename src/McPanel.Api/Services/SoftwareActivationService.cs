@@ -30,7 +30,7 @@ public sealed class SoftwareActivationService(
                 if (activation.IsCommitRecorded)
                 {
                     activation.Commit();
-                    logger.LogInformation("Finalized interrupted software activation for {ServerId}", activation.ServerId);
+                    logger.LogInformation("Finalized interrupted server core activation for {ServerId}", activation.ServerId);
                     continue;
                 }
 
@@ -40,11 +40,11 @@ public sealed class SoftwareActivationService(
                     await state.SaveChangesAsync(cancellationToken);
                 }
                 activation.Rollback();
-                logger.LogWarning("Rolled back interrupted software activation for {ServerId}", activation.ServerId);
+                logger.LogWarning("Rolled back interrupted server core activation for {ServerId}", activation.ServerId);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                logger.LogError(exception, "Could not recover software activation journal {RollbackDirectory}; preserving it for recovery", rollback);
+                logger.LogError(exception, "Could not recover server core activation journal {RollbackDirectory}; preserving it for recovery", rollback);
             }
         }
     }
@@ -229,10 +229,10 @@ public sealed class SoftwareActivationService(
             while (!Directory.Exists(current))
             {
                 if (File.Exists(current))
-                    throw PanelProblems.Conflict("SOFTWARE_ACTIVATION_CONFLICT", "A file blocks a required software directory.");
+                    throw PanelProblems.Conflict("SOFTWARE_ACTIVATION_CONFLICT", "A file blocks a required server core directory.");
                 missing.Push(current);
                 current = Path.GetDirectoryName(current)
-                    ?? throw PanelProblems.Conflict("SOFTWARE_ACTIVATION_CONFLICT", "A software path escaped the server instance.");
+                    ?? throw PanelProblems.Conflict("SOFTWARE_ACTIVATION_CONFLICT", "A server core path escaped the server instance.");
             }
             while (missing.TryPop(out var item))
             {
@@ -282,7 +282,7 @@ public sealed class SoftwareActivationService(
                 catch (DirectoryNotFoundException) { break; }
                 if ((attributes & FileAttributes.ReparsePoint) != 0)
                     throw PanelProblems.Conflict("SOFTWARE_ACTIVATION_CONFLICT",
-                        "A symbolic link blocks a software activation path.");
+                        "A symbolic link blocks a server core activation path.");
             }
         }
 

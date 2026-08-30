@@ -172,7 +172,7 @@ public sealed partial class ServerInstallerService(
         return kind == ServerKind.Gate
             ? await gate.QueueUpdateAsync(id, false, cancellationToken)
             : kind == ServerKind.CustomJar
-                ? throw PanelProblems.Conflict("CUSTOM_JAR_UPDATE_UNSUPPORTED", "Change Custom JAR software from the Software page.")
+                ? throw PanelProblems.Conflict("CUSTOM_JAR_UPDATE_UNSUPPORTED", "Change the Custom JAR server core from Runtime.")
                 : await operations.EnqueueAsync("Update", id, (_, jobId, token) => UpdateAsync(id, jobId, token), cancellationToken);
     }
 

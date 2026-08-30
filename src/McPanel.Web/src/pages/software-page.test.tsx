@@ -29,7 +29,7 @@ function renderPage() {
   return render(<MemoryRouter initialEntries={["/servers/server-1/runtime"]}><QueryClientProvider client={client}><Routes><Route path="servers/:serverId/runtime" element={<RuntimeSettingsPage />} /></Routes></QueryClientProvider></MemoryRouter>)
 }
 
-describe("Runtime software settings", () => {
+describe("Runtime server core settings", () => {
   beforeEach(() => {
     mockedApi.server.mockResolvedValue({
       id: "server-1", name: "Survival", kind: "Paper", version: "1.21.8", state: "Stopped", port: 25565,
@@ -67,39 +67,39 @@ describe("Runtime software settings", () => {
     const user = userEvent.setup()
     renderPage()
 
-    expect(await screen.findByText("Current software")).toBeInTheDocument()
+    expect(await screen.findByText("Current server core")).toBeInTheDocument()
     expect(screen.getByRole("checkbox", { name: /Create a backup/ })).toBeChecked()
-    const review = screen.getByRole("button", { name: "Review software change" })
+    const review = screen.getByRole("button", { name: "Review server core change" })
     await waitFor(() => expect(review).toBeEnabled())
     await user.click(review)
     expect(await screen.findByRole("heading", { name: "Change to Paper?" })).toBeVisible()
     expect(screen.getByText(/Backup required before activation/)).toBeVisible()
-    await user.click(screen.getByRole("button", { name: "Change software" }))
+    await user.click(screen.getByRole("button", { name: "Change server core" }))
 
     await waitFor(() => expect(mockedApi.changeSoftware).toHaveBeenCalledWith("server-1", expect.objectContaining({
       kind: "Paper", version: "1.21.8", javaRuntimeId: "java-21", build: "100", createBackup: true,
     })))
   })
 
-  it("disables software changes while the server is running", async () => {
+  it("disables server core changes while the server is running", async () => {
     mockedApi.server.mockResolvedValue({ ...(await mockedApi.server("server-1")), state: "Running" })
     renderPage()
 
     expect(await screen.findByText("Stop the server first")).toBeVisible()
-    expect(screen.getByRole("button", { name: "Review software change" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Review server core change" })).toBeDisabled()
   })
 
-  it("reuses the client request ID when a software change is retried", async () => {
+  it("reuses the client request ID when a server core change is retried", async () => {
     const user = userEvent.setup()
     mockedApi.changeSoftware
       .mockRejectedValueOnce(new Error("The response was lost."))
       .mockResolvedValueOnce({ id: "change-job", type: "ChangeSoftware", state: "Queued", progress: 0, serverId: "server-1" })
     renderPage()
 
-    const review = await screen.findByRole("button", { name: "Review software change" })
+    const review = await screen.findByRole("button", { name: "Review server core change" })
     await waitFor(() => expect(review).toBeEnabled())
     await user.click(review)
-    const submit = await screen.findByRole("button", { name: "Change software" })
+    const submit = await screen.findByRole("button", { name: "Change server core" })
     await user.click(submit)
     await waitFor(() => expect(mockedApi.changeSoftware).toHaveBeenCalledTimes(1))
     const firstRequest = mockedApi.changeSoftware.mock.calls[0][1]
@@ -115,10 +115,10 @@ describe("Runtime software settings", () => {
     const user = userEvent.setup()
     renderPage()
 
-    const review = await screen.findByRole("button", { name: "Review software change" })
+    const review = await screen.findByRole("button", { name: "Review server core change" })
     await waitFor(() => expect(review).toBeEnabled())
     await user.click(review)
-    await user.click(await screen.findByRole("button", { name: "Change software" }))
+    await user.click(await screen.findByRole("button", { name: "Change server core" }))
 
     await waitFor(() => expect(mockedApi.job).toHaveBeenCalledWith("change-job"))
     await waitFor(() => expect(mockedApi.software.mock.calls.length).toBeGreaterThan(1))
