@@ -10,6 +10,9 @@ export MCPANEL_SOURCE_ONLY=1
 # shellcheck disable=SC1091
 source "$test_repo_root/mcpanel.sh"
 
+test_command_path="$test_root/global-bin/mcpanel"
+system_manager_command_path() { printf '%s\n' "$test_command_path"; }
+
 cleanup() {
   rm -rf -- "$test_root"
 }
@@ -207,7 +210,7 @@ test_import_option_parsing() {
   mkdir -p -- "$source"
   (
     require_regular_user() { :; }
-    require_passwordless_sudo() { :; }
+    require_sudo_access() { :; }
     require_commands() { :; }
     sudo() { printf 'sudo|%s\n' "$*"; }
     output="$(command_import_server "$source" \
@@ -358,6 +361,195 @@ test_systemd_minimum() {
   )
 }
 
+test_setup_wizard() {
+  local fixture="$test_root/setup-wizard" install_dir="$test_root/setup-wizard/install"
+  local config_dir="$test_root/setup-wizard/config" data_dir="$test_root/setup-wizard/data" output
+  local tty_fixture="$test_root/setup-wizard/tty" tty_stderr="$test_root/setup-wizard/stderr"
+  mkdir -p -- "$fixture"
+
+  output="$({
+    require_regular_user() { :; }
+    require_commands() { :; }
+    validate_host() { :; }
+    wizard_open_tty() { :; }
+    wizard_close_tty() { :; }
+    wizard_prompt() { printf -v "$1" '%s' "$3"; }
+    wizard_confirm() { return 0; }
+    command_install() { printf 'install|%s\n' "$*"; }
+    command_update() { fail "fresh setup selected update"; }
+    command_setup --install-dir "$install_dir" --config-dir "$config_dir" --data-dir "$data_dir"
+  })"
+  [[ "$output" == *"install|--source github --release main --listen-address 0.0.0.0 --port 6050 --install-dir $install_dir --config-dir $config_dir --data-dir $data_dir --service-name mcpanel"* ]] || \
+    fail "setup wizard did not pass its default install values"
+
+  output="$({
+    require_regular_user() { :; }
+    require_commands() { :; }
+    validate_host() { :; }
+    wizard_open_tty() { :; }
+    wizard_close_tty() { :; }
+    wizard_prompt() { fail "explicit network settings unexpectedly prompted"; }
+    wizard_confirm() { return 0; }
+    command_install() { printf 'install|%s\n' "$*"; }
+    command_update() { fail "fresh setup selected update"; }
+    command_setup --listen-address 192.168.1.20 --port 6500 \
+      --install-dir "$install_dir" --config-dir "$config_dir" --data-dir "$data_dir"
+  })"
+  [[ "$output" == *"--listen-address 192.168.1.20 --port 6500"* ]] || \
+    fail "setup wizard did not preserve explicit network settings"
+
+  mkdir -p -- "$install_dir"
+  printf '#!/usr/bin/env bash\n' > "$install_dir/McPanel.Api"
+  output="$({
+    require_regular_user() { :; }
+    require_commands() { :; }
+    validate_host() { :; }
+    wizard_open_tty() { :; }
+    wizard_close_tty() { :; }
+    wizard_prompt() { fail "existing setup prompted for network settings"; }
+    wizard_confirm() { return 0; }
+    command_install() { fail "existing setup selected install"; }
+    command_update() { printf 'update|%s\n' "$*"; }
+    command_setup --install-dir "$install_dir" --config-dir "$config_dir" --data-dir "$data_dir"
+  })"
+  [[ "$output" == *"update|--source github --release main --install-dir $install_dir --config-dir $config_dir --data-dir $data_dir --service-name mcpanel"* ]] || \
+    fail "setup wizard did not select update for an existing installation"
+
+  output="$({
+    require_regular_user() { :; }
+    require_commands() { :; }
+    validate_host() { :; }
+    wizard_open_tty() { :; }
+    wizard_close_tty() { :; }
+    wizard_prompt() { :; }
+    wizard_confirm() { return 1; }
+    command_install() { fail "cancelled setup performed an install"; }
+    command_update() { fail "cancelled setup performed an update"; }
+    command_setup --install-dir "$install_dir" --config-dir "$config_dir" --data-dir "$data_dir"
+  })"
+  [[ "$output" == *"Setup cancelled."* ]] || fail "cancelled setup did not report cancellation"
+
+  : > "$tty_fixture"
+  (
+    terminal_path() { printf '%s\n' "$tty_fixture"; }
+    wizard_open_tty
+    printf 'wizard stderr remains visible\n' >&2
+    wizard_close_tty
+  ) 2> "$tty_stderr"
+  grep -Fq 'wizard stderr remains visible' "$tty_stderr" || \
+    fail "opening the wizard terminal permanently redirected stderr"
+}
+
+test_sudo_access() {
+  (
+    local authenticated=0 prompts=0
+    require_commands() { :; }
+    interactive_terminal_available() { return 0; }
+    sudo() {
+      if [[ "$1" == "-n" && "$2" == "true" ]]; then ((authenticated)); return; fi
+      return 1
+    }
+    sudo_validate_interactively() { authenticated=1; prompts=$((prompts + 1)); }
+    require_sudo_access
+    assert_equal "1" "$prompts" "sudo prompt count"
+    assert_equal "noninteractive" "$sudo_mode" "cached sudo mode"
+  )
+  (
+    local prompts=0 handoffs=0
+    sudo_mode="noninteractive"
+    require_commands() { :; }
+    interactive_terminal_available() { return 0; }
+    sudo_validate_interactively() { prompts=$((prompts + 1)); }
+    sudo() {
+      if [[ "$1" == "-n" ]]; then return 1; fi
+      if [[ "$1" == "--" && "$2" == "root-operation" ]]; then
+        handoffs=$((handoffs + 1))
+        return 0
+      fi
+      return 1
+    }
+    require_sudo_access
+    assert_equal "1" "$prompts" "non-caching sudo validation count"
+    assert_equal "interactive" "$sudo_mode" "non-caching sudo mode"
+    sudo_system root-operation
+    assert_equal "1" "$handoffs" "interactive sudo handoff count"
+  )
+  (
+    # shellcheck disable=SC2317,SC2329 # These stubs are invoked through assert_fails.
+    require_commands() { :; }
+    # shellcheck disable=SC2317,SC2329
+    interactive_terminal_available() { return 1; }
+    # shellcheck disable=SC2317,SC2329
+    sudo() { return 1; }
+    assert_fails "headless sudo authentication" require_sudo_access
+  )
+}
+
+test_system_manager_command() {
+  local manager_dir="$test_root/global-bin" target="$test_command_path"
+  local updated_manager="$test_root/updated-manager" manager_backup
+  local test_unit_dir="$test_root/systemd-units"
+  mkdir -p -- "$manager_dir" "$test_unit_dir"
+  (
+    install() {
+      local -a filtered=()
+      while (($#)); do
+        case "$1" in
+          -o|-g) shift 2 ;;
+          *) filtered+=("$1"); shift ;;
+        esac
+      done
+      command install "${filtered[@]}"
+    }
+    systemd_unit_directory() { printf '%s\n' "$test_unit_dir"; }
+
+    install_system_manager_command "$test_repo_root/mcpanel.sh"
+    is_system_manager_file "$target" || fail "global command was not installed with its marker"
+    assert_equal "755" "$(stat -c '%a' "$target")" "global command mode"
+
+    manager_backup="$(backup_system_manager_command)"
+    cp -- "$test_repo_root/mcpanel.sh" "$updated_manager"
+    printf '\n# updated-manager-fixture\n' >> "$updated_manager"
+    install_system_manager_command "$updated_manager"
+    grep -Fq '# updated-manager-fixture' "$target" || fail "global command was not refreshed"
+    restore_system_manager_command "$manager_backup"
+    if grep -Fq '# updated-manager-fixture' "$target"; then fail "global command rollback did not restore its backup"; fi
+    rm -f -- "$manager_backup"
+
+    {
+      printf '[Unit]\nDescription=MC Panel Minecraft server manager\n'
+      printf '[Service]\nExecStart=/srv/other-mcpanel/McPanel.Api\n'
+    } > "$test_unit_dir/other-mcpanel.service"
+    remove_system_manager_command_if_unused >/dev/null
+    is_system_manager_file "$target" || fail "shared global command was removed while another installation exists"
+    rm -f -- "$test_unit_dir/other-mcpanel.service"
+    remove_system_manager_command_if_unused >/dev/null
+    [[ ! -e "$target" ]] || fail "unused global command was not removed"
+
+    printf '#!/usr/bin/env bash\nprintf unrelated\\n\n' > "$target"
+    chmod 0755 "$target"
+    assert_fails "unrelated global command collision" install_system_manager_command "$test_repo_root/mcpanel.sh"
+    remove_system_manager_command >/dev/null
+    grep -Fq 'unrelated' "$target" || fail "unrelated global command was removed"
+
+    rm -f -- "$target"
+    ln -s -- "$test_repo_root/mcpanel.sh" "$target"
+    assert_fails "symbolic-link global command collision" validate_system_manager_target
+    rm -f -- "$target"
+  )
+}
+
+test_global_command_scope() {
+  local global_copy="$test_root/standalone-bin/mcpanel" output
+  mkdir -p -- "$(dirname -- "$global_copy")"
+  cp -- "$test_repo_root/mcpanel.sh" "$global_copy"
+  chmod 0755 "$global_copy"
+  output="$(MCPANEL_SOURCE_ONLY=0 "$global_copy" help)"
+  [[ "$output" != *"build OUTPUT"* ]] || fail "global command advertised checkout-only build support"
+  assert_fails "global build command" env MCPANEL_SOURCE_ONLY=0 "$global_copy" build "$test_root/build-output"
+  assert_fails "global local-source update" env MCPANEL_SOURCE_ONLY=0 "$global_copy" update --source local
+}
+
 test_option_parsing
 test_rid_detection
 test_release_validation
@@ -371,4 +563,8 @@ test_import_stops_panel_after_validation
 test_runtime_generation_wait
 test_service_security_contract
 test_systemd_minimum
+test_setup_wizard
+test_sudo_access
+test_system_manager_command
+test_global_command_scope
 printf 'MC Panel installer tests passed.\n'

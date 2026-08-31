@@ -39,8 +39,9 @@ jobs:
 
       - name: Check shell scripts
         run: |
-          bash -n mcpanel.sh start-local.sh reset-and-start-local.sh tests/mcpanel-installer-tests.sh
-          shellcheck mcpanel.sh start-local.sh reset-and-start-local.sh tests/mcpanel-installer-tests.sh
+          bash -n install mcpanel.sh start-local.sh reset-and-start-local.sh tests/mcpanel-installer-tests.sh tests/mcpanel-bootstrap-tests.sh
+          shellcheck install mcpanel.sh start-local.sh reset-and-start-local.sh tests/mcpanel-installer-tests.sh tests/mcpanel-bootstrap-tests.sh
+          tests/mcpanel-bootstrap-tests.sh
           tests/mcpanel-installer-tests.sh
 
       - name: Type-check the frontend
@@ -184,6 +185,12 @@ jobs:
           installer="release-assets/mcpanel-$GITHUB_SHA.sh"
           cp -- mcpanel.sh "$installer"
           chmod 0755 "$installer"
+          bootstrap="install"
+          test -f "$bootstrap"
+          bootstrap_staged_name="install-$GITHUB_SHA"
+          bootstrap_staged="release-assets/$bootstrap_staged_name"
+          cp -- "$bootstrap" "$bootstrap_staged"
+          chmod 0755 "$bootstrap_staged"
           x64_archive="release-assets/mcpanel-$GITHUB_SHA-linux-x64.tar.gz"
           arm64_archive="release-assets/mcpanel-$GITHUB_SHA-linux-arm64.tar.gz"
           test -f "$x64_archive"
@@ -201,7 +208,38 @@ jobs:
             printf 'linux_arm64_sha256=%s\n' "$arm64_sha"
           } > "$manifest"
 
-          gh release upload main "$installer" "$x64_archive" "$arm64_archive" --clobber
+          # Upload and verify the bootstrap under a versioned name before
+          # replacing the stable asset. This avoids --clobber deleting the
+          # working one-liner before its replacement has arrived.
+          gh release upload main "$bootstrap_staged" "$installer" "$x64_archive" "$arm64_archive" --clobber
+          bootstrap_verify_dir="$RUNNER_TEMP/bootstrap-verify"
+          mkdir -p "$bootstrap_verify_dir"
+          gh release download main --pattern "$bootstrap_staged_name" --dir "$bootstrap_verify_dir"
+          cmp -- "$bootstrap" "$bootstrap_verify_dir/$bootstrap_staged_name"
+
+          release_api="repos/$GITHUB_REPOSITORY/releases/tags/main"
+          bootstrap_staged_id="$(gh api "$release_api" --jq ".assets[] | select(.name == \"$bootstrap_staged_name\") | .id")"
+          [[ "$bootstrap_staged_id" =~ ^[0-9]+$ ]]
+          bootstrap_current_id="$(gh api "$release_api" --jq '.assets[] | select(.name == "install") | .id')"
+          bootstrap_backup_name="install-backup-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          if [[ -n "$bootstrap_current_id" ]]; then
+            [[ "$bootstrap_current_id" =~ ^[0-9]+$ ]]
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$bootstrap_current_id" \
+              -f name="$bootstrap_backup_name" >/dev/null
+          fi
+          if ! gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$bootstrap_staged_id" \
+            -f name=install >/dev/null; then
+            if [[ -n "$bootstrap_current_id" ]]; then
+              gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$bootstrap_current_id" \
+                -f name=install >/dev/null || \
+                printf 'error: failed to restore the previous stable bootstrap\n' >&2
+            fi
+            exit 1
+          fi
+          if [[ -n "$bootstrap_current_id" ]]; then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$bootstrap_current_id" || \
+              printf 'warning: could not remove replaced bootstrap %s\n' "$bootstrap_backup_name" >&2
+          fi
 
           notes_file="$RUNNER_TEMP/release-notes.md"
           {
@@ -217,7 +255,7 @@ jobs:
           if ((release_exists == 0)); then gh release edit main --draft=false --prerelease; fi
 
           while IFS=$'\t' read -r asset_id asset_name; do
-            [[ "$asset_name" == "release-manifest.txt" ]] && continue
+            [[ "$asset_name" == "release-manifest.txt" || "$asset_name" == "install" ]] && continue
             case "$asset_name" in
               "mcpanel-$GITHUB_SHA.sh"|"mcpanel-$GITHUB_SHA-linux-x64.tar.gz"|"mcpanel-$GITHUB_SHA-linux-arm64.tar.gz")
                 continue
@@ -231,7 +269,7 @@ jobs:
               esac
             fi
             case "$asset_name" in
-              mcpanel-*.sh|mcpanel-*-linux-x64.tar.gz|mcpanel-*-linux-arm64.tar.gz)
+              mcpanel-*.sh|mcpanel-*-linux-x64.tar.gz|mcpanel-*-linux-arm64.tar.gz|install-[a-f0-9]*|install-backup-*)
                 gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" || \
                   printf 'warning: could not remove old release asset %s\n' "$asset_name" >&2
                 ;;
