@@ -9,7 +9,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      "@": path.resolve(import.meta.dirname, "./src"),
     },
   },
   build: {
@@ -36,6 +36,7 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    execArgv: ["--no-experimental-webstorage"],
     setupFiles: "./src/test-setup.ts",
     css: true,
     clearMocks: true,
