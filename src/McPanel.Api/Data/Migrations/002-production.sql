@@ -1,0 +1,30 @@
+ALTER TABLE Servers ADD RecoveryRequired INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE Servers ADD RecoveryReason TEXT NULL;
+ALTER TABLE Jobs ADD InputJson TEXT NULL;
+ALTER TABLE Jobs ADD RetryOf TEXT NULL;
+ALTER TABLE Jobs ADD CancellationRequested INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE Backups ADD Sha256 TEXT NULL;
+ALTER TABLE Backups ADD VerifiedAt INTEGER NULL;
+ALTER TABLE Backups ADD Pinned INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE Incidents (
+    Id TEXT NOT NULL PRIMARY KEY, ServerId TEXT NULL, Code TEXT NOT NULL,
+    Message TEXT NOT NULL, OpenedAt INTEGER NOT NULL, UpdatedAt INTEGER NOT NULL,
+    ResolvedAt INTEGER NULL, NotifiedAt INTEGER NULL, RecoveryNotifiedAt INTEGER NULL
+);
+CREATE INDEX IX_Incidents_Code_ServerId ON Incidents (Code, ServerId);
+CREATE TABLE AuditEvents (
+    Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, Timestamp INTEGER NOT NULL,
+    Actor TEXT NOT NULL, Action TEXT NOT NULL, Target TEXT NOT NULL,
+    Outcome TEXT NOT NULL, CorrelationId TEXT NULL, RemoteAddress TEXT NULL
+);
+CREATE INDEX IX_AuditEvents_Timestamp ON AuditEvents (Timestamp);
+CREATE TABLE ScheduleRuns (
+    Id TEXT NOT NULL PRIMARY KEY, ScheduleId TEXT NOT NULL, ServerId TEXT NOT NULL,
+    StartedAt INTEGER NOT NULL, FinishedAt INTEGER NULL, Result TEXT NOT NULL
+);
+CREATE INDEX IX_ScheduleRuns_ScheduleId_StartedAt ON ScheduleRuns (ScheduleId, StartedAt);
+CREATE TABLE RecoveryPoints (
+    Id TEXT NOT NULL PRIMARY KEY, CreatedAt INTEGER NOT NULL, FileName TEXT NOT NULL,
+    Sha256 TEXT NOT NULL, Size INTEGER NOT NULL, ReplicatedAt INTEGER NULL,
+    VerifiedAt INTEGER NULL, Error TEXT NULL
+);

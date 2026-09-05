@@ -50,7 +50,7 @@ public sealed class HostMetricsService(PanelPaths paths, IHubContext<PanelHub> h
         long diskTotal = 0, diskFree = 0;
         try
         {
-            var drive = new DriveInfo(Path.GetPathRoot(paths.Data)!);
+            var drive = McPanel.Api.Infrastructure.ArchiveIO.DataDrive(paths.Data);
             diskTotal = drive.TotalSize; diskFree = drive.AvailableFreeSpace;
         }
         catch { }

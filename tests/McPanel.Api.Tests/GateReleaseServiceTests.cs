@@ -21,6 +21,33 @@ public sealed class GateReleaseServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Release_list_filters_incomplete_releases_and_selection_rejects_unlisted_versions()
+    {
+        var service = Service("1.2.3", Script("1.2.3"), includeIncompleteStableFirst: true);
+        Assert.Equal("1.2.3", Assert.Single(await service.ListAsync(default)).Version);
+        Assert.Equal("1.2.3", (await service.ResolveAsync("v1.2.3", default)).Version);
+        var missing = await Assert.ThrowsAsync<PanelException>(() => service.ResolveAsync("2.0.0", default));
+        Assert.Equal("GATE_VERSION_UNAVAILABLE", missing.Code);
+        await Assert.ThrowsAsync<PanelException>(() => service.ResolveAsync("../../elsewhere", default));
+        Assert.False(File.Exists(_paths.GateInstallManifest(_serverId)));
+    }
+
+    [Fact]
+    public async Task Explicit_version_install_preserves_rollback_and_rejects_a_different_requested_version()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        await Service("1.3.0", Script("1.3.0")).InstallLatestAsync(_serverId, default);
+        var service = Service("1.2.3", Script("1.2.3"));
+        await Assert.ThrowsAsync<PanelException>(() => service.InstallAsync(_serverId, "1.1.0", default));
+        Assert.Equal("1.3.0", service.Installed(_serverId)!.Version);
+        var installed = await service.InstallAsync(_serverId, "1.2.3", default);
+        Assert.Equal("1.2.3", installed.Version);
+        Assert.Equal("1.3.0", installed.PreviousVersion);
+        await service.RestorePreviousAsync(_serverId, default);
+        Assert.Equal("1.3.0", service.Installed(_serverId)!.Version);
+    }
+
+    [Fact]
     public async Task Selects_complete_stable_release_for_the_exact_host_architecture()
     {
         var payload = Script("1.2.3");
@@ -57,6 +84,7 @@ public sealed class GateReleaseServiceTests : IDisposable
 
         await secondService.RestorePreviousAsync(_serverId, CancellationToken.None);
         Assert.Equal("1.2.3", secondService.Installed(_serverId)!.Version);
+        Assert.Equal(first.Sha256, secondService.Installed(_serverId)!.Sha256);
         Assert.Equal(first.Executable, secondService.Installed(_serverId)!.Executable);
     }
 

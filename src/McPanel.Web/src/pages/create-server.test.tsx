@@ -9,6 +9,7 @@ import { recommendedJavaMajor } from "@/lib/java-version"
 
 vi.mock("@/lib/api", () => ({
   api: {
+    gateVersions: vi.fn(),
     catalog: vi.fn(),
     java: vi.fn(),
     systemInfo: vi.fn(),
@@ -43,6 +44,7 @@ function renderPage() {
 
 describe("CreateServerPage", () => {
   beforeEach(() => {
+    mockedApi.gateVersions.mockResolvedValue(["0.73.0", "0.72.6", "0.71.1"])
     mockedApi.catalog.mockResolvedValue({
       vanilla: ["1.21.8"],
       paper: ["1.21.8"],
@@ -80,11 +82,13 @@ describe("CreateServerPage", () => {
     expect(await screen.findByText("Create Gate Proxy")).toBeInTheDocument()
     expect(screen.queryByText("Minecraft version")).not.toBeInTheDocument()
     expect(screen.queryByText("Minecraft EULA")).not.toBeInTheDocument()
+    await user.click(await screen.findByRole("combobox", { name: "Gate version" }))
+    await user.click(screen.getByRole("option", { name: "0.72.6" }))
     await user.clear(screen.getByLabelText("Real local listener port"))
     await user.type(screen.getByLabelText("Real local listener port"), "25570")
     await user.click(screen.getByRole("button", { name: "Create Gate server" }))
     await waitFor(() => expect(mockedApi.createGateServer).toHaveBeenCalledWith(expect.objectContaining({
-      name: "Gate Proxy", port: 25570, startOnBoot: false, clientRequestId: expect.any(String),
+      name: "Gate Proxy", port: 25570, startOnBoot: false, clientRequestId: expect.any(String), version: "0.72.6",
     })))
     await waitFor(() => expect(screen.getByTestId("current-location")).toHaveTextContent("/servers/gate-server/creating/job-gate"))
   })

@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen, waitFor } from "@testing-library/react"
-import { MemoryRouter, Route, Routes } from "react-router-dom"
+import { createMemoryRouter, RouterProvider } from "react-router-dom"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { api } from "@/lib/api"
 import type { ServerState, ServerSummaryDto } from "@/lib/contracts"
@@ -36,19 +36,20 @@ function server(state: ServerState, kind: ServerSummaryDto["kind"] = "Paper"): S
 
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
-    <MemoryRouter initialEntries={["/servers/server-1/files"]}>
-      <QueryClientProvider client={client}>
-        <Routes>
-          <Route path="/servers/:serverId/files" element={<FilesPage />} />
-        </Routes>
-      </QueryClientProvider>
-    </MemoryRouter>,
-  )
+  const router = createMemoryRouter([{ path: "/servers/:serverId/files", element: <FilesPage /> }], { initialEntries: ["/servers/server-1/files"] })
+  return render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
 }
 
 describe("FilesPage mutation availability", () => {
   beforeEach(() => mockedApi.files.mockResolvedValue([]))
+
+  it("shows a failed request instead of an empty directory", async () => {
+    mockedApi.server.mockResolvedValue(server("Stopped"))
+    mockedApi.files.mockRejectedValueOnce(new Error("Disk unavailable"))
+    renderPage()
+    expect(await screen.findByText("Disk unavailable")).toBeVisible()
+    expect(screen.queryByText("This folder is empty")).not.toBeInTheDocument()
+  })
 
   it("disables file mutations while the server is transitioning", async () => {
     mockedApi.server.mockResolvedValue(server("Updating"))

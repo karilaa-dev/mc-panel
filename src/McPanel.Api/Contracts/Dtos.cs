@@ -64,7 +64,8 @@ public sealed record CreateGateServerRequest(
     [property: Required, StringLength(48, MinimumLength = 2)] string Name,
     [property: Range(1024, 65535)] int Port,
     bool StartOnBoot = false,
-    string? ClientRequestId = null);
+    string? ClientRequestId = null,
+    string? Version = null);
 
 public sealed record ServerConfigurationDto(
     string Motd, int MaxPlayers, string GameMode, string Difficulty, bool Whitelist, bool OnlineMode,
@@ -97,8 +98,8 @@ public sealed record IconLibraryItemDto(string Revision, DateTimeOffset CreatedA
 public sealed record SelectServerIconRequest(string Revision);
 
 public sealed record FileEntryDto(string Name, string Path, bool IsDirectory, long Size, DateTimeOffset ModifiedAt);
-public sealed record FileContentDto(string Content);
-public sealed record SaveFileRequest(string Content);
+public sealed record FileContentDto(string Content, string Revision = "");
+public sealed record SaveFileRequest(string Content, string? Revision = null);
 public sealed record CreateFileRequest(string Path, bool Directory);
 public sealed record MoveFileRequest(string Source, string Destination);
 public sealed record ExtractFileRequest(string Path, string Destination);
@@ -106,10 +107,12 @@ public sealed record ExtractFileRequest(string Path, string Destination);
 public sealed record PlayerDto(
     string Name, string? Uuid, bool Online, bool Whitelisted, bool Operator, bool Banned,
     bool InventoryAvailable = false, DateTimeOffset? InventorySavedAt = null);
-public sealed record BackupDto(Guid Id, string FileName, long Size, DateTimeOffset CreatedAt, string Reason, string State);
+public sealed record BackupDto(Guid Id, string FileName, long Size, DateTimeOffset CreatedAt, string Reason, string State, bool Pinned = false, DateTimeOffset? VerifiedAt = null);
+public sealed record PinBackupRequest(bool Pinned);
 public sealed record JobDto(
     Guid Id, string Type, JobState State, int Progress, string? Message, string? Error,
-    Guid? ServerId);
+    Guid? ServerId, DateTimeOffset CreatedAt = default, DateTimeOffset UpdatedAt = default,
+    bool CanCancel = false, bool CanRetry = false, Guid? RetryOf = null);
 public sealed record ConsoleEventDto(Guid ServerId, long Sequence, DateTimeOffset Timestamp, string Stream, string Level, string Text);
 public sealed record CommandRequest(string Command);
 public sealed record ConfirmKillRequest(bool Confirm);
@@ -175,8 +178,9 @@ public sealed record GateRouteDto(
     string? ConnectionAddress, string RouteKind, string? Note, string BackendKind = "Managed");
 public sealed record GateStatusDto(
     Guid ServerId, GateInstallationDto Installation, GateRuntimeDto Runtime, GateConfigurationDto Configuration,
-    IReadOnlyList<GateRouteDto> Routes, IReadOnlyList<string> Warnings);
-public sealed record GateActionRequest(bool ConfirmDisconnectPlayers = false);
+    IReadOnlyList<GateRouteDto> Routes, IReadOnlyList<string> Warnings, IReadOnlyList<string>? ConnectionProblems = null);
+public sealed record PrepareGateBackendsRequest(string ExpectedRevision);
+public sealed record GateActionRequest(bool ConfirmDisconnectPlayers = false, string? Version = null);
 public sealed record GateSecretDto(string Secret, DateTimeOffset GeneratedAt);
 public sealed record GenerateGateSecretRequest(bool ConfirmReplace = false);
 public sealed record GateLogDto(IReadOnlyList<string> Lines);

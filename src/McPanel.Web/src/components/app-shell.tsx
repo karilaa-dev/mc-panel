@@ -46,6 +46,7 @@ const serverItems = [
   { label: "Schedules", path: "/schedules", icon: Clock3Icon, minecraftOnly: true },
 ]
 const systemItems = [
+  { label: "Activity", path: "/activity", icon: Clock3Icon },
   { label: "Java", path: "/java", icon: BlocksIcon },
   { label: "Panel Settings", path: "/panel-settings", icon: MonitorCogIcon },
 ]
@@ -88,7 +89,7 @@ export function AppShell() {
   const lifecycle = useMutation({
     mutationFn: ({ id, action }: { id: string; action: "start" | "restart" }) => api.lifecycle(id, action),
     onSuccess: (job, { id }) => {
-      toast.success("Operation started", { description: job.message ?? `Operation ${job.id.slice(0, 8)}` })
+      toast.message("Operation queued", { description: job.message ?? `Operation ${job.id.slice(0, 8)}` })
       void queryClient.invalidateQueries({ queryKey: ["servers"] })
       void queryClient.invalidateQueries({ queryKey: ["server", id] })
     },

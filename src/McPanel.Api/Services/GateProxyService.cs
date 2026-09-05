@@ -20,7 +20,7 @@ public sealed record GateRelease(string Version, string AssetName, Uri AssetUrl,
 public sealed record GateInstallManifest(string Version, string Executable, string Sha256, string? PreviousVersion, DateTimeOffset InstalledAt);
 public sealed record GateGeneratedConfiguration(
     string Json, string PersistedJson, IReadOnlyList<GateRouteDto> Routes,
-    IReadOnlyList<string> Warnings);
+    IReadOnlyList<string> Warnings, IReadOnlyList<string> ConnectionProblems);
 public sealed record GateApiStatus(int ActiveConnections, int OnlinePlayers);
 public sealed record ParsedAdvertisedAddress(string Host, int? ExplicitPort)
 {
@@ -32,9 +32,9 @@ internal sealed record GateBackendTarget(
 
 public sealed class GateReleaseService(ValidatedDownloadClient downloads, PanelPaths paths)
 {
-    private static readonly Uri ReleasesUri = new("https://api.github.com/repos/minekube/gate/releases?per_page=20");
+    private static readonly Uri ReleasesUri = new("https://api.github.com/repos/minekube/gate/releases?per_page=100");
     private readonly SemaphoreSlim _lock = new(1, 1);
-    private (GateRelease Release, DateTimeOffset Expires)? _latest;
+    private (IReadOnlyList<GateRelease> Releases, DateTimeOffset Expires)? _catalog;
 
     public GateInstallManifest? Installed(Guid serverId)
     {
@@ -48,13 +48,26 @@ public sealed class GateReleaseService(ValidatedDownloadClient downloads, PanelP
         catch { return null; }
     }
 
-    public async Task<GateRelease> LatestAsync(CancellationToken cancellationToken)
+    public async Task<GateRelease> LatestAsync(CancellationToken cancellationToken) =>
+        (await ListAsync(cancellationToken))[0];
+
+    public async Task<GateRelease> ResolveAsync(string? version, CancellationToken cancellationToken)
     {
-        if (_latest is { } cached && cached.Expires > DateTimeOffset.UtcNow) return cached.Release;
+        if (string.IsNullOrWhiteSpace(version) || version == "Latest") return await LatestAsync(cancellationToken);
+        version = version.Trim().TrimStart('v');
+        if (!Regex.IsMatch(version, @"^[0-9]+\.[0-9]+\.[0-9]+$", RegexOptions.CultureInvariant))
+            throw PanelProblems.Validation("Choose a stable Gate version from the release list.");
+        return (await ListAsync(cancellationToken)).FirstOrDefault(x => x.Version == version)
+            ?? throw new PanelException(400, "GATE_VERSION_UNAVAILABLE", "The selected Gate version has no complete stable release for this host. Refresh the release list.");
+    }
+
+    public async Task<IReadOnlyList<GateRelease>> ListAsync(CancellationToken cancellationToken)
+    {
+        if (_catalog is { } cached && cached.Expires > DateTimeOffset.UtcNow) return cached.Releases;
         await _lock.WaitAsync(cancellationToken);
         try
         {
-            if (_latest is { } second && second.Expires > DateTimeOffset.UtcNow) return second.Release;
+            if (_catalog is { } second && second.Expires > DateTimeOffset.UtcNow) return second.Releases;
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(15));
             using var document = await downloads.JsonAsync(ReleasesUri, timeout.Token, DownloadPolicy.Gate);
@@ -64,11 +77,12 @@ public sealed class GateReleaseService(ValidatedDownloadClient downloads, PanelP
                 Architecture.Arm64 => "arm64",
                 _ => throw new PanelException(409, "GATE_RELEASE_UNAVAILABLE", "Gate has no supported binary for this host architecture.")
             };
+            var selected = new List<GateRelease>();
             foreach (var release in document.RootElement.EnumerateArray())
             {
                 if (release.GetProperty("draft").GetBoolean() || release.GetProperty("prerelease").GetBoolean()) continue;
                 var version = release.GetProperty("tag_name").GetString()?.TrimStart('v');
-                if (string.IsNullOrWhiteSpace(version)) continue;
+                if (string.IsNullOrWhiteSpace(version) || !Regex.IsMatch(version, @"^[0-9]+\.[0-9]+\.[0-9]+$", RegexOptions.CultureInvariant)) continue;
                 var expectedName = $"gate_{version}_linux_{architecture}";
                 var assets = release.GetProperty("assets").EnumerateArray().ToList();
                 var binary = assets.SingleOrDefault(x => x.GetProperty("name").GetString() == expectedName);
@@ -83,11 +97,12 @@ public sealed class GateReleaseService(ValidatedDownloadClient downloads, PanelP
                     ValidatedDownloadClient.Validate(checksumsUrl, DownloadPolicy.Gate);
                 }
                 catch (PanelException) { continue; }
-                var selected = new GateRelease(version, expectedName, assetUrl, checksumsUrl, size.GetInt64());
-                _latest = (selected, DateTimeOffset.UtcNow.AddMinutes(15));
-                return selected;
+                selected.Add(new GateRelease(version, expectedName, assetUrl, checksumsUrl, size.GetInt64()));
             }
-            throw new PanelException(502, "GATE_RELEASE_UNAVAILABLE", "No complete stable Gate release is available for this host.");
+            if (selected.Count == 0) throw new PanelException(502, "GATE_RELEASE_UNAVAILABLE", "No complete stable Gate release is available for this host.");
+            var result = selected.DistinctBy(x => x.Version).ToArray();
+            _catalog = (result, DateTimeOffset.UtcNow.AddMinutes(15));
+            return result;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (PanelException) { throw; }
@@ -98,9 +113,12 @@ public sealed class GateReleaseService(ValidatedDownloadClient downloads, PanelP
         finally { _lock.Release(); }
     }
 
-    public async Task<GateInstallManifest> InstallLatestAsync(Guid serverId, CancellationToken cancellationToken)
+    public Task<GateInstallManifest> InstallLatestAsync(Guid serverId, CancellationToken cancellationToken) =>
+        InstallAsync(serverId, null, cancellationToken);
+
+    public async Task<GateInstallManifest> InstallAsync(Guid serverId, string? version, CancellationToken cancellationToken)
     {
-        var release = await LatestAsync(cancellationToken);
+        var release = await ResolveAsync(version, cancellationToken);
         string checksumText;
         try { checksumText = await downloads.StringAsync(release.ChecksumsUrl, cancellationToken, DownloadPolicy.Gate, 1024 * 1024); }
         catch (PanelException exception) when (exception.Code is "INSTALL_DOWNLOAD_REJECTED" or "UPSTREAM_UNAVAILABLE")
@@ -153,9 +171,12 @@ public sealed class GateReleaseService(ValidatedDownloadClient downloads, PanelP
                 File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
         if (!File.Exists(executable)) return;
+        await using var restored = File.OpenRead(executable);
+        var checksum = Convert.ToHexString(await SHA256.HashDataAsync(restored, cancellationToken)).ToLowerInvariant();
         await AtomicJsonAsync(paths.GateInstallManifest(serverId), current with
         {
-            Version = previous, Executable = executable, PreviousVersion = current.Version, InstalledAt = DateTimeOffset.UtcNow
+            Version = previous, Executable = executable, Sha256 = checksum,
+            PreviousVersion = current.Version, InstalledAt = DateTimeOffset.UtcNow
         }, cancellationToken);
     }
 
@@ -580,11 +601,13 @@ public sealed class GateConfigurationService(PanelPaths paths)
         if (gate.PublicPort is { } publicPort && publicPort != gate.Port)
             warnings.Add($"Forward advertised public port {publicPort} to Gate's real local port {gate.Port}.");
         if (settings.Mode == GateMode.Classic) warnings.Add(ForwardingInstructions(settings.ClassicForwardingMode));
+        var connectionProblems = await BackendAuthenticationProblemsAsync(settings, backends, cancellationToken);
+        warnings.AddRange(connectionProblems);
         var persisted = root.DeepClone().AsObject();
         persisted["config"]!["forwarding"]!.AsObject().Remove("velocitySecret");
         persisted["config"]!["forwarding"]!.AsObject().Remove("bungeeGuardSecret");
         return new GateGeneratedConfiguration(root.ToJsonString(GateReleaseService.JsonOptions),
-            persisted.ToJsonString(GateReleaseService.JsonOptions), routes, warnings);
+            persisted.ToJsonString(GateReleaseService.JsonOptions), routes, warnings, connectionProblems);
     }
 
     private static void ApplyClassic(JsonObject proxy, GateClassicConfigurationDto value,
@@ -702,7 +725,46 @@ public sealed class GateConfigurationService(PanelPaths paths)
         };
     }
 
+    public static int MemoryLimitMb(GateSettingsEntity settings)
+    {
+        if (settings.Mode == GateMode.Lite) return 256;
+        var classic = Classic(settings);
+        return 256 + (classic.ViaEnabled ? 512 : 0) + (classic.BedrockEnabled && classic.BedrockManagedEnabled ? 768 : 0);
+    }
+
     public static string StableName(Guid id) => "mc-" + id.ToString("N");
+
+    public async Task<IReadOnlyList<string>> BackendAuthenticationProblemsAsync(
+        GateSettingsEntity settings, IReadOnlyList<ServerEntity> backends, CancellationToken cancellationToken)
+    {
+        var problems = new List<string>();
+        foreach (var backend in backends)
+        {
+            var file = Path.Combine(paths.Instance(backend.Id), "server.properties");
+            if (!File.Exists(file)) continue;
+            var properties = PropertiesDocument.Parse(await File.ReadAllTextAsync(file, cancellationToken));
+            if (settings.Mode == GateMode.Lite)
+            {
+                if (properties.Get("online-mode")?.Trim() == "false" && File.Exists(Path.Combine(paths.Instance(backend.Id), ".mcpanel-proxy", "original-network.json")))
+                    problems.Add($"{backend.Name} still has Classic backend settings. Stop Gate and the backend, then use Prepare backends for Lite to restore backend authentication.");
+                continue;
+            }
+            // Minecraft defaults to online mode when the property is absent.
+            if (!string.Equals(properties.Get("online-mode")?.Trim(), "false", StringComparison.OrdinalIgnoreCase))
+                problems.Add($"{backend.Name} requires online authentication. Classic Gate cannot complete login to an online-mode backend. Use Lite to keep backend authentication, or stop Gate and the backend and use Prepare backends for Classic. This restricts backend access to loopback and disables backend online mode. Review player UUIDs before changing an existing world.");
+            if (backend.Kind == ServerKind.Vanilla && settings.ClassicForwardingMode != GateForwardingMode.None)
+                problems.Add($"{backend.Name} is Vanilla and does not support {settings.ClassicForwardingMode} forwarding. Use Lite, or choose forwarding None with a backend configured for Classic proxy access.");
+        }
+        return problems;
+    }
+
+    public async Task ValidateBackendAuthenticationAsync(
+        GateSettingsEntity settings, IReadOnlyList<ServerEntity> backends, CancellationToken cancellationToken)
+    {
+        var problems = await BackendAuthenticationProblemsAsync(settings, backends, cancellationToken);
+        if (problems.Count > 0)
+            throw new PanelException(409, "GATE_BACKEND_AUTHENTICATION", string.Join(" ", problems));
+    }
 
     private async Task<string> BackendAddressAsync(ServerEntity server, CancellationToken cancellationToken)
     {
@@ -725,7 +787,7 @@ public sealed class GateConfigurationService(PanelPaths paths)
         GateForwardingMode.Velocity => "Configure every selected backend for Velocity modern forwarding with this Gate instance's secret.",
         GateForwardingMode.BungeeGuard => "Install and configure BungeeGuard on every selected backend with this Gate instance's token.",
         GateForwardingMode.Legacy => "Enable legacy proxy forwarding only after accepting its weaker identity guarantees.",
-        _ => "Forwarding is disabled; backend identity and authentication remain unchanged."
+        _ => "Classic forwarding is disabled. Backends still need online-mode=false and protected access; offline player UUIDs may differ from existing world data. Lite preserves backend authentication."
     };
 
     private static string FormatBackendAddress(string host, int port)
@@ -807,7 +869,7 @@ public sealed class GateProxyService(
                 externalBackends.Select(x => new GateExternalBackendDto(
                     x.Id, x.Name, GateConfigurationService.FormatAddress(x.Host, x.Port))).ToList(),
                 GateConfigurationService.Classic(settings)),
-            generated.Routes, warnings);
+            generated.Routes, warnings, generated.ConnectionProblems);
     }
 
     public async Task<GateStatusDto> UpdateAsync(Guid serverId, UpdateGateConfigurationRequest request, CancellationToken cancellationToken)
@@ -859,7 +921,7 @@ public sealed class GateProxyService(
         }
         if (request.StartOnBoot is not null) gate.StartOnBoot = request.StartOnBoot.Value;
         if (request.CrashRecovery is not null) gate.CrashRecovery = request.CrashRecovery.Value;
-        gate.MemoryMb = gate.InitialMemoryMb = gate.MemoryLimitMb = 256;
+        var previousMemoryLimit = GateConfigurationService.MemoryLimitMb(settings);
         gate.UpdatedAt = DateTimeOffset.UtcNow;
         settings.Mode = request.Mode;
         settings.DefaultBackendServerId = request.DefaultServerId;
@@ -867,6 +929,10 @@ public sealed class GateProxyService(
         settings.ClassicForwardingMode = request.ClassicForwardingMode;
         if (request.Classic is not null)
             settings.ClassicConfigJson = GateConfigurationService.SerializeClassic(request.Classic);
+        var memoryLimit = GateConfigurationService.MemoryLimitMb(settings);
+        if (runtime.IsRunning(serverId) && previousMemoryLimit != memoryLimit)
+            throw new PanelException(409, "GATE_RESTART_REQUIRED", "Stop Gate before changing modes or enabling components that change its memory reservation.");
+        gate.MemoryMb = gate.InitialMemoryMb = gate.MemoryLimitMb = memoryLimit;
         var existing = await db.GateBackends.Where(x => x.GateServerId == serverId).ToListAsync(cancellationToken);
         db.GateBackends.RemoveRange(existing);
         db.GateBackends.AddRange(ids.Select(id => new GateBackendEntity { GateServerId = serverId, BackendServerId = id }));
@@ -979,6 +1045,7 @@ public sealed class GateProxyService(
         var panel = await db.PanelSettings.AsNoTracking().SingleAsync(x => x.Id == 1, cancellationToken);
         var generated = await configuration.GenerateAsync(gate, settings, backends, panel.GlobalServerHost, cancellationToken, externalBackends);
         ValidateStart(gate, settings, backends, externalBackends, panel.GlobalServerHost, paths);
+        await configuration.ValidateBackendAuthenticationAsync(settings, backends, cancellationToken);
         var manifest = releases.Installed(serverId);
         if (manifest is null || !File.Exists(manifest.Executable)) throw new PanelException(409, "GATE_NOT_INSTALLED", "Install Gate before starting it.");
         await AtomicConfigAsync(serverId, generated.PersistedJson, cancellationToken);
@@ -1001,6 +1068,7 @@ public sealed class GateProxyService(
         var panel = await db.PanelSettings.AsNoTracking().SingleAsync(x => x.Id == 1, cancellationToken);
         _ = await configuration.GenerateAsync(gate, settings, backends, panel.GlobalServerHost, cancellationToken, externalBackends);
         ValidateStart(gate, settings, backends, externalBackends, panel.GlobalServerHost, paths);
+        await configuration.ValidateBackendAuthenticationAsync(settings, backends, cancellationToken);
         var manifest = releases.Installed(serverId);
         if (manifest is null || !File.Exists(manifest.Executable))
             throw new PanelException(409, "GATE_NOT_INSTALLED", "Install Gate before starting it.");
@@ -1009,16 +1077,21 @@ public sealed class GateProxyService(
     public Task<GateInstallManifest> InstallLatestAsync(Guid serverId, CancellationToken cancellationToken) =>
         releases.InstallLatestAsync(serverId, cancellationToken);
 
-    public async Task<JobDto> QueueUpdateAsync(Guid serverId, bool confirm, CancellationToken cancellationToken)
+    public Task<GateRelease> ResolveReleaseAsync(string? version, CancellationToken cancellationToken) => releases.ResolveAsync(version, cancellationToken);
+
+    public Task<GateInstallManifest> InstallAsync(Guid serverId, string? version, CancellationToken cancellationToken) => releases.InstallAsync(serverId, version, cancellationToken);
+
+    public async Task<JobDto> QueueUpdateAsync(Guid serverId, bool confirm, CancellationToken cancellationToken, string? version = null)
     {
+        var selected = await releases.ResolveAsync(version, cancellationToken);
         var status = await GetAsync(serverId, cancellationToken);
         if (status.Runtime.State == RuntimeProcessState.Running && status.Runtime.ActiveConnections + status.Runtime.OnlinePlayers > 0 && !confirm)
             throw new PanelException(409, "GATE_ACTIVE_CONNECTIONS", "Confirm the Gate update because active connections will be disconnected.");
         return await operations.EnqueueAsync("GateUpdate", serverId, async (_, _, token) =>
         {
             using var serverLock = await keyedLock.AcquireAsync(serverId, token);
-            await UpdateBinaryLockedAsync(serverId, token);
-        }, cancellationToken);
+            await UpdateBinaryLockedAsync(serverId, token, selected.Version);
+        }, cancellationToken, inputJson: System.Text.Json.JsonSerializer.Serialize(new { confirm, version = selected.Version }));
     }
 
     public async Task UpdateBinaryAsync(Guid serverId, CancellationToken cancellationToken)
@@ -1027,7 +1100,7 @@ public sealed class GateProxyService(
         await UpdateBinaryLockedAsync(serverId, cancellationToken);
     }
 
-    private async Task UpdateBinaryLockedAsync(Guid serverId, CancellationToken cancellationToken)
+    private async Task UpdateBinaryLockedAsync(Guid serverId, CancellationToken cancellationToken, string? version = null)
     {
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var gate = await RequireGateAsync(db, serverId, cancellationToken);
@@ -1040,7 +1113,7 @@ public sealed class GateProxyService(
         var activated = false;
         try
         {
-            var installed = await releases.InstallLatestAsync(serverId, cancellationToken);
+            var installed = await releases.InstallAsync(serverId, version, cancellationToken);
             activated = true;
             if (running) await runtime.StopAsync(serverId, cancellationToken);
             var settings = await SettingsAsync(db, serverId, cancellationToken);
@@ -1167,10 +1240,10 @@ public sealed class GateProxyService(
     { try { return await api.StatusAsync(apiPort, cancellationToken); } catch { return new GateApiStatus(0, 0); } }
 
     private RuntimeLaunchRequest Launch(ServerEntity gate, GateSettingsEntity settings, GateInstallManifest manifest) => new(
-        gate.Id, manifest.Executable, paths.Instance(gate.Id), ["--config", "config.json"], 256, 15,
+        gate.Id, manifest.Executable, paths.Instance(gate.Id), ["--config", "config.json"], GateConfigurationService.MemoryLimitMb(settings), 15,
         RuntimeWorkloadKind.Gate, settings.ApiPort,
         settings.Mode == GateMode.Classic && settings.ClassicForwardingMode == GateForwardingMode.Velocity ? paths.GateVelocitySecret(gate.Id) : null,
-        settings.Mode == GateMode.Classic && settings.ClassicForwardingMode == GateForwardingMode.BungeeGuard ? paths.GateBungeeGuardSecret(gate.Id) : null);
+        settings.Mode == GateMode.Classic && settings.ClassicForwardingMode == GateForwardingMode.BungeeGuard ? paths.GateBungeeGuardSecret(gate.Id) : null, GamePort: gate.Port);
 
     private async Task AtomicConfigAsync(Guid serverId, string json, CancellationToken cancellationToken)
     {

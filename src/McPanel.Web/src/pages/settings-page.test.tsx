@@ -1,13 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { MemoryRouter, Route, Routes } from "react-router-dom"
+import { createMemoryRouter, RouterProvider } from "react-router-dom"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { api } from "@/lib/api"
+import { api, ApiError } from "@/lib/api"
 import type { RuntimeConfigurationDto, ServerPropertiesDto, ServerState } from "@/lib/contracts"
 import { RuntimeSettingsPage, ServerPropertiesPage } from "@/pages/core-pages"
 
-vi.mock("@/lib/api", () => ({
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
   api: {
     server: vi.fn(),
     properties: vi.fn(),
@@ -58,13 +59,8 @@ function server(state: ServerState, kind: "Vanilla" | "Paper" | "Fabric" = "Pape
 
 function renderPage(page: "properties" | "runtime") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
-    <MemoryRouter initialEntries={[`/servers/server-1/${page}`]}>
-      <QueryClientProvider client={client}>
-        <Routes><Route path={`/servers/:serverId/${page}`} element={page === "properties" ? <ServerPropertiesPage /> : <RuntimeSettingsPage />} /></Routes>
-      </QueryClientProvider>
-    </MemoryRouter>,
-  )
+  const router = createMemoryRouter([{ path: `/servers/:serverId/${page}`, element: page === "properties" ? <ServerPropertiesPage /> : <RuntimeSettingsPage /> }], { initialEntries: [`/servers/server-1/${page}`] })
+  return render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
 }
 
 describe("ServerPropertiesPage", () => {
@@ -72,6 +68,18 @@ describe("ServerPropertiesPage", () => {
     mockedApi.server.mockResolvedValue(server("Stopped"))
     mockedApi.properties.mockResolvedValue(properties)
     mockedApi.saveProperties.mockResolvedValue({ ...properties, revision: "revision-2" })
+  })
+
+  it("preserves a property draft after a revision conflict", async () => {
+    const user = userEvent.setup()
+    mockedApi.saveProperties.mockRejectedValueOnce(new ApiError("Changed on disk", 409, "REVISION_CONFLICT"))
+    renderPage("properties")
+    const field = await screen.findByLabelText("Server port")
+    await user.clear(field); await user.type(field, "25566")
+    await user.click(screen.getByRole("button", { name: "Save changes" }))
+    await waitFor(() => expect(mockedApi.saveProperties).toHaveBeenCalled())
+    expect(field).toHaveValue("25566")
+    expect(await screen.findByRole("button", { name: "Reapply draft" })).toBeVisible()
   })
 
   it("prioritizes common settings in tabs, masks secrets, searches across tabs, and saves the revision", async () => {

@@ -63,6 +63,7 @@ public sealed partial class ServerInstallerService(
             State = ServerState.Installing, EulaAcceptedAt = DateTimeOffset.UtcNow
         };
         var pending = OperationQueue.CreatePending("Install", entity.Id, clientRequestId);
+        pending.InputJson = System.Text.Json.JsonSerializer.Serialize(request);
         var creationCommitted = false;
         try
         {
@@ -139,6 +140,7 @@ public sealed partial class ServerInstallerService(
             ModpackSource = inspection.Source
         };
         var pending = OperationQueue.CreatePending("InstallModpack", entity.Id, clientRequestId);
+        pending.InputJson = System.Text.Json.JsonSerializer.Serialize(request);
         db.Servers.Add(entity);
         db.Jobs.Add(pending);
         try
@@ -173,7 +175,7 @@ public sealed partial class ServerInstallerService(
             ? await gate.QueueUpdateAsync(id, false, cancellationToken)
             : kind == ServerKind.CustomJar
                 ? throw PanelProblems.Conflict("CUSTOM_JAR_UPDATE_UNSUPPORTED", "Change the Custom JAR server core from Runtime.")
-                : await operations.EnqueueAsync("Update", id, (_, jobId, token) => UpdateAsync(id, jobId, token), cancellationToken);
+                : await operations.EnqueueAsync("Update", id, (_, jobId, token) => UpdateAsync(id, jobId, token), cancellationToken, inputJson: "{}");
     }
 
     public async Task<(ServerEntity Server, JobDto Job)> CreateGateAsync(
@@ -195,14 +197,16 @@ public sealed partial class ServerInstallerService(
         var name = request.Name.Trim();
         if (await db.Servers.AnyAsync(x => x.Name.ToLower() == name.ToLower(), cancellationToken))
             throw PanelProblems.Conflict("VALIDATION_FAILED", "A server with that name already exists.");
+        var release = await gate.ResolveReleaseAsync(request.Version, cancellationToken);
         var entity = new ServerEntity
         {
-            Id = Guid.NewGuid(), Name = name, Kind = ServerKind.Gate, Version = "Latest",
+            Id = Guid.NewGuid(), Name = name, Kind = ServerKind.Gate, Version = release.Version,
             JavaRuntimeId = string.Empty, Port = request.Port, MemoryMb = 256, InitialMemoryMb = 256,
             MemoryLimitMb = 256, StartOnBoot = request.StartOnBoot, CrashRecovery = true,
             State = ServerState.Installing, EulaAcceptedAt = DateTimeOffset.UtcNow, LaunchTarget = "gate"
         };
         var pending = OperationQueue.CreatePending("GateInstall", entity.Id, clientRequestId);
+        pending.InputJson = System.Text.Json.JsonSerializer.Serialize(request with { Version = release.Version });
         db.Servers.Add(entity);
         db.GateSettings.Add(new GateSettingsEntity { ServerId = entity.Id });
         db.Jobs.Add(pending);
@@ -237,8 +241,10 @@ public sealed partial class ServerInstallerService(
         try
         {
             Directory.CreateDirectory(paths.Instance(id));
-            await operations.ProgressAsync(jobId, 15, "Resolving the latest stable Gate release", cancellationToken);
-            var manifest = await gate.InstallLatestAsync(id, cancellationToken);
+            await using var selectionDb = await stateFactory.CreateDbContextAsync(cancellationToken);
+            var selected = await selectionDb.Servers.AsNoTracking().SingleAsync(x => x.Id == id, cancellationToken);
+            await operations.ProgressAsync(jobId, 15, $"Downloading Gate {selected.Version}", cancellationToken);
+            var manifest = await gate.InstallAsync(id, selected.Version, cancellationToken);
             await operations.ProgressAsync(jobId, 85, "Activating the verified Gate binary", cancellationToken);
             await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
             var server = await db.Servers.FindAsync([id], cancellationToken) ?? throw PanelProblems.NotFound("Server");
@@ -281,7 +287,7 @@ public sealed partial class ServerInstallerService(
         return Guid.Parse(value).ToString("N");
     }
 
-    private async Task InstallAsync(Guid id, Guid jobId, bool includeExperimental, CancellationToken cancellationToken)
+    internal async Task InstallAsync(Guid id, Guid jobId, bool includeExperimental, CancellationToken cancellationToken)
     {
         using var serverLock = await keyedLock.AcquireAsync(id, cancellationToken);
         var stage = Path.Combine(paths.Staging, $"install-{id:N}-{jobId:N}");

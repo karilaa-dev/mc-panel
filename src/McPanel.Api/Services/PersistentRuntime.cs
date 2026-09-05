@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -20,14 +21,15 @@ public sealed record RuntimeLaunchRequest(
     RuntimeWorkloadKind WorkloadKind = RuntimeWorkloadKind.Minecraft,
     int? ApiPort = null,
     string? VelocitySecretFile = null,
-    string? BungeeGuardSecretFile = null);
+    string? BungeeGuardSecretFile = null,
+    bool CrashRecovery = false, int? GamePort = null);
 
 public sealed record RuntimeServerSnapshot(
     Guid ServerId, RuntimeProcessState State, int? ProcessId, DateTimeOffset? StartedAt,
     DateTimeOffset UpdatedAt, int? ExitCode, bool MemoryLimitExceeded,
     double CpuPercent, double MemoryUsedMb, double MemoryPeakMb, double SwapUsedMb,
     double AnonymousMemoryMb, double FileMemoryMb, double KernelMemoryMb, double SocketMemoryMb,
-    bool MemoryEnforced, long UptimeSeconds);
+    bool MemoryEnforced, long UptimeSeconds, long DroppedLogLines = 0, string? StorageError = null, int RecoveryAttempts = 0);
 public sealed record RuntimeSubscription(long Revision, IReadOnlyList<RuntimeServerSnapshot> Servers);
 
 internal sealed record RuntimeWireRequest(int Version, Guid RequestId, string Operation, JsonElement Payload);
@@ -84,6 +86,13 @@ public sealed class PersistentRuntimeClient(PanelPaths paths, IHostEnvironment e
 
     public bool IsRunning(Guid id) => Enabled && _snapshots.TryGetValue(id, out var snapshot) && IsActive(snapshot.State);
     public RuntimeServerSnapshot? Get(Guid id) => _snapshots.GetValueOrDefault(id);
+    public Task<RuntimeCapabilities?> CapabilitiesAsync(CancellationToken token) => SendAsync<RuntimeCapabilities>("capabilities", null, token);
+    public async Task<RuntimeSaveLease> AcquireSaveLeaseAsync(Guid id, CancellationToken token) =>
+        await SendAsync<RuntimeSaveLease>("saveLeaseAcquire", id, token) ?? throw RuntimeUnavailable("Missing save lease.");
+    public async Task<RuntimeSaveLease> RenewSaveLeaseAsync(RuntimeSaveLease lease, CancellationToken token) =>
+        await SendAsync<RuntimeSaveLease>("saveLeaseRenew", lease, token) ?? throw RuntimeUnavailable("Missing save lease.");
+    public Task ReleaseSaveLeaseAsync(RuntimeSaveLease lease, CancellationToken token) => SendAsync<object>("saveLeaseRelease", lease, token);
+    public Task SetRecoveryPolicyAsync(Guid id, bool enabled, CancellationToken token) => SendAsync<object>("recoveryPolicy", new RuntimeRecoveryPolicy(id, enabled), token);
 
     public async Task<IReadOnlyList<RuntimeServerSnapshot>> RefreshAsync(CancellationToken cancellationToken)
     {
@@ -142,10 +151,14 @@ public sealed class PersistentRuntimeClient(PanelPaths paths, IHostEnvironment e
     private async Task<T?> SendAsync<T>(string operation, object? payload, CancellationToken cancellationToken)
     {
         if (!Enabled) throw new InvalidOperationException("The persistent runtime is disabled in this environment.");
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(operation is "start" or "restart" ? 650 : operation is "stop" ? 620 : operation is "saveLeaseAcquire" ? 40 : 15));
         try
         {
-            return await PersistentRuntimeProtocol.SendAsync<T>(paths.RuntimeSocket, operation, payload, cancellationToken);
+            return await PersistentRuntimeProtocol.SendAsync<T>(paths.RuntimeSocket, operation, payload, deadline.Token);
         }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        { throw RuntimeUnavailable("The runtime request timed out. Refresh process state before retrying."); }
         catch (PanelException) { throw; }
         catch (Exception exception) when (exception is SocketException or IOException or InvalidDataException)
         {
@@ -212,7 +225,7 @@ public static class PersistentRuntimeHost
 
     public static async Task<int> RunAsync(string[] arguments)
     {
-        var builder = Host.CreateApplicationBuilder(arguments);
+        var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { Args = arguments, ContentRootPath = AppContext.BaseDirectory });
         var panelOptions = new PanelOptions();
         builder.Configuration.GetSection("Panel").Bind(panelOptions);
         builder.Services.AddSingleton(Microsoft.Extensions.Options.Options.Create(panelOptions));
@@ -261,7 +274,7 @@ internal sealed class RuntimeSocketService(
         {
             _listener.Dispose();
             try { File.Delete(paths.RuntimeSocket); } catch { }
-            await engine.StopAllAsync(CancellationToken.None);
+            await engine.DisposeAsync();
         }
     }
 
@@ -327,6 +340,11 @@ internal sealed class RuntimeSocketService(
     private async Task<JsonElement> DispatchAsync(RuntimeWireRequest request, CancellationToken cancellationToken) => request.Operation switch
     {
         "snapshot" => RuntimeWire.Element(engine.Snapshot()),
+        "capabilities" => RuntimeWire.Element(engine.Capabilities()),
+        "saveLeaseAcquire" => RuntimeWire.Element(await engine.AcquireSaveLeaseAsync(RuntimeWire.Value<Guid>(request.Payload), cancellationToken)),
+        "saveLeaseRenew" => RuntimeWire.Element(await engine.RenewSaveLeaseAsync(RuntimeWire.Value<RuntimeSaveLease>(request.Payload)!, cancellationToken)),
+        "saveLeaseRelease" => await ReleaseSaveLeaseAsync(request.Payload, cancellationToken),
+        "recoveryPolicy" => SetRecoveryPolicy(request.Payload),
         "subscribe" => RuntimeWire.Element(await engine.SubscribeAsync(RuntimeWire.Value<long>(request.Payload), cancellationToken)),
         "start" => await StartAsync(request.Payload, false, cancellationToken),
         "restart" => await StartAsync(request.Payload, true, cancellationToken),
@@ -336,6 +354,17 @@ internal sealed class RuntimeSocketService(
         "upgradeWhenIdle" => RuntimeWire.Element(await UpgradeWhenIdleAsync(cancellationToken)),
         _ => throw new InvalidDataException("Unknown runtime operation.")
     };
+
+    private async Task<JsonElement> ReleaseSaveLeaseAsync(JsonElement payload, CancellationToken token)
+    {
+        await engine.ReleaseSaveLeaseAsync(RuntimeWire.Value<RuntimeSaveLease>(payload) ?? throw new InvalidDataException("Missing lease."), token);
+        return RuntimeWire.Element<object?>(null);
+    }
+    private JsonElement SetRecoveryPolicy(JsonElement payload)
+    {
+        engine.SetRecoveryPolicy(RuntimeWire.Value<RuntimeRecoveryPolicy>(payload) ?? throw new InvalidDataException("Missing recovery policy."));
+        return RuntimeWire.Element<object?>(null);
+    }
 
     private async Task<JsonElement> StartAsync(JsonElement payload, bool restart, CancellationToken cancellationToken)
     {
@@ -382,8 +411,9 @@ internal sealed class RuntimeSocketService(
     private sealed record RuntimeCommand(Guid ServerId, string Command);
 }
 
-internal sealed class RuntimeEngine(
-    PanelPaths paths, CgroupMemoryService cgroups, ILogger<RuntimeEngine> logger)
+internal sealed partial class RuntimeEngine(
+    PanelPaths paths, CgroupMemoryService cgroups, ILogger<RuntimeEngine> logger,
+    Microsoft.Extensions.Options.IOptions<PanelOptions>? configuredOptions = null) : IAsyncDisposable
 {
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _gateLogLocks = new();
     private readonly ConcurrentDictionary<Guid, RuntimeProcess> _active = new();
@@ -392,6 +422,7 @@ internal sealed class RuntimeEngine(
 
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
+        if (Interlocked.Exchange(ref _initialized, 1) != 0) return;
         Directory.CreateDirectory(paths.RuntimeState);
         await RuntimeConsoleWriter.EnsureCreatedAsync(paths.ConsoleDatabase, cancellationToken);
         foreach (var file in Directory.EnumerateFiles(paths.RuntimeState, "*.json"))
@@ -403,10 +434,13 @@ internal sealed class RuntimeEngine(
                 if (PersistentRuntimeClient.IsActive(snapshot.State))
                     snapshot = snapshot with { State = RuntimeProcessState.Crashed, ProcessId = null, UpdatedAt = DateTimeOffset.UtcNow, ExitCode = -1 };
                 _status[snapshot.ServerId] = snapshot;
-                await PersistAsync(snapshot, cancellationToken);
+                await TryPersistAsync(snapshot, cancellationToken);
             }
             catch (Exception exception) { logger.LogWarning(exception, "Could not load runtime state {File}", file); }
         }
+        _logWorker = Task.Run(() => WriteLogsAsync(_maintenanceStop.Token));
+        _maintenanceWorker = Task.Run(() => MaintainAsync(_maintenanceStop.Token));
+        _retentionWorker = Task.Run(() => RetainLogsAsync(_maintenanceStop.Token));
         Changed();
     }
 
@@ -422,7 +456,7 @@ internal sealed class RuntimeEngine(
                     ? measured with { State = current.State }
                     : current);
         }
-        return _status.Values.OrderBy(x => x.ServerId).ToList();
+        return _status.Values.OrderBy(x => x.ServerId).Select(x => x with { DroppedLogLines = _dropsByServer.GetValueOrDefault(x.ServerId), StorageError = _storageErrors.IsEmpty ? null : string.Join(" ", _storageErrors.Values), RecoveryAttempts = _recoveryAttempts.GetValueOrDefault(x.ServerId) }).ToList();
     }
 
     public async Task<RuntimeSubscription> SubscribeAsync(long afterRevision, CancellationToken cancellationToken)
@@ -439,11 +473,23 @@ internal sealed class RuntimeEngine(
         return await StartAsync(launch, cancellationToken);
     }
 
-    public async Task<RuntimeServerSnapshot> StartAsync(RuntimeLaunchRequest launch, CancellationToken cancellationToken)
+    public async Task<RuntimeServerSnapshot> StartAsync(RuntimeLaunchRequest launch, CancellationToken cancellationToken, bool recovering = false)
     {
+        if (!recovering) CancelRecovery(launch.ServerId, resetAttempts: true);
+        using var lifecycle = await _lifecycleLocks.AcquireAsync(launch.ServerId, cancellationToken);
         ValidateLaunch(launch);
         if (_active.ContainsKey(launch.ServerId)) throw new InvalidOperationException("The server already has an active process.");
-        var workload = cgroups.Create(launch.ServerId, launch.MemoryLimitMb);
+        cancellationToken.ThrowIfCancellationRequested();
+        await EnsureRuntimeAdmissionAsync(launch, cancellationToken);
+        _launches[launch.ServerId] = launch;
+
+        if (_active.ContainsKey(launch.ServerId)) throw new InvalidOperationException("The server already has an active process.");
+        CgroupWorkload? workload = null;
+        RuntimeProcess managed;
+        Process process;
+        try
+        {
+        workload = cgroups.Create(launch.ServerId, launch.MemoryLimitMb);
         var start = new ProcessStartInfo
         {
             FileName = launch.JavaExecutable,
@@ -466,30 +512,32 @@ internal sealed class RuntimeEngine(
             start.Environment["GATE_VELOCITY_SECRET"] = (await File.ReadAllTextAsync(launch.VelocitySecretFile, cancellationToken)).Trim();
         if (launch.BungeeGuardSecretFile is not null)
             start.Environment["GATE_BUNGEEGUARD_SECRET"] = (await File.ReadAllTextAsync(launch.BungeeGuardSecretFile, cancellationToken)).Trim();
-        Process process;
-        try { process = Process.Start(cgroups.Wrap(start, workload)) ?? throw new InvalidOperationException($"{launch.WorkloadKind} could not start."); }
-        catch { cgroups.Remove(workload); throw; }
-        var managed = new RuntimeProcess(process, DateTimeOffset.UtcNow, launch.GracefulStopSeconds, workload,
+        try { cancellationToken.ThrowIfCancellationRequested(); process = Process.Start(cgroups.Wrap(start, workload)) ?? throw new InvalidOperationException($"{launch.WorkloadKind} could not start."); }
+        catch { lock (_admissionGate) _memoryReservations.Remove(launch.ServerId); cgroups.Remove(workload); throw; }
+        managed = new RuntimeProcess(process, DateTimeOffset.UtcNow, launch.GracefulStopSeconds, workload,
             cgroups.Read(workload)?.OomKillCount ?? 0, launch.WorkloadKind, launch.ApiPort);
         if (!_active.TryAdd(launch.ServerId, managed))
         {
             process.Kill(true); process.Dispose(); cgroups.Remove(workload);
             throw new InvalidOperationException("The server already has an active process.");
         }
+        }
+        catch { lock (_admissionGate) _memoryReservations.Remove(launch.ServerId); cgroups.Remove(workload); throw; }
         var snapshot = Measure(managed) with { ServerId = launch.ServerId, State = RuntimeProcessState.Starting };
-        _status[launch.ServerId] = snapshot; await PersistAsync(snapshot, cancellationToken);
-        Changed();
-        await RuntimeConsoleWriter.AppendAsync(paths.ConsoleDatabase, launch.ServerId, "system",
-            $"Started {launch.WorkloadKind} process {process.Id}.", cancellationToken);
-        _ = PumpAsync(launch.ServerId, managed, process.StandardOutput, "stdout");
-        _ = PumpAsync(launch.ServerId, managed, process.StandardError, "stderr");
+        _status[launch.ServerId] = snapshot;
+        managed.Output = PumpAsync(launch.ServerId, managed, process.StandardOutput, "stdout");
+        managed.ErrorOutput = PumpAsync(launch.ServerId, managed, process.StandardError, "stderr");
         _ = MonitorAsync(launch.ServerId, managed);
+        lifecycle.Dispose();
+        await TryPersistAsync(snapshot, CancellationToken.None);
+        Changed();
+        await QueueLogAsync(launch.ServerId, "system", $"Started {launch.WorkloadKind} process {process.Id}.", cancellationToken);
         if (launch.WorkloadKind == RuntimeWorkloadKind.Gate)
         {
             var deadline = DateTimeOffset.UtcNow.AddSeconds(20);
             while (DateTimeOffset.UtcNow < deadline && !process.HasExited)
             {
-                if (launch.ApiPort is { } apiPort && await ApiReadyAsync(apiPort, cancellationToken))
+                if (launch.ApiPort is { } apiPort && await ApiReadyAsync(apiPort, cancellationToken) && await GateListenerReadyAsync(launch.GamePort, cancellationToken))
                 {
                     managed.Ready.TrySetResult();
                     break;
@@ -497,33 +545,39 @@ internal sealed class RuntimeEngine(
                 await Task.Delay(250, cancellationToken);
             }
         }
-        var timeout = launch.WorkloadKind == RuntimeWorkloadKind.Gate ? TimeSpan.FromSeconds(20) : TimeSpan.FromSeconds(90);
+        var timeout = launch.WorkloadKind == RuntimeWorkloadKind.Gate ? TimeSpan.FromSeconds(20) : TimeSpan.FromSeconds(Settings.StartupTimeoutSeconds);
         var first = await Task.WhenAny(managed.Ready.Task, managed.Exit.Task, Task.Delay(timeout, cancellationToken));
         cancellationToken.ThrowIfCancellationRequested();
         if (first == managed.Exit.Task)
             throw new InvalidOperationException($"{launch.WorkloadKind} exited before becoming ready.");
-        if (first != managed.Ready.Task && launch.WorkloadKind == RuntimeWorkloadKind.Gate)
-            throw new InvalidOperationException("Gate did not become ready within 20 seconds.");
+
         if (first != managed.Ready.Task)
-            await RuntimeConsoleWriter.AppendAsync(paths.ConsoleDatabase, launch.ServerId, "system", "Minecraft readiness text was not detected after 90 seconds; treating the running process as ready.", cancellationToken);
+        {
+            await RecordRuntimeIncidentAsync(launch.ServerId, "STARTUP_TIMEOUT", "Minecraft did not confirm startup before its deadline.");
+            await StopAsync(launch.ServerId, false, CancellationToken.None);
+            throw new InvalidOperationException("Minecraft did not become ready before its startup deadline. Inspect the console before retrying.");
+        }
         snapshot = Measure(managed) with { ServerId = launch.ServerId, State = RuntimeProcessState.Running };
-        _status[launch.ServerId] = snapshot; await PersistAsync(snapshot, cancellationToken);
+        _status[launch.ServerId] = snapshot; await TryPersistAsync(snapshot, cancellationToken);
         Changed();
         return snapshot;
     }
 
     public async Task<RuntimeServerSnapshot> StopAsync(Guid id, bool kill, CancellationToken cancellationToken)
     {
+        CancelRecovery(id, resetAttempts: true);
+        using var lifecycle = await _lifecycleLocks.AcquireAsync(id, cancellationToken);
+        if (_launches.TryGetValue(id, out var launch)) _launches[id] = launch with { CrashRecovery = false };
         if (!_active.TryGetValue(id, out var managed))
             return _status.GetValueOrDefault(id) ?? throw new InvalidOperationException("The server is not running.");
         managed.RequestStop();
         var stopping = Measure(managed) with { ServerId = id, State = RuntimeProcessState.Stopping };
-        _status[id] = stopping; await PersistAsync(stopping, cancellationToken);
+        _status[id] = stopping; await TryPersistAsync(stopping, cancellationToken);
         Changed();
         if (kill)
         {
             try { managed.Process.Kill(true); } catch { }
-            await RuntimeConsoleWriter.AppendAsync(paths.ConsoleDatabase, id, "system", "Emergency process-tree kill requested.", cancellationToken);
+            await QueueLogAsync(id, "system", "Emergency process-tree kill requested.", cancellationToken);
         }
         else
         {
@@ -538,7 +592,7 @@ internal sealed class RuntimeEngine(
             else
             {
                 try { await WriteAsync(managed, "stop", cancellationToken); }
-                catch (Exception exception) when (exception is IOException or InvalidOperationException)
+                catch (Exception exception) when (exception is IOException or InvalidOperationException or TimeoutException)
                 {
                     // The exit monitor can win the race and dispose a short-lived
                     // process after StopAsync found it in the active map. Waiting on
@@ -546,16 +600,16 @@ internal sealed class RuntimeEngine(
                     logger.LogDebug(exception, "Minecraft input closed while stopping server {ServerId}", id);
                 }
             }
-            await RuntimeConsoleWriter.AppendAsync(paths.ConsoleDatabase, id, "system",
+            await QueueLogAsync(id, "system",
                 $"Graceful {managed.WorkloadKind} stop requested.", cancellationToken);
             var completed = await Task.WhenAny(managed.Exit.Task, Task.Delay(TimeSpan.FromSeconds(managed.GracefulStopSeconds), cancellationToken));
             if (completed != managed.Exit.Task)
             {
-                await RuntimeConsoleWriter.AppendAsync(paths.ConsoleDatabase, id, "system", "Graceful stop timed out; killing the process tree.", CancellationToken.None);
+                await QueueLogAsync(id, "system", "Graceful stop timed out; killing the process tree.", CancellationToken.None);
                 try { managed.Process.Kill(true); } catch { }
             }
         }
-        await managed.Exit.Task.WaitAsync(cancellationToken);
+        await managed.Exit.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
         return _status[id];
     }
 
@@ -572,17 +626,30 @@ internal sealed class RuntimeEngine(
 
     private async Task PumpAsync(Guid id, RuntimeProcess managed, StreamReader reader, string stream)
     {
+        var buffer = new char[4096];
+        var line = new System.Text.StringBuilder();
         try
         {
-            while (await reader.ReadLineAsync() is { } line)
-            {
-                if (line.Contains("Done (", StringComparison.OrdinalIgnoreCase) || line.Contains("For help, type", StringComparison.OrdinalIgnoreCase)) managed.Ready.TrySetResult();
-                await RuntimeConsoleWriter.AppendAsync(paths.ConsoleDatabase, id, stream, line, CancellationToken.None);
-                if (managed.WorkloadKind == RuntimeWorkloadKind.Gate)
-                    await AppendGateLogAsync(id, stream, line);
-            }
+            int read;
+            while ((read = await reader.ReadAsync(buffer)) != 0)
+                for (var index = 0; index < read; index++)
+                {
+                    var character = buffer[index];
+                    if (character == '\n') { ObserveLine(id, managed, stream, line.ToString().TrimEnd('\r')); line.Clear(); }
+                    else if (line.Length < 16_384) line.Append(character);
+                }
+            if (line.Length > 0) ObserveLine(id, managed, stream, line.ToString());
         }
-        catch (Exception exception) when (exception is IOException or ObjectDisposedException) { logger.LogDebug(exception, "Runtime console stream ended for {ServerId}", id); }
+        catch (Exception exception) when (exception is IOException or ObjectDisposedException or InvalidOperationException)
+        { logger.LogDebug(exception, "Runtime console stream ended for {ServerId}", id); }
+    }
+
+    private void ObserveLine(Guid id, RuntimeProcess managed, string stream, string line)
+    {
+        if (line.Contains("Done (", StringComparison.OrdinalIgnoreCase) || line.Contains("For help, type", StringComparison.OrdinalIgnoreCase)) managed.Ready.TrySetResult();
+        if (line.Contains("Saved the game", StringComparison.OrdinalIgnoreCase) || line.Contains("Saved the world", StringComparison.OrdinalIgnoreCase)) managed.SaveFlushed.TrySetResult();
+        if (line.Contains("saving", StringComparison.OrdinalIgnoreCase) && (line.Contains("enabled", StringComparison.OrdinalIgnoreCase) || line.Contains("turned on", StringComparison.OrdinalIgnoreCase))) managed.SaveResumed.TrySetResult();
+        QueueLogAsync(id, stream, line, CancellationToken.None);
     }
 
     private async Task AppendGateLogAsync(Guid id, string stream, string line)
@@ -614,12 +681,14 @@ internal sealed class RuntimeEngine(
     {
         try { await managed.Process.WaitForExitAsync(); } catch { }
         var exitCode = managed.Process.HasExited ? managed.Process.ExitCode : -1;
-        var finalMemory = cgroups.Read(managed.Cgroup);
+        CgroupMemorySnapshot? finalMemory = null;
+        try { finalMemory = cgroups.Read(managed.Cgroup); } catch (Exception exception) { logger.LogWarning(exception, "Final memory measurement failed"); }
         var exceeded = finalMemory is not null && finalMemory.OomKillCount > managed.InitialOomKillCount;
         _active.TryRemove(new KeyValuePair<Guid, RuntimeProcess>(id, managed));
+        lock (_admissionGate) _memoryReservations.Remove(id);
         var requested = managed.StopRequested;
         var clean = requested || exitCode == 0;
-        managed.Process.Dispose(); cgroups.Remove(managed.Cgroup);
+        try { managed.Process.Dispose(); cgroups.Remove(managed.Cgroup); } catch (Exception exception) { logger.LogWarning(exception, "Runtime cleanup failed"); }
         var snapshot = new RuntimeServerSnapshot(id, clean ? RuntimeProcessState.Stopped : RuntimeProcessState.Crashed, null,
             clean ? null : managed.StartedAt, DateTimeOffset.UtcNow, exitCode, exceeded, 0,
             (finalMemory?.CurrentBytes ?? 0) / 1024d / 1024d, (finalMemory?.PeakBytes ?? 0) / 1024d / 1024d,
@@ -628,11 +697,13 @@ internal sealed class RuntimeEngine(
             (finalMemory?.KernelBytes ?? 0) / 1024d / 1024d, (finalMemory?.SocketBytes ?? 0) / 1024d / 1024d,
             managed.Cgroup is not null,
             Math.Max(0, (long)(DateTimeOffset.UtcNow - managed.StartedAt).TotalSeconds));
-        _status[id] = snapshot; await PersistAsync(snapshot, CancellationToken.None);
+        _status[id] = snapshot;
+        managed.Exit.TrySetResult(exitCode);
+        await TryPersistAsync(snapshot, CancellationToken.None);
         Changed();
         var message = clean ? $"Server stopped (exit {exitCode})." : exceeded ? $"Server exceeded its total RAM limit and stopped (exit {exitCode})." : $"Server exited unexpectedly with code {exitCode}.";
-        await RuntimeConsoleWriter.AppendAsync(paths.ConsoleDatabase, id, "system", message, CancellationToken.None);
-        managed.Exit.TrySetResult(exitCode);
+        await QueueLogAsync(id, "system", message, CancellationToken.None);
+        if (!clean) ScheduleRecovery(id);
     }
 
     private RuntimeServerSnapshot Measure(RuntimeProcess managed)
@@ -685,7 +756,7 @@ internal sealed class RuntimeEngine(
         {
             var versions = Path.GetFullPath(paths.GateVersions(launch.ServerId)) + Path.DirectorySeparatorChar;
             if (!Path.GetFullPath(launch.JavaExecutable).StartsWith(versions, StringComparison.Ordinal) ||
-                launch.MemoryLimitMb != 256 || launch.GracefulStopSeconds != 15 || launch.ApiPort is not (>= 1024 and <= 65535))
+                launch.MemoryLimitMb is < 256 or > 1536 || launch.MemoryLimitMb % 256 != 0 || launch.GracefulStopSeconds != 15 || launch.ApiPort is not (>= 1024 and <= 65535))
                 throw new InvalidDataException("The Gate runtime request is invalid.");
             ValidateSecretFile(launch.VelocitySecretFile, paths.GateVelocitySecret(launch.ServerId));
             ValidateSecretFile(launch.BungeeGuardSecretFile, paths.GateBungeeGuardSecret(launch.ServerId));
@@ -699,6 +770,20 @@ internal sealed class RuntimeEngine(
         if (supplied is null) return;
         if (Path.GetFullPath(supplied) != Path.GetFullPath(expected) || !File.Exists(supplied) || new FileInfo(supplied).LinkTarget is not null)
             throw new InvalidDataException("The Gate forwarding secret path is invalid.");
+    }
+
+    private static async Task<bool> GateListenerReadyAsync(int? port, CancellationToken token)
+    {
+        if (port is null) return true; // Older runtime requests did not carry the game listener.
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+            timeout.CancelAfter(TimeSpan.FromMilliseconds(500));
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port.Value, timeout.Token);
+            return true;
+        }
+        catch (Exception error) when (error is SocketException or OperationCanceledException) { return false; }
     }
 
     private static async Task<bool> ApiReadyAsync(int port, CancellationToken cancellationToken)
@@ -719,9 +804,16 @@ internal sealed class RuntimeEngine(
 
     private static async Task WriteAsync(RuntimeProcess managed, string command, CancellationToken cancellationToken)
     {
-        await managed.InputLock.WaitAsync(cancellationToken);
-        try { await managed.Process.StandardInput.WriteLineAsync(command.AsMemory(), cancellationToken); await managed.Process.StandardInput.FlushAsync(cancellationToken); }
-        finally { managed.InputLock.Release(); }
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
+        try
+        {
+            await managed.InputLock.WaitAsync(deadline.Token);
+            try { await managed.Process.StandardInput.WriteLineAsync(command.AsMemory(), deadline.Token); await managed.Process.StandardInput.FlushAsync(deadline.Token); }
+            finally { managed.InputLock.Release(); }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        { throw new TimeoutException("The workload did not accept console input within five seconds."); }
     }
 
     private sealed class RuntimeProcess(Process process, DateTimeOffset startedAt, int gracefulStopSeconds, CgroupWorkload? cgroup,
@@ -738,6 +830,10 @@ internal sealed class RuntimeEngine(
         public int? ApiPort { get; } = apiPort;
         public bool StopRequested => Volatile.Read(ref _stopRequested) != 0;
         public void RequestStop() => Interlocked.Exchange(ref _stopRequested, 1);
+        public Task Output { get; set; } = Task.CompletedTask;
+        public Task ErrorOutput { get; set; } = Task.CompletedTask;
+        public TaskCompletionSource SaveFlushed { get; set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource SaveResumed { get; set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Ready { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<int> Exit { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public SemaphoreSlim InputLock { get; } = new(1, 1);

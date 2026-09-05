@@ -11,7 +11,7 @@ readonly DEFAULT_DATA_DIR="/var/lib/mcpanel"
 readonly DEFAULT_SERVICE_NAME="mcpanel"
 readonly DEFAULT_PORT="6050"
 readonly DEFAULT_INSTALL_SOURCE="github"
-readonly DEFAULT_RELEASE="main"
+readonly DEFAULT_RELEASE="stable"
 readonly DEFAULT_COMMAND_PATH="/usr/local/bin/mcpanel"
 readonly GITHUB_REPOSITORY="karilaa-dev/mc-panel"
 readonly SYSTEM_MANAGER_MARKER="# mcpanel-system-manager: karilaa-dev/mc-panel"
@@ -42,6 +42,8 @@ usage() {
 
   cat <<EOF
 Usage: $invocation COMMAND [options]
+
+  reset-admin   Reset the administrator password locally and revoke sessions.
 
 Build and manage MC Panel as a Debian/Ubuntu systemd installation.
 
@@ -601,6 +603,15 @@ validate_extracted_tree() {
   if find "$artifact_dir" ! -type d ! -type f -print -quit | grep -q .; then die "release archive contains a special file"; fi
 }
 
+resolve_stable_release() {
+  local destination tag
+  destination="$(curl --location --head --fail --silent --show-error --connect-timeout 15 --max-time 60 \
+    --output /dev/null --write-out '%{url_effective}' "${GITHUB_RELEASE_BASE_URL%/download}/latest")" || die "no stable release is available; select --release main only if you want a rolling development build"
+  tag="${destination##*/}"
+  [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "latest release did not resolve to an immutable version tag"
+  printf '%s\n' "$tag"
+}
+
 download_release_asset() {
   local release="$1" asset_name="$2" destination="$3"
   curl --location --fail --silent --show-error \
@@ -700,6 +711,7 @@ publish_artifact() {
     --runtime "$rid" \
     --self-contained true \
     --output "$stage_dir" \
+    -p:InformationalVersion="$(git -C "$repo_root" describe --always --dirty 2>/dev/null || printf local)" \
     -p:DebugType=None \
     -p:DebugSymbols=false
 
@@ -899,7 +911,7 @@ http_probe_url() {
     http://0.0.0.0:*) url="http://127.0.0.1:${url##*:}" ;;
     'http://[::]:'*) url="http://[::1]:${url##*:}" ;;
   esac
-  printf '%s/api/v1/auth/status\n' "${url%/}"
+  printf '%s/health/ready\n' "${url%/}"
 }
 
 wait_for_http() {
@@ -1093,6 +1105,12 @@ root_update() {
       failed_dir="${install_dir}.failed-$(date -u +%Y%m%dT%H%M%SZ)-$$"
       warn "update failed; restoring $rollback_dir"
       systemctl stop "$service_name.service" >/dev/null 2>&1 || true
+      if ! runuser --user "$PANEL_USER" -- env MCPANEL_DATA_DIR="$data_dir" MCPANEL_CONFIG_DIR="$config_dir" \
+        "$install_dir/McPanel.Api" --mcpanel-prepare-rollback; then
+        warn "automatic rollback was blocked by data compatibility; panel remains stopped, runtime and all recovery artifacts are preserved"
+        trap - EXIT
+        exit "$rc"
+      fi
       if [[ -d "$install_dir" && ! -L "$install_dir" ]]; then mv -- "$install_dir" "$failed_dir"; fi
       mv -- "$rollback_dir" "$install_dir"
       rollback_dir=""
@@ -1208,6 +1226,10 @@ root_update() {
   find "$stage_dir" -type f -exec chmod 0644 {} +
   chmod 0755 "$stage_dir/McPanel.Api"
   chown -R root:root "$stage_dir"
+
+  # Check the staged build against populated data and the runtime before stopping or replacing the working panel.
+  runuser --user "$PANEL_USER" -- env MCPANEL_DATA_DIR="$data_dir" MCPANEL_CONFIG_DIR="$config_dir" \
+    "$stage_dir/McPanel.Api" --mcpanel-check-upgrade || die "update compatibility check failed; working installation preserved"
 
   rollback_dir="${install_dir}.rollback-$(date -u +%Y%m%dT%H%M%SZ)-$$"
   [[ ! -e "$rollback_dir" ]] || die "rollback destination already exists: $rollback_dir"
@@ -1578,8 +1600,10 @@ build_for_system_command() {
   access_user="$(id -un)"
   rid="$(detect_rid)"
   build_root="$(mktemp -d /tmp/mcpanel-system-build.XXXXXX)"
-  cleanup_system_build() { local rc=$?; rm -rf -- "$build_root"; trap - EXIT; exit "$rc"; }
-  trap cleanup_system_build EXIT
+  cleanup_system_build() { local rc="$1" cleanup_root="$2"; rm -rf -- "$cleanup_root"; trap - EXIT; exit "$rc"; }
+  # Capture the path while the local variable exists; retain the exit status for trap execution.
+  # shellcheck disable=SC2064
+  trap "cleanup_system_build \$? $(printf '%q' "$build_root")" EXIT
   artifact="$build_root/artifact"
   publish_artifact "$rid" "$artifact"
   require_sudo_access
@@ -1607,6 +1631,7 @@ run_remote_system_command() {
   require_sudo_access
   access_user="$(id -un)"
   require_commands basename chmod curl find grep mkdir mktemp realpath sha256sum tar tr uname
+  if [[ "$release" == "stable" ]]; then release="$(resolve_stable_release)"; fi
   validate_release_ref "$release"
   rid="$(detect_rid)"
   work_root="$(mktemp -d /tmp/mcpanel-release.XXXXXX)"
@@ -1922,6 +1947,15 @@ if (($#)); then shift; fi
 case "$command" in
   setup) command_setup "$@" ;;
   install) command_install "$@" ;;
+  reset-admin)
+    [[ $# -eq 0 ]] || die "reset-admin takes no arguments"
+    sudo_system systemctl stop "$DEFAULT_SERVICE_NAME.service"
+    reset_rc=0
+    sudo_system env MCPANEL_DATA_DIR="$DEFAULT_DATA_DIR" MCPANEL_CONFIG_DIR="$DEFAULT_CONFIG_DIR" \
+      "$DEFAULT_INSTALL_DIR/McPanel.Api" --mcpanel-reset-admin || reset_rc=$?
+    sudo_system systemctl start "$DEFAULT_SERVICE_NAME.service"
+    exit "$reset_rc"
+    ;;
   update) command_update "$@" ;;
   import-server) command_import_server "$@" ;;
   uninstall) command_remove 0 "$@" ;;

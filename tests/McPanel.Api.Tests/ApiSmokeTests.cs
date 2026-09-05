@@ -22,6 +22,25 @@ public sealed class ApiSmokeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Private_https_rejects_untrusted_forwarding_and_issues_secure_antiforgery_cookies()
+    {
+        Environment.SetEnvironmentVariable("Panel__RequireHttps", "true");
+        try
+        {
+            using var http = _factory!.CreateClient(new() { AllowAutoRedirect = false });
+            using var forged = new HttpRequestMessage(HttpMethod.Get, "/api/v1/auth/status");
+            forged.Headers.Add("X-Forwarded-Proto", "https");
+            Assert.Equal(HttpStatusCode.UpgradeRequired, (await http.SendAsync(forged)).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await http.GetAsync("/health/ready")).StatusCode);
+            using var https = _factory.CreateClient(new() { BaseAddress = new Uri("https://mcpanel.home.arpa"), AllowAutoRedirect = false });
+            using var response = await https.GetAsync("/api/v1/auth/antiforgery");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Contains(response.Headers.GetValues("Set-Cookie"), value => value.Contains("secure", StringComparison.OrdinalIgnoreCase) && value.Contains("httponly", StringComparison.OrdinalIgnoreCase));
+        }
+        finally { Environment.SetEnvironmentVariable("Panel__RequireHttps", null); }
+    }
+
+    [Fact]
     public async Task Anonymous_status_and_antiforgery_are_available_but_servers_are_protected()
     {
         using var client = _factory!.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });

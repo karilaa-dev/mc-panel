@@ -26,7 +26,10 @@ public sealed class PersistentRuntimeTests : IAsyncLifetime
             printf '%s\n' 'Done (0.01s)! For help, type "help"'
             while IFS= read -r line; do
                 case "$line" in
+                    spam) i=0; while [ "$i" -lt 20000 ]; do printf '%s\n' 'sustained stdout'; printf '%s\n' 'sustained stderr' >&2; i=$((i+1)); done ;;
                     ping) printf '%s\n' 'pong while panel is absent' ;;
+                    "save-all flush") printf '%s\n' 'Saved the game' ;;
+                    "save-on") printf '%s\n' 'Automatic saving is now enabled' ;;
                     crash) exit 7 ;;
                     stop) exit 0 ;;
                 esac
@@ -35,8 +38,138 @@ public sealed class PersistentRuntimeTests : IAsyncLifetime
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(_fakeJava, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         var cgroups = new CgroupMemoryService(new TestEnvironment(), NullLogger<CgroupMemoryService>.Instance);
-        _engine = new RuntimeEngine(_paths, cgroups, NullLogger<RuntimeEngine>.Instance);
+        _engine = new RuntimeEngine(_paths, cgroups, NullLogger<RuntimeEngine>.Instance,
+            Microsoft.Extensions.Options.Options.Create(new PanelOptions { BackupLeaseSeconds = 1, StartupTimeoutSeconds = 1 }))
+            { MaintenanceInterval = TimeSpan.FromMilliseconds(20), RecoveryDelay = TimeSpan.FromMilliseconds(100) };
         await _engine.InitializeAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Recovery_rechecks_committed_policy_without_waiting_for_panel_notification()
+    {
+        var id = Guid.NewGuid(); Directory.CreateDirectory(_paths.Instance(id));
+        await using (var db = new McPanel.Api.Data.StateDbContext(new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<McPanel.Api.Data.StateDbContext>()
+            .UseSqlite($"Data Source={_paths.StateDatabase};Pooling=False").Options))
+        {
+            await db.Database.EnsureCreatedAsync();
+            db.Servers.Add(new() { Id = id, Name = "Do not restart", Version = "1.21", JavaRuntimeId = "java", State = McPanel.Api.Data.ServerState.Running, CrashRecovery = false });
+            await db.SaveChangesAsync();
+        }
+        await _engine.StartAsync(new(id, _fakeJava, _paths.Instance(id), ["-jar", "server.jar"], 1024, 1, CrashRecovery: true), default);
+        await _engine.CommandAsync(id, "crash", default);
+        await Task.Delay(500);
+        Assert.Equal(RuntimeProcessState.Crashed, Assert.Single(_engine.Snapshot()).State);
+        Assert.Null(Assert.Single(_engine.Snapshot()).ProcessId);
+    }
+
+    [Fact]
+    public async Task Expired_save_lease_resumes_saving_without_a_panel_and_cannot_be_reused()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var id = Guid.NewGuid(); Directory.CreateDirectory(_paths.Instance(id));
+        await _engine.StartAsync(new(id, _fakeJava, _paths.Instance(id), ["-jar", "server.jar"], 1024, 1), CancellationToken.None);
+        var lease = await _engine.AcquireSaveLeaseAsync(id, CancellationToken.None);
+        await WaitForConsoleAsync(id, "Automatic saving is now enabled");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _engine.RenewSaveLeaseAsync(lease, CancellationToken.None));
+        Assert.Equal(RuntimeProcessState.Running, Assert.Single(_engine.Snapshot()).State);
+    }
+
+    [Fact]
+    public async Task Crash_recovery_runs_without_panel_and_explicit_stop_cancels_backoff()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var id = Guid.NewGuid(); Directory.CreateDirectory(_paths.Instance(id));
+        var started = await _engine.StartAsync(new(id, _fakeJava, _paths.Instance(id), ["-jar", "server.jar"], 1024, 1, CrashRecovery: true), CancellationToken.None);
+        await _engine.CommandAsync(id, "crash", CancellationToken.None);
+        RuntimeServerSnapshot snapshot = started;
+        for (var i = 0; i < 200; i++)
+        {
+            snapshot = Assert.Single(_engine.Snapshot());
+            if (snapshot.State == RuntimeProcessState.Running && snapshot.ProcessId != started.ProcessId) break;
+            await Task.Delay(10);
+        }
+        Assert.Equal(RuntimeProcessState.Running, snapshot.State);
+        Assert.NotEqual(started.ProcessId, snapshot.ProcessId);
+        _engine.RecoveryDelay = TimeSpan.FromSeconds(1);
+        await _engine.CommandAsync(id, "crash", CancellationToken.None);
+        for (var i = 0; i < 100 && Assert.Single(_engine.Snapshot()).State != RuntimeProcessState.Crashed; i++) await Task.Delay(10);
+        await _engine.StopAsync(id, false, CancellationToken.None);
+        await Task.Delay(1200);
+        Assert.Null(Assert.Single(_engine.Snapshot()).ProcessId);
+    }
+
+    [Fact]
+    public async Task Process_without_startup_confirmation_does_not_become_ready()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        await File.WriteAllTextAsync(_fakeJava, "#!/bin/sh\nwhile IFS= read -r line; do [ \"$line\" = stop ] && exit 0; done\n");
+        var id = Guid.NewGuid(); Directory.CreateDirectory(_paths.Instance(id));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _engine.StartAsync(new(id, _fakeJava, _paths.Instance(id), ["-jar", "server.jar"], 1024, 1), CancellationToken.None));
+        Assert.NotEqual(RuntimeProcessState.Running, Assert.Single(_engine.Snapshot()).State);
+    }
+
+    [Fact]
+    public async Task Process_can_stop_after_console_storage_fails()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var id = Guid.NewGuid(); Directory.CreateDirectory(_paths.Instance(id));
+        await _engine.StartAsync(new RuntimeLaunchRequest(id, _fakeJava, _paths.Instance(id), ["-jar", "server.jar"], 1024, 1), CancellationToken.None);
+        await using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_paths.ConsoleDatabase}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand(); command.CommandText = "DROP TABLE Lines;";
+            await command.ExecuteNonQueryAsync();
+        }
+        await _engine.CommandAsync(id, "spam", CancellationToken.None);
+        await Task.Delay(500);
+        Assert.True(Assert.Single(_engine.Snapshot()).DroppedLogLines > 0);
+        var stopped = await _engine.StopAsync(id, false, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(RuntimeProcessState.Stopped, stopped.State);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Locked_console_database_does_not_block_stop_or_kill(bool force)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var id = Guid.NewGuid(); Directory.CreateDirectory(_paths.Instance(id));
+        await _engine.StartAsync(new(id, _fakeJava, _paths.Instance(id), ["-jar", "server.jar"], 1024, 1), default);
+        await using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_paths.ConsoleDatabase}");
+        await connection.OpenAsync();
+        await using var transaction = connection.BeginTransaction(deferred: false);
+        await _engine.CommandAsync(id, "spam", default);
+        await Task.Delay(500);
+        var stopped = await _engine.StopAsync(id, force, default).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(RuntimeProcessState.Stopped, stopped.State);
+        Assert.Null(stopped.ProcessId);
+        await transaction.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task Save_on_failure_is_persisted_as_an_incident_and_retried()
+    {
+        var script = await File.ReadAllTextAsync(_fakeJava);
+        await File.WriteAllTextAsync(_fakeJava, script.Replace("Automatic saving is now enabled", "save-on rejected"));
+        var id = Guid.NewGuid(); Directory.CreateDirectory(_paths.Instance(id));
+        await _engine.StartAsync(new(id, _fakeJava, _paths.Instance(id), ["-jar", "server.jar"], 1024, 1), default);
+        var lease = await _engine.AcquireSaveLeaseAsync(id, default);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => _engine.ReleaseSaveLeaseAsync(lease, default));
+        Assert.True(File.Exists(Path.Combine(_paths.Runtime, "incidents", $"{id:N}-SAVE_RESUME_FAILED.json")));
+        Assert.True(File.Exists(Path.Combine(_paths.Runtime, "leases", $"{id:N}.json")));
+        await _engine.StopAsync(id, true, default);
+    }
+
+    [Fact]
+    public async Task Process_can_stop_when_runtime_state_directory_is_unwritable()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var id = Guid.NewGuid(); Directory.CreateDirectory(_paths.Instance(id));
+        await _engine.StartAsync(new RuntimeLaunchRequest(id, _fakeJava, _paths.Instance(id), ["-jar", "server.jar"], 1024, 1), CancellationToken.None);
+        Directory.Delete(_paths.RuntimeState, true);
+        await File.WriteAllTextAsync(_paths.RuntimeState, "simulate unavailable filesystem");
+        var stopped = await _engine.StopAsync(id, false, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(RuntimeProcessState.Stopped, stopped.State);
     }
 
     [Fact]
@@ -181,7 +314,7 @@ public sealed class PersistentRuntimeTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        await _engine.StopAllAsync(CancellationToken.None);
+        await _engine.DisposeAsync();
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         if (Directory.Exists(_root)) Directory.Delete(_root, true);
     }

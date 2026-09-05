@@ -29,6 +29,7 @@ vi.mock("@microsoft/signalr", () => ({
       const connection = {
         handlers,
         on: vi.fn((name: string, handler: HubHandler) => { handlers.set(name, handler) }),
+        onclose: vi.fn((handler: HubHandler) => { handlers.set("closed", handler) }),
         onreconnecting: vi.fn(),
         onreconnected: vi.fn(),
         start: vi.fn(() => signalRMock.startFactories.shift()?.() ?? Promise.resolve()),
@@ -119,6 +120,15 @@ function renderPage({ switcher = false }: { switcher?: boolean } = {}) {
 }
 
 describe("ConsolePage command availability", () => {
+  it("restarts a console connection after automatic reconnection is exhausted", async () => {
+    mockedApi.server.mockResolvedValue(server("Running"))
+    mockedApi.consoleBacklog.mockResolvedValue([])
+    renderPage()
+    await waitFor(() => expect(signalRMock.connections[0]?.start).toHaveBeenCalledTimes(1))
+    await act(async () => { signalRMock.connections[0].handlers.get("closed")?.() })
+    await waitFor(() => expect(signalRMock.connections[0].start).toHaveBeenCalledTimes(2))
+  })
+
   beforeEach(() => {
     signalRMock.connections.splice(0)
     signalRMock.startFactories.splice(0)

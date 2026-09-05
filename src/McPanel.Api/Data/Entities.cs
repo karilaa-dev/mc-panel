@@ -5,7 +5,7 @@ namespace McPanel.Api.Data;
 public enum ServerKind { Vanilla, Paper, Fabric, Forge, NeoForge, CustomJar, Gate }
 public enum LaunchMode { Jar, ArgumentFile }
 public enum ServerState { Installing, Stopped, Starting, Running, Stopping, BackingUp, Updating, Crashed, Error }
-public enum JobState { Queued, Running, Completed, Failed }
+public enum JobState { Queued, Running, Completed, Failed, Interrupted, Canceled }
 public enum GateMode { Lite, Classic }
 public enum GateForwardingMode { Velocity, BungeeGuard, Legacy, None }
 
@@ -33,6 +33,8 @@ public sealed class ServerEntity
     public int RequiredJavaMajor { get; set; }
     public bool IsExperimental { get; set; }
     public ServerState State { get; set; } = ServerState.Installing;
+    public bool RecoveryRequired { get; set; }
+    public string? RecoveryReason { get; set; }
     public int Port { get; set; } = 25565;
     [MaxLength(255)] public string? PublicHost { get; set; }
     public int? PublicPort { get; set; }
@@ -118,6 +120,9 @@ public sealed class JobEntity
     public Guid? ServerId { get; set; }
     [MaxLength(64)] public string? ClientRequestId { get; set; }
     public JobState State { get; set; } = JobState.Queued;
+    public string? InputJson { get; set; }
+    public Guid? RetryOf { get; set; }
+    public bool CancellationRequested { get; set; }
     public int Progress { get; set; }
     [MaxLength(1024)] public string? Message { get; set; }
     [MaxLength(4096)] public string? Error { get; set; }
@@ -135,6 +140,56 @@ public sealed class BackupEntity
     [MaxLength(64)] public string Reason { get; set; } = "Manual";
     [MaxLength(32)] public string State { get; set; } = "Completed";
     [MaxLength(8192)] public string? SoftwareMetadataJson { get; set; }
+    public string? Sha256 { get; set; }
+    public DateTimeOffset? VerifiedAt { get; set; }
+    public bool Pinned { get; set; }
+}
+
+public sealed class IncidentEntity
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid? ServerId { get; set; }
+    public required string Code { get; set; }
+    public required string Message { get; set; }
+    public DateTimeOffset OpenedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? ResolvedAt { get; set; }
+    public DateTimeOffset? NotifiedAt { get; set; }
+    public DateTimeOffset? RecoveryNotifiedAt { get; set; }
+}
+
+public sealed class AuditEventEntity
+{
+    public long Id { get; set; }
+    public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.UtcNow;
+    public required string Actor { get; set; }
+    public required string Action { get; set; }
+    public required string Target { get; set; }
+    public required string Outcome { get; set; }
+    public string? CorrelationId { get; set; }
+    public string? RemoteAddress { get; set; }
+}
+
+public sealed class ScheduleRunEntity
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid ScheduleId { get; set; }
+    public Guid ServerId { get; set; }
+    public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? FinishedAt { get; set; }
+    public required string Result { get; set; }
+}
+
+public sealed class RecoveryPointEntity
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public required string FileName { get; set; }
+    public required string Sha256 { get; set; }
+    public long Size { get; set; }
+    public DateTimeOffset? ReplicatedAt { get; set; }
+    public DateTimeOffset? VerifiedAt { get; set; }
+    public string? Error { get; set; }
 }
 
 public sealed class ScheduleEntity

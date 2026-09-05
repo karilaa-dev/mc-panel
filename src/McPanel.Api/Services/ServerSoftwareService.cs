@@ -55,7 +55,7 @@ public sealed class ServerSoftwareService(
                 await customJars.InspectAsync(token, cancellationToken);
         }
         return await operations.EnqueueAsync("ChangeSoftware", serverId,
-            (_, jobId, token) => ChangeAsync(serverId, jobId, request, token), cancellationToken, requestId);
+            (_, jobId, token) => ChangeAsync(serverId, jobId, request, token), cancellationToken, requestId, inputJson: System.Text.Json.JsonSerializer.Serialize(request));
     }
 
     private async Task ChangeAsync(Guid serverId, Guid jobId, ChangeServerSoftwareRequest request, CancellationToken cancellationToken)
@@ -211,6 +211,7 @@ public sealed class ServerSoftwareService(
                         "Server core activation rollback failed for {ServerId}; preserving rollback files", serverId);
                 }
                 original.Restore(server);
+                if (rollbackFailure is not null) { server.RecoveryRequired = true; server.RecoveryReason = "Software rollback failed. Recovery files were preserved."; server.State = ServerState.Error; }
                 try { await db.SaveChangesAsync(CancellationToken.None); } catch { }
                 if (claim is not null)
                 {

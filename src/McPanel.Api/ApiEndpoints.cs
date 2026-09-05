@@ -34,6 +34,8 @@ public static partial class ApiEndpoints
             var (_, job) = await installer.CreateModpackAsync(request, token);
             return Results.Accepted($"/api/v1/jobs/{job.Id}", job);
         });
+        api.MapGet("/catalog/gate", async (GateReleaseService releases, CancellationToken token) =>
+            (await releases.ListAsync(token)).Select(x => x.Version));
         api.MapPost("/servers/gate", async (CreateGateServerRequest request, ServerInstallerService installer, CancellationToken token) =>
         {
             var (_, job) = await installer.CreateGateAsync(request, token);
@@ -75,8 +77,12 @@ public static partial class ApiEndpoints
         {
             await EnsureServerAsync(factory, id, token); return await service.ReadAsync(id, after.GetValueOrDefault(), limit ?? 1_000, token);
         });
-        api.MapPost("/servers/{id:guid}/console", async (Guid id, CommandRequest request, ProcessSupervisor supervisor, CancellationToken token) =>
-        { await supervisor.CommandAsync(id, request.Command, token); return Results.NoContent(); });
+        api.MapPost("/servers/{id:guid}/console", async (Guid id, CommandRequest request, ProcessSupervisor supervisor, HttpContext context, CancellationToken token) =>
+        {
+            context.Items["audit-action"] = "console-command";
+            context.Items["audit-target"] = $"{id}: {request.Command}";
+            await supervisor.CommandAsync(id, request.Command, token); return Results.NoContent();
+        });
 
         api.MapGet("/servers/{id:guid}/players", (Guid id, PlayerService service, CancellationToken token) => service.ListAsync(id, token));
         api.MapPost("/servers/{id:guid}/players/{name}/{action}", (Guid id, string name, string action, PlayerService service, CancellationToken token) => service.ActionAsync(id, name, action, token));
@@ -108,8 +114,12 @@ public static partial class ApiEndpoints
         api.MapGet("/servers/{id:guid}/files", (Guid id, string? path, FileManagerService files) => files.List(id, path ?? ""));
         api.MapPost("/servers/{id:guid}/files", async (Guid id, CreateFileRequest request, FileManagerService files, CancellationToken token) => { await files.CreateAsync(id, request.Path, request.Directory, token); return Results.NoContent(); });
         api.MapDelete("/servers/{id:guid}/files", async (Guid id, string path, FileManagerService files, CancellationToken token) => { await files.DeleteAsync(id, path, token); return Results.NoContent(); });
-        api.MapGet("/servers/{id:guid}/files/content", async (Guid id, string path, FileManagerService files, CancellationToken token) => new FileContentDto(await files.ReadTextAsync(id, path, token)));
-        api.MapPut("/servers/{id:guid}/files/content", async (Guid id, string path, SaveFileRequest request, FileManagerService files, CancellationToken token) => { await files.WriteTextAsync(id, path, request.Content, token); return Results.NoContent(); });
+        api.MapGet("/servers/{id:guid}/files/content", (Guid id, string path, FileManagerService files, CancellationToken token) => files.ReadSnapshotAsync(id, path, token));
+        api.MapPut("/servers/{id:guid}/files/content", async (Guid id, string path, SaveFileRequest request, FileManagerService files, CancellationToken token) =>
+        {
+            if (string.IsNullOrWhiteSpace(request.Revision)) throw new PanelException(428, "FILE_REVISION_REQUIRED", "Read the current file revision before saving.");
+            await files.WriteTextAsync(id, path, request.Content, token, request.Revision); return Results.NoContent();
+        });
         api.MapGet("/servers/{id:guid}/files/download", (Guid id, string path, FileManagerService files) => { var item = files.Download(id, path); return Results.File(item.Path, "application/octet-stream", item.Name, enableRangeProcessing: true); });
         api.MapPost("/servers/{id:guid}/files/upload", UploadAsync).DisableAntiforgery();
         api.MapPost("/servers/{id:guid}/files/move", async (Guid id, MoveFileRequest request, FileManagerService files, CancellationToken token) => { await files.MoveAsync(id, request.Source, request.Destination, token); return Results.NoContent(); });
@@ -122,12 +132,19 @@ public static partial class ApiEndpoints
         api.MapPost("/servers/{id:guid}/backups/{backupId:guid}/restore", async (Guid id, Guid backupId, BackupService backups, CancellationToken token) => { var job = await backups.QueueRestoreAsync(id, backupId, token); return Results.Accepted($"/api/v1/jobs/{job.Id}", job); });
 
         api.MapGet("/servers/{id:guid}/schedules", (Guid id, SchedulerService scheduler, CancellationToken token) => scheduler.ListAsync(id, token));
+        api.MapGet("/servers/{id:guid}/schedules/{scheduleId:guid}/runs", (Guid id, Guid scheduleId, SchedulerService scheduler, CancellationToken token) => scheduler.HistoryAsync(id, scheduleId, token));
+        api.MapPost("/servers/{id:guid}/schedules/{scheduleId:guid}/run", async (Guid id, Guid scheduleId, SchedulerService scheduler, CancellationToken token) => { await scheduler.RunNowAsync(id, scheduleId, token); return Results.Accepted(); });
         api.MapPost("/servers/{id:guid}/schedules", (Guid id, SaveScheduleRequest request, SchedulerService scheduler, CancellationToken token) => scheduler.CreateAsync(id, request, token));
         api.MapPut("/servers/{id:guid}/schedules/{scheduleId:guid}", (Guid id, Guid scheduleId, SaveScheduleRequest request, SchedulerService scheduler, CancellationToken token) => scheduler.UpdateAsync(id, scheduleId, request, token));
         api.MapPatch("/servers/{id:guid}/schedules/{scheduleId:guid}", async (Guid id, Guid scheduleId, ToggleScheduleRequest request, SchedulerService scheduler, CancellationToken token) => { await scheduler.ToggleAsync(id, scheduleId, request.Enabled, token); return Results.NoContent(); });
         api.MapDelete("/servers/{id:guid}/schedules/{scheduleId:guid}", async (Guid id, Guid scheduleId, SchedulerService scheduler, CancellationToken token) => { await scheduler.DeleteAsync(id, scheduleId, token); return Results.NoContent(); });
 
         api.MapGet("/jobs/{id:guid}", async (Guid id, OperationQueue operations, CancellationToken token) => await operations.GetAsync(id, token) is { } job ? Results.Ok(job) : throw PanelProblems.NotFound("Job"));
+        api.MapGet("/jobs", (Guid? serverId, int? limit, OperationQueue operations, CancellationToken token) => operations.ListAsync(serverId, limit ?? 100, token));
+        api.MapPost("/jobs/{id:guid}/cancel", (Guid id, OperationQueue operations, CancellationToken token) => operations.CancelAsync(id, token));
+        api.MapPost("/jobs/{id:guid}/retry", (Guid id, JobRecoveryService recovery, CancellationToken token) => recovery.RetryAsync(id, token));
+        api.MapPut("/servers/{id:guid}/backups/{backupId:guid}/pin", async (Guid id, Guid backupId, PinBackupRequest request, BackupService backups, CancellationToken token) =>
+        { await backups.SetPinnedAsync(id, backupId, request.Pinned, token); return Results.NoContent(); });
         api.MapGet("/java", (JavaDiscoveryService java, CancellationToken token) => java.GetAsync(token));
         api.MapPost("/java/rescan", (JavaDiscoveryService java, CancellationToken token) => java.ScanAsync(token));
         api.MapPost("/java/custom", (AddJavaRequest request, JavaDiscoveryService java, CancellationToken token) =>
@@ -150,9 +167,14 @@ public static partial class ApiEndpoints
         api.MapGet("/system/status", (HostMetricsService metrics) => metrics.GetStatus());
         api.MapGet("/servers/{id:guid}/gate", (Guid id, GateProxyService gate, CancellationToken token) => gate.GetAsync(id, token));
         api.MapPut("/servers/{id:guid}/gate/config", (Guid id, UpdateGateConfigurationRequest request, GateProxyService gate, CancellationToken token) => gate.UpdateAsync(id, request, token));
+        api.MapPost("/servers/{id:guid}/gate/prepare-backends", async (Guid id, PrepareGateBackendsRequest request, GateBackendConfigurationService backends, CancellationToken token) =>
+        {
+            await backends.PrepareAsync(id, request.ExpectedRevision, token);
+            return Results.NoContent();
+        });
         api.MapPost("/servers/{id:guid}/gate/update", async (Guid id, GateActionRequest request, GateProxyService gate, CancellationToken token) =>
         {
-            var job = await gate.QueueUpdateAsync(id, request.ConfirmDisconnectPlayers, token);
+            var job = await gate.QueueUpdateAsync(id, request.ConfirmDisconnectPlayers, token, request.Version);
             return Results.Accepted($"/api/v1/jobs/{job.Id}", job);
         });
         api.MapPost("/servers/{id:guid}/gate/secrets/{kind}/reveal", async (Guid id, string kind, HttpResponse response, GateProxyService gate, CancellationToken token) =>
@@ -348,7 +370,7 @@ public static partial class ApiEndpoints
             throw PanelProblems.Validation("The multipart form data is invalid.");
         }
         var file = form.Files.GetFile("file") ?? throw PanelProblems.Validation("Multipart field 'file' is required.");
-        await files.UploadAsync(id, path ?? "", file, token); return Results.NoContent();
+        await files.UploadAsync(id, path ?? "", file, token, request.Query["overwrite"] == "true"); return Results.NoContent();
     }
 
     private static async Task<IResult> UploadIconAsync(Guid id, HttpRequest request, ServerIconService icons, CancellationToken token)

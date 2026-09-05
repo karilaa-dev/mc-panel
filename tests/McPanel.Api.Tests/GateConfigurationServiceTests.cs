@@ -49,6 +49,33 @@ public sealed class GateConfigurationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Classic_rejects_online_backend_before_start_while_Lite_preserves_its_authentication()
+    {
+        var gate = Gate(25565);
+        var backend = Backend("Vanilla world", 25566, null);
+        backend.Kind = ServerKind.Vanilla;
+        WriteProperties(backend);
+        var file = Path.Combine(_paths.Instance(backend.Id), "server.properties");
+        await File.AppendAllTextAsync(file, "\nonline-mode=true\n");
+        var before = await File.ReadAllTextAsync(file);
+        var settings = Settings(gate, GateMode.Classic, backend.Id);
+        settings.ClassicForwardingMode = GateForwardingMode.None;
+        var service = new GateConfigurationService(_paths);
+
+        var error = await Assert.ThrowsAsync<PanelException>(() => service.ValidateBackendAuthenticationAsync(settings, [backend], default));
+        Assert.Equal("GATE_BACKEND_AUTHENTICATION", error.Code);
+        Assert.Contains("Use Lite", error.Message);
+        var broken = await service.GenerateAsync(gate, settings, [backend], "play.example.com", default);
+        Assert.Single(broken.ConnectionProblems);
+
+        settings.Mode = GateMode.Lite;
+        await service.ValidateBackendAuthenticationAsync(settings, [backend], default);
+        var working = await service.GenerateAsync(gate, settings, [backend], "play.example.com", default);
+        Assert.Empty(working.ConnectionProblems);
+        Assert.Equal(before, await File.ReadAllTextAsync(file));
+    }
+
+    [Fact]
     public async Task Lite_configuration_contains_only_this_instances_exact_routes()
     {
         var gate = Gate(25565);

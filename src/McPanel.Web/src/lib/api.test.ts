@@ -80,3 +80,14 @@ describe("API antiforgery token lifecycle", () => {
     expect(calls.find((call) => call.url.endsWith("/console"))?.token).toBe("request-token-2")
   })
 })
+
+it("reports expired authentication centrally without treating it as empty data", async () => {
+  const expired = vi.fn()
+  window.addEventListener("mcpanel-session-expired", expired)
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ message: "Session expired" }, 401)))
+  try {
+    const { api } = await import("@/lib/api")
+    await expect(api.servers()).rejects.toThrow()
+    expect(expired).toHaveBeenCalledOnce()
+  } finally { window.removeEventListener("mcpanel-session-expired", expired) }
+})

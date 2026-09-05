@@ -903,7 +903,7 @@ public sealed partial class ServerImportService(
         PanelPaths paths,
         StateDbContext state,
         ILogger logger,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, Guid? onlyServerId = null)
     {
         if (!Directory.Exists(paths.Staging)) return;
         foreach (var journalPath in Directory.EnumerateFiles(
@@ -917,6 +917,7 @@ public sealed partial class ServerImportService(
                     journal = await JsonSerializer.DeserializeAsync<ImportActivationJournal>(
                                   stream, ImportActivationJsonOptions, cancellationToken)
                               ?? throw new InvalidDataException("The import activation journal is empty.");
+                if (onlyServerId.HasValue && journal.ServerId != onlyServerId.Value) continue;
                 var destination = Path.GetFullPath(paths.Instance(journal.ServerId));
                 if (journal.Version != ImportActivationVersion || journal.ServerId == Guid.Empty ||
                     !Path.GetFullPath(journal.Destination).Equals(destination, StringComparison.Ordinal))
@@ -928,6 +929,8 @@ public sealed partial class ServerImportService(
                     if (!Directory.Exists(destination))
                     {
                         server.State = ServerState.Error;
+                        server.RecoveryRequired = true;
+                        server.RecoveryReason = "Imported server data is missing; repair the interrupted import before continuing.";
                         server.ProcessId = null;
                         server.UpdatedAt = DateTimeOffset.UtcNow;
                         await state.SaveChangesAsync(cancellationToken);
@@ -935,6 +938,9 @@ public sealed partial class ServerImportService(
                             journal.ServerId, journalPath);
                         continue;
                     }
+                    server.RecoveryRequired = false; server.RecoveryReason = null;
+                    if (server.State == ServerState.Error) server.State = ServerState.Stopped;
+                    await state.SaveChangesAsync(cancellationToken);
                     File.Delete(journalPath);
                     logger.LogInformation("Finalized interrupted server import activation for {ServerId}", journal.ServerId);
                     continue;

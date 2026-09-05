@@ -351,6 +351,7 @@ export interface GateRouteDto {
   backendKind?: "Managed" | "External"
 }
 export interface GateStatusDto {
+  connectionProblems?: string[]
   serverId: string
   installation: { installed: boolean; version?: string | null; latestVersion?: string | null; updateAvailable: boolean }
   runtime: {
@@ -401,6 +402,8 @@ export interface PlayerInventoryBackupPreviewDto {
 }
 
 export interface BackupDto {
+  pinned?: boolean
+  verifiedAt?: string
   id: string
   fileName: string
   size: number
@@ -442,11 +445,16 @@ export type ScheduleWriteDto = Omit<
 export interface JobDto {
   id: string
   type: string
-  state: "Queued" | "Running" | "Completed" | "Failed"
+  state: "Queued" | "Running" | "Completed" | "Failed" | "Interrupted" | "Canceled"
   progress: number
   message?: string
   error?: string
   serverId?: string | null
+  createdAt?: string
+  updatedAt?: string
+  canCancel?: boolean
+  canRetry?: boolean
+  retryOf?: string | null
 }
 
 export interface ConsoleEventDto {
@@ -670,8 +678,26 @@ export interface ChangeServerSoftwareRequest {
 }
 
 export interface CreateGateServerRequest {
+  version?: string
   name: string
   port: number
   startOnBoot?: boolean
   clientRequestId?: string
+}
+
+export interface IncidentDto {
+  id: string
+  serverId?: string | null
+  code: string
+  message: string
+  openedAt: string
+  resolvedAt?: string | null
+}
+export interface AuditEventDto {
+  id: number
+  timestamp: string
+  actor: string
+  action: string
+  target: string
+  outcome: string
 }

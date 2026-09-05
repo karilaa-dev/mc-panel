@@ -29,7 +29,7 @@ public sealed class ModrinthModInstallerService(
             (_, jobId, token) => InstallAsync(
                 serverId, request.ProjectId, request.VersionId,
                 request.SelectedDependencyProjectIds, false, jobId, token),
-            cancellationToken);
+            cancellationToken, inputJson: System.Text.Json.JsonSerializer.Serialize(request));
     }
 
     public Task<JobDto> QueuePluginAsync(
@@ -41,7 +41,7 @@ public sealed class ModrinthModInstallerService(
             (_, jobId, token) => InstallAsync(
                 serverId, request.ProjectId, request.VersionId,
                 request.SelectedDependencyProjectIds, true, jobId, token),
-            cancellationToken);
+            cancellationToken, inputJson: System.Text.Json.JsonSerializer.Serialize(request));
     }
 
     private async Task InstallAsync(

@@ -1,5 +1,7 @@
 import type {
   AdminDto,
+  IncidentDto,
+  AuditEventDto,
   AuthStatusDto,
   BackupDto,
   CatalogDto,
@@ -90,6 +92,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     ? await response.json().catch(() => undefined)
     : await response.text().catch(() => undefined)
   if (!response.ok) {
+    if (response.status === 401 && !path.startsWith("/auth/")) { antiforgeryToken = undefined; window.dispatchEvent(new Event("mcpanel-session-expired")) }
     const problem = typeof body === "object" && body !== null
       ? body as { detail?: string; title?: string; code?: string; errors?: Record<string, string[]> }
       : undefined
@@ -208,12 +211,14 @@ export const api = {
     method: "PUT",
     body: JSON.stringify(body),
   }),
+  gateVersions: () => request<string[]>("/catalog/gate"),
   gate: (id: string) => request<GateStatusDto>(`${serverPath(id)}/gate`),
   saveGate: (id: string, body: GateConfigurationWriteDto) => request<GateStatusDto>(`${serverPath(id)}/gate/config`, {
     method: "PUT", body: JSON.stringify(body),
   }),
-  updateGate: (id: string, confirmDisconnectPlayers = false) => request<JobDto>(`${serverPath(id)}/gate/update`, {
-    method: "POST", body: JSON.stringify({ confirmDisconnectPlayers }),
+  prepareGateBackends: (id: string, expectedRevision: string) => request<void>(`${serverPath(id)}/gate/prepare-backends`, { method: "POST", body: JSON.stringify({ expectedRevision }) }),
+  updateGate: (id: string, confirmDisconnectPlayers = false, version?: string) => request<JobDto>(`${serverPath(id)}/gate/update`, {
+    method: "POST", body: JSON.stringify({ confirmDisconnectPlayers, version }),
   }),
   revealGateSecret: (id: string, kind: "velocity" | "bungeeguard") => request<{ secret: string; generatedAt: string }>(`${serverPath(id)}/gate/secrets/${kind}/reveal`, { method: "POST" }),
   rotateGateSecret: (id: string, kind: "velocity" | "bungeeguard") => request<{ secret: string; generatedAt: string }>(`${serverPath(id)}/gate/secrets/${kind}/rotate`, { method: "POST" }),
@@ -278,21 +283,21 @@ export const api = {
   files: (id: string, path = "") =>
     request<FileEntryDto[]>(`${serverPath(id)}/files?path=${encodeURIComponent(path)}`),
   readFile: (id: string, path: string) =>
-    request<{ content: string }>(`${serverPath(id)}/files/content?path=${encodeURIComponent(path)}`),
-  saveFile: (id: string, path: string, content: string) =>
+    request<{ content: string; revision: string }>(`${serverPath(id)}/files/content?path=${encodeURIComponent(path)}`),
+  saveFile: (id: string, path: string, content: string, revision?: string) =>
     request<void>(`${serverPath(id)}/files/content?path=${encodeURIComponent(path)}`, {
       method: "PUT",
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, revision }),
     }),
   createFile: (id: string, path: string, directory: boolean) =>
     request<void>(`${serverPath(id)}/files`, {
       method: "POST",
       body: JSON.stringify({ path, directory }),
     }),
-  uploadFile: async (id: string, path: string, file: File) => {
+  uploadFile: async (id: string, path: string, file: File, overwrite = false) => {
     const body = new FormData()
     body.set("file", file)
-    return request<void>(`${serverPath(id)}/files/upload?path=${encodeURIComponent(path)}`, {
+    return request<void>(`${serverPath(id)}/files/upload?path=${encodeURIComponent(path)}&overwrite=${overwrite}`, {
       method: "POST",
       body,
     })
@@ -365,6 +370,7 @@ export const api = {
     request<JobDto>(`${serverPath(id)}/backups/${encodeURIComponent(backupId)}/restore`, {
       method: "POST",
     }),
+  pinBackup: (id: string, backupId: string, pinned: boolean) => request<void>(`${serverPath(id)}/backups/${encodeURIComponent(backupId)}/pin`, { method: "PUT", body: JSON.stringify({ pinned }) }),
   deleteBackup: (id: string, backupId: string) =>
     request<void>(`${serverPath(id)}/backups/${encodeURIComponent(backupId)}`, {
       method: "DELETE",
@@ -372,6 +378,8 @@ export const api = {
   backupDownloadUrl: (id: string, backupId: string) =>
     `${API_BASE}${serverPath(id)}/backups/${encodeURIComponent(backupId)}`,
 
+  runSchedule: (id: string, scheduleId: string) => request<void>(`${serverPath(id)}/schedules/${encodeURIComponent(scheduleId)}/run`, { method: "POST" }),
+  scheduleRuns: (id: string, scheduleId: string) => request<Array<{ id: string; startedAt: string; finishedAt?: string; result: string }>>(`${serverPath(id)}/schedules/${encodeURIComponent(scheduleId)}/runs`),
   schedules: (id: string) => request<ScheduleDto[]>(`${serverPath(id)}/schedules`),
   createSchedule: (id: string, body: ScheduleWriteDto) =>
     request<ScheduleDto>(`${serverPath(id)}/schedules`, {
@@ -402,5 +410,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ command }),
     }),
+  recovery: () => request<{ configured: boolean; intervalMinutes: number; points: Array<{ id: string; createdAt: string; size: number; verifiedAt?: string; replicatedAt?: string; error?: string }> }>("/recovery"),
+  createRecovery: () => request<JobDto>("/recovery", { method: "POST" }),
+  recoveryDownloadUrl: (id: string) => `${API_BASE}/recovery/${encodeURIComponent(id)}/download`,
+  exportServer: (id: string) => request<JobDto>(`${serverPath(id)}/export`, { method: "POST" }),
+  exportDownloadUrl: (id: string) => `${API_BASE}/exports/${encodeURIComponent(id)}/download`,
+  jobs: () => request<JobDto[]>("/jobs"),
+  incidents: () => request<IncidentDto[]>("/incidents"),
+  audit: () => request<AuditEventDto[]>("/audit"),
+  cancelJob: (id: string) => request<JobDto>(`/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
+  retryJob: (id: string) => request<JobDto>(`/jobs/${encodeURIComponent(id)}/retry`, { method: "POST" }),
+  recoverServer: (id: string) => request<{ recovered: boolean }>(`${serverPath(id)}/recover`, { method: "POST" }),
   job: (id: string) => request<JobDto>(`/jobs/${encodeURIComponent(id)}`),
 }

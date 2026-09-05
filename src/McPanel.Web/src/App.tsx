@@ -1,6 +1,6 @@
-import { lazy, Suspense } from "react"
-import { useQuery } from "@tanstack/react-query"
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom"
+import { lazy, Suspense, useEffect } from "react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { createBrowserRouter, RouterProvider, Navigate, Route, Routes } from "react-router-dom"
 import { AuthScreen } from "@/components/auth-screen"
 import { AppShell } from "@/components/app-shell"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
@@ -9,6 +9,7 @@ import { Toaster } from "@/components/ui/sonner"
 import { WifiOffIcon } from "lucide-react"
 import { api } from "@/lib/api"
 
+const ActivityPage = lazy(() => import("@/pages/activity-page").then((module) => ({ default: module.ActivityPage })))
 const DashboardPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.DashboardPage })))
 const CreateServerPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.CreateServerPage })))
 const ServerCreationPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.ServerCreationPage })))
@@ -57,11 +58,18 @@ function UnavailableScreen({ message }: { message: string }) {
 }
 
 function AppRoutes() {
+  const queryClient = useQueryClient()
+  useEffect(() => {
+    const expired = () => { queryClient.setQueryData(["auth-status"], { authenticated: false, setupRequired: false }); queryClient.removeQueries({ predicate: query => query.queryKey[0] !== "auth-status" }); void queryClient.invalidateQueries({ queryKey: ["auth-status"] }) }
+    window.addEventListener("mcpanel-session-expired", expired)
+    return () => window.removeEventListener("mcpanel-session-expired", expired)
+  }, [queryClient])
   const auth = useQuery({
     queryKey: ["auth-status"],
     queryFn: api.authStatus,
     retry: false,
     staleTime: 30_000,
+    refetchInterval: 30_000,
   })
 
   if (auth.isLoading) return <LoadingScreen />
@@ -75,6 +83,7 @@ function AppRoutes() {
       <Routes>
       <Route element={<AppShell />}>
         <Route index element={<DashboardPage />} />
+        <Route path="activity" element={<ActivityPage />} />
         <Route path="create" element={<CreateServerPage />} />
         <Route path="servers/:serverId/creating/:jobId" element={<ServerCreationPage />} />
         <Route path="servers/:serverId" element={<ServerOverviewPage />} />
@@ -99,13 +108,8 @@ function AppRoutes() {
   )
 }
 
-export function App() {
-  return (
-    <BrowserRouter>
-      <AppRoutes />
-      <Toaster richColors closeButton />
-    </BrowserRouter>
-  )
-}
+const router = createBrowserRouter([{ path: "*", element: <><AppRoutes /><Toaster richColors closeButton /></> }])
+
+export function App() { return <RouterProvider router={router} /> }
 
 export default App

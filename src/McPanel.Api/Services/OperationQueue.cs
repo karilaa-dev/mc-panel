@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using System.Collections.Concurrent;
 using McPanel.Api.Contracts;
 using McPanel.Api.Data;
 using McPanel.Api.Hubs;
@@ -16,6 +17,7 @@ public sealed class OperationQueue(
     IHostApplicationLifetime lifetime,
     ILogger<OperationQueue> logger) : BackgroundService
 {
+    private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _activeCancellation = new();
     private readonly Channel<QueuedOperation> _channel = Channel.CreateBounded<QueuedOperation>(new BoundedChannelOptions(256)
     {
         FullMode = BoundedChannelFullMode.Wait, SingleReader = false, SingleWriter = false
@@ -62,15 +64,21 @@ public sealed class OperationQueue(
     }
 
     public async Task<JobDto> EnqueueAsync(string type, Guid? serverId, Func<IServiceProvider, Guid, CancellationToken, Task> action,
-        CancellationToken cancellationToken, string? clientRequestId = null)
+        CancellationToken cancellationToken, string? clientRequestId = null, string? inputJson = null, Guid? retryOf = null)
     {
         if (!string.IsNullOrWhiteSpace(clientRequestId))
         {
             await using var lookup = await stateFactory.CreateDbContextAsync(cancellationToken);
             var existing = await lookup.Jobs.AsNoTracking().SingleOrDefaultAsync(x => x.ClientRequestId == clientRequestId, cancellationToken);
-            if (existing is not null) return Map(existing);
+            if (existing is not null)
+            {
+                if (existing.Type != type || existing.ServerId != serverId || existing.InputJson != inputJson)
+                    throw PanelProblems.Conflict("REQUEST_ID_REUSED", "This request identifier belongs to a different operation.");
+                return Map(existing);
+            }
         }
         var job = CreatePending(type, serverId, clientRequestId);
+        job.InputJson = inputJson; job.RetryOf = retryOf;
         await using (var db = await stateFactory.CreateDbContextAsync(cancellationToken))
         {
             db.Jobs.Add(job);
@@ -106,22 +114,64 @@ public sealed class OperationQueue(
     {
         await foreach (var item in _channel.Reader.ReadAllAsync(stoppingToken))
         {
+            using var execution = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            _activeCancellation[item.JobId] = execution;
             try
             {
-                await SetStateAsync(item.JobId, JobState.Running, 1, "Running", null, stoppingToken);
-                await item.Action(serviceProvider, item.JobId, stoppingToken);
+                await using (var db = await stateFactory.CreateDbContextAsync(stoppingToken))
+                {
+                    var claimed = await db.Jobs.Where(x => x.Id == item.JobId && x.State == JobState.Queued && !x.CancellationRequested)
+                        .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.State, JobState.Running)
+                            .SetProperty(x => x.Progress, 1).SetProperty(x => x.Message, "Running").SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), stoppingToken);
+                    if (claimed == 0) continue;
+                }
+                execution.Token.ThrowIfCancellationRequested();
+                await item.Action(serviceProvider, item.JobId, execution.Token);
                 await SetStateAsync(item.JobId, JobState.Completed, 100, "Completed", null, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-                await SetStateAsync(item.JobId, JobState.Failed, 100, "Interrupted", "The panel stopped before this operation completed.", CancellationToken.None);
+                await TrySetTerminalAsync(item.JobId, JobState.Interrupted, "Interrupted", "The panel stopped before completion was confirmed. Review server state before retrying.");
+            }
+            catch (OperationCanceledException) when (execution.IsCancellationRequested)
+            {
+                await TrySetTerminalAsync(item.JobId, JobState.Canceled, "Canceled", "Canceled at a safe operation boundary.");
             }
             catch (Exception exception)
             {
                 logger.LogError(exception, "Operation {JobId} failed", item.JobId);
-                await SetStateAsync(item.JobId, JobState.Failed, 100, "Failed", exception.Message, CancellationToken.None);
+                await TrySetTerminalAsync(item.JobId, JobState.Failed, "Failed", exception.Message);
             }
+            finally { _activeCancellation.TryRemove(item.JobId, out _); }
         }
+    }
+
+    private async Task TrySetTerminalAsync(Guid id, JobState state, string message, string error)
+    {
+        try { await SetStateAsync(id, state, 100, message, error, CancellationToken.None); }
+        catch (Exception exception) { logger.LogError(exception, "Could not record terminal state for {JobId}; startup reconciliation is required", id); }
+    }
+
+    public async Task<IReadOnlyList<JobDto>> ListAsync(Guid? serverId, int limit, CancellationToken token)
+    {
+        await using var db = await stateFactory.CreateDbContextAsync(token);
+        var query = db.Jobs.AsNoTracking();
+        if (serverId.HasValue) query = query.Where(x => x.ServerId == serverId);
+        return (await query.OrderByDescending(x => x.CreatedAt).Take(Math.Clamp(limit, 1, 200)).ToListAsync(token)).Select(Map).ToList();
+    }
+
+    public async Task<JobDto> CancelAsync(Guid id, CancellationToken token)
+    {
+        await using var db = await stateFactory.CreateDbContextAsync(token);
+        var changed = await db.Jobs.Where(x => x.Id == id && !x.CancellationRequested &&
+                (x.State == JobState.Queued || x.State == JobState.Running && x.Type == "Backup"))
+            .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.CancellationRequested, true)
+                .SetProperty(x => x.State, x => x.State == JobState.Queued ? JobState.Canceled : x.State)
+                .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), token);
+        if (changed == 0) throw PanelProblems.Conflict("JOB_NOT_CANCELABLE", "This operation has completed or cannot be safely canceled while running.");
+        if (_activeCancellation.TryGetValue(id, out var execution))
+        { try { await execution.CancelAsync(); } catch (ObjectDisposedException) { } }
+        return (await GetAsync(id, token))!;
     }
 
     private async Task SetStateAsync(Guid id, JobState state, int progress, string message, string? error, CancellationToken cancellationToken)
@@ -134,6 +184,11 @@ public sealed class OperationQueue(
         try { await audience.PublishAsync(group => hub.Clients.Group(group).SendAsync("JobUpdated", Map(job), cancellationToken), cancellationToken); } catch (Exception exception) { logger.LogDebug(exception, "Could not broadcast job {JobId}", job.Id); }
     }
 
-    private static JobDto Map(JobEntity job) => new(job.Id, job.Type, job.State, job.Progress, job.Message, job.Error, job.ServerId);
+    public static bool IsTerminal(JobState state) => state is JobState.Completed or JobState.Failed or JobState.Interrupted or JobState.Canceled;
+    private static JobDto Map(JobEntity job) => new(job.Id, job.Type, job.State, job.Progress, job.Message, job.Error, job.ServerId,
+        job.CreatedAt, job.UpdatedAt,
+        !job.CancellationRequested && (job.State == JobState.Queued || job.State == JobState.Running && job.Type == "Backup"),
+        job.State is JobState.Failed or JobState.Interrupted or JobState.Canceled && job.InputJson is not null && job.Type is "Backup" or "Restore" or "Start" or "Stop" or "Install",
+        job.RetryOf);
     private sealed record QueuedOperation(Guid JobId, Func<IServiceProvider, Guid, CancellationToken, Task> Action);
 }

@@ -37,6 +37,9 @@ export function GateProxyPage() {
 function GateSettings({ gate, server }: { gate: GateStatusDto; server: ServerSummaryDto }) {
   const queryClient = useQueryClient()
   const [tab, setTab] = useState("general")
+  const [selectedVersion, setSelectedVersion] = useState("")
+  const versions = useQuery({ queryKey: ["gate-versions"], queryFn: api.gateVersions })
+  const targetVersion = versions.data?.includes(selectedVersion) ? selectedVersion : (versions.data?.[0] ?? "")
   const [form, setForm] = useState<GateConfigurationWriteDto>({
     expectedRevision: gate.configuration.revision,
     mode: gate.configuration.mode,
@@ -61,8 +64,13 @@ function GateSettings({ gate, server }: { gate: GateStatusDto; server: ServerSum
     onError: (error) => toast.error(error.message),
   })
   const update = useMutation({
-    mutationFn: () => api.updateGate(server.id, true),
-    onSuccess: (job) => toast.success("Gate update queued", { description: job.message ?? job.id.slice(0, 8) }),
+    mutationFn: () => api.updateGate(server.id, true, targetVersion),
+    onSuccess: (job) => toast("Gate version change queued", { description: `Follow job ${job.id.slice(0, 8)} in Activity.` }),
+    onError: (error) => toast.error(error.message),
+  })
+  const prepare = useMutation({
+    mutationFn: () => api.prepareGateBackends(server.id, gate.configuration.revision),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["gate", server.id] }); toast.success("Backend network settings prepared") },
     onError: (error) => toast.error(error.message),
   })
   const activeConnections = Math.max(gate.runtime.activeConnections, gate.runtime.onlinePlayers)
@@ -77,8 +85,9 @@ function GateSettings({ gate, server }: { gate: GateStatusDto; server: ServerSum
     title="Gate settings"
     className="max-w-5xl"
     description={`Proxy behavior and forwarding for ${server.name}. Managed destinations and host routes stay on the Backends page.`}
-    actions={<><AlertDialog><AlertDialogTrigger render={<Button variant="outline" />}><RefreshCwIcon data-icon="inline-start" />Update Gate</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Update this Gate instance?</AlertDialogTitle><AlertDialogDescription>{activeConnections > 0 ? `${activeConnections} active connection(s) will be disconnected. ` : ""}Only this instance’s verified binary and rollback state are changed.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction disabled={update.isPending} onClick={() => update.mutate()}>Queue update</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog><Button disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending && <Spinner data-icon="inline-start" />}Save settings</Button></>}
+    actions={<Button disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending && <Spinner data-icon="inline-start" />}Save settings</Button>}
   >
+    {Boolean(gate.connectionProblems?.length) && <Alert variant="destructive"><AlertTitle>Backend setup prevents joining</AlertTitle><AlertDescription>{gate.connectionProblems?.map((warning) => <p key={warning}>{warning}</p>)}</AlertDescription></Alert>}
     <TooltipProvider delay={250}><Tabs value={tab} onValueChange={setTab}>
       <TabsList>
         <TabsTrigger value="general">General</TabsTrigger>
@@ -86,12 +95,20 @@ function GateSettings({ gate, server }: { gate: GateStatusDto; server: ServerSum
       </TabsList>
       <TabsContent value="general" className="space-y-4">
         <Card>
+          <CardHeader><CardTitle>Gate version</CardTitle><CardDescription>Installed version: {gate.installation.version ?? server.version}. Choose a stable release to upgrade or downgrade.</CardDescription></CardHeader>
+          <CardContent><FieldGroup><Field><FieldLabel>Release</FieldLabel>
+            {versions.isPending ? <Skeleton className="h-9 w-full" /> : versions.isError ? <Alert variant="destructive"><AlertTitle>Gate releases unavailable</AlertTitle><AlertDescription>{versions.error.message}<Button variant="outline" onClick={() => void versions.refetch()}>Retry</Button></AlertDescription></Alert> : <Select items={(versions.data ?? []).map((value) => ({ value, label: value }))} value={targetVersion} onValueChange={(value) => value && setSelectedVersion(value)}><SelectTrigger aria-label="Gate release" className="w-full"><SelectValue placeholder="Choose a stable release" /></SelectTrigger><SelectContent><SelectGroup>{versions.data?.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectGroup></SelectContent></Select>}
+            <FieldDescription>The current binary is retained for rollback. Older releases may not support every saved proxy setting or Minecraft version.</FieldDescription>
+          </Field><Field><AlertDialog><AlertDialogTrigger render={<Button variant="outline" disabled={!targetVersion || versions.isError || targetVersion === gate.installation.version || update.isPending} />}><RefreshCwIcon data-icon="inline-start" />Change Gate version</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Install Gate {targetVersion}?</AlertDialogTitle><AlertDialogDescription>{gate.runtime.state === "Running" ? "Gate will restart. " : ""}{activeConnections > 0 ? `${activeConnections} active connection(s) will be disconnected. ` : ""}The verified release replaces this instance's binary. Track the result in Activity.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction disabled={update.isPending} onClick={() => update.mutate()}>Queue version change</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog></Field></FieldGroup></CardContent>
+        </Card>
+        <Card>
           <CardHeader>
             <CardTitle>Proxy behavior</CardTitle>
             <CardDescription>Configure the locally bound listener and choose Lite transparent routing or the full Classic proxy.</CardDescription>
             {gate.configuration.configurationDirty && <CardAction><Badge variant="outline"><RefreshCwIcon data-icon="inline-start" />Applying changes</Badge></CardAction>}
           </CardHeader>
           <CardContent><FieldGroup>
+            <Field><FieldLabel>Managed backend setup</FieldLabel><FieldDescription>Stop Gate and its backends, save the desired mode, then prepare their network settings. Classic reserves additional memory for Via and managed Bedrock components.</FieldDescription><AlertDialog><AlertDialogTrigger render={<Button variant="outline" disabled={server.state !== "Stopped" || prepare.isPending || form.mode !== gate.configuration.mode} />}>Prepare backends for {gate.configuration.mode}</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Prepare backends for {gate.configuration.mode}?</AlertDialogTitle><AlertDialogDescription>{gate.configuration.mode === "Classic" ? "Backends will use offline mode behind Gate's online authentication and bind only to loopback. Secure-profile enforcement is disabled on the backends. Vanilla uses offline player UUIDs, so existing inventories and permissions may need migration. World files are preserved." : "Restore the backend network settings saved before Classic preparation. Players authenticate with the backend again. Vanilla player UUIDs can differ between modes."} All selected managed servers must be stopped. Original settings and prior property files are retained.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction disabled={prepare.isPending} onClick={() => prepare.mutate()}>Prepare network settings</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog></Field>
             {gate.configuration.lastApplyError && <Field data-invalid><FieldLabel>Last apply failed</FieldLabel><FieldError>{gate.configuration.lastApplyError}</FieldError></Field>}
             <Field><FieldLabel>Proxy mode</FieldLabel><ToggleGroup value={[form.mode]} onValueChange={(values) => values[0] && setMode(values[0] as GateMode)} variant="outline" spacing={0}><ToggleGroupItem value="Lite">Lite</ToggleGroupItem><ToggleGroupItem value="Classic">Classic</ToggleGroupItem></ToggleGroup><FieldDescription>Lite forwards exact hostname routes transparently. Classic enables authentication, status handling, /server switching, forwarding, rate limits, Via, and the other settings in the Classic tab.</FieldDescription></Field>
             <Field><FieldLabel htmlFor="gate-listener-port">Real local listener port</FieldLabel><Input id="gate-listener-port" type="number" min={1024} max={65535} value={form.listenerPort} disabled={gate.runtime.state === "Running"} onChange={(event) => setValue("listenerPort", Number(event.target.value))} /><FieldDescription>Stop Gate before changing this locally bound port.</FieldDescription></Field>

@@ -5,6 +5,8 @@ Paper, Fabric, Forge, NeoForge, custom executable JARs, Modrinth packs, and Mine
 panel handles installs, Java selection, console access, files, players,
 backups, schedules, mods, and plugins.
 
+For proxy versions and Classic/Lite backend preparation, see [Gate setup](deploy/GATE.md).
+
 It runs Java processes directly under systemd. Docker is not required. MC
 Panel finds Java runtimes already installed on the host but does not install
 Java itself.

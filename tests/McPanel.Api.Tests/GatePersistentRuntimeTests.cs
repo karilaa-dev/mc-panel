@@ -29,7 +29,7 @@ public sealed class GatePersistentRuntimeTests : IAsyncLifetime
     {
         if (OperatingSystem.IsWindows()) return;
         var first = await LaunchAsync(Guid.NewGuid(), FreePort());
-        var second = await LaunchAsync(Guid.NewGuid(), FreePort());
+        var second = (await LaunchAsync(Guid.NewGuid(), FreePort())) with { MemoryLimitMb = 1536 };
 
         var firstStarted = await _engine.StartAsync(first, CancellationToken.None);
         var secondStarted = await _engine.StartAsync(second, CancellationToken.None);
@@ -71,7 +71,7 @@ public sealed class GatePersistentRuntimeTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        try { await _engine.StopAllAsync(CancellationToken.None); } catch { }
+        try { await _engine.DisposeAsync(); } catch { }
         if (Directory.Exists(_root)) Directory.Delete(_root, true);
     }
 

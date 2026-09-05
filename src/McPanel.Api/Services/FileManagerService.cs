@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Text;
+using System.Security.Cryptography;
 using McPanel.Api.Configuration;
 using McPanel.Api.Contracts;
 using McPanel.Api.Data;
@@ -51,13 +52,26 @@ public sealed class FileManagerService(
         catch (DecoderFallbackException) { throw PanelProblems.Validation("The file is not valid UTF-8 text."); }
     }
 
-    public async Task WriteTextAsync(Guid serverId, string relativePath, string content, CancellationToken cancellationToken)
+    public async Task<FileContentDto> ReadSnapshotAsync(Guid serverId, string relativePath, CancellationToken token)
+    {
+        var content = await ReadTextAsync(serverId, relativePath, token);
+        return new(content, Revision(content));
+    }
+
+    private static string Revision(string content) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))).ToLowerInvariant();
+
+    public async Task WriteTextAsync(Guid serverId, string relativePath, string content, CancellationToken cancellationToken, string? expectedRevision = null)
     {
         if (string.IsNullOrWhiteSpace(relativePath) || content is null) throw PanelProblems.Validation("A file path and content are required.");
         if (Encoding.UTF8.GetByteCount(content) > options.Value.MaxTextFileBytes) throw new PanelException(413, "FILE_TOO_LARGE", "The text is too large.");
         using var mutation = await AcquireMutationAsync(serverId, cancellationToken);
         var target = resolver.Resolve(mutation.Root, relativePath);
         RejectProtectedGatePath(mutation, target);
+        if (expectedRevision is not null)
+        {
+            if (!File.Exists(target) || Revision(await ReadTextAsync(serverId, relativePath, cancellationToken)) != expectedRevision)
+                throw PanelProblems.Conflict("FILE_REVISION_CONFLICT", "This file changed since it was opened. Your draft is preserved; reload the current file before saving.");
+        }
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
         var temporary = target + $".mcpanel-{Guid.NewGuid():N}.tmp";
         try
@@ -81,7 +95,7 @@ public sealed class FileManagerService(
         if (permissions is not null) await permissions.NormalizeMutationAsync(serverId, path, cancellationToken);
     }
 
-    public async Task UploadAsync(Guid serverId, string relativeDirectory, IFormFile file, CancellationToken cancellationToken)
+    public async Task UploadAsync(Guid serverId, string relativeDirectory, IFormFile file, CancellationToken cancellationToken, bool overwrite = false)
     {
         if (file.Length > options.Value.MaxUploadBytes) throw new PanelException(413, "FILE_TOO_LARGE", "The uploaded file exceeds the configured limit.");
         var fileName = Path.GetFileName(file.FileName);
@@ -93,6 +107,7 @@ public sealed class FileManagerService(
         if (!Directory.Exists(directory)) throw PanelProblems.NotFound("Directory");
         var target = resolver.Resolve(directory, fileName);
         RejectProtectedGatePath(mutation, target);
+        if (File.Exists(target) && !overwrite) throw PanelProblems.Conflict("FILE_EXISTS", "A file with this name already exists. Confirm replacement before uploading.");
         var temporary = target + $".mcpanel-{Guid.NewGuid():N}.upload";
         try
         {
@@ -108,7 +123,7 @@ public sealed class FileManagerService(
                 await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
             }
             await destination.FlushAsync(cancellationToken);
-            File.Move(temporary, target, true);
+            File.Move(temporary, target, overwrite);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
         if (permissions is not null) await permissions.NormalizeMutationAsync(serverId, target, cancellationToken);

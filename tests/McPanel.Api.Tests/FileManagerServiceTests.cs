@@ -13,6 +13,20 @@ public sealed class FileManagerServiceTests : IDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), "mcpanel-files-tests-" + Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task Concurrent_file_edit_is_rejected_without_overwriting_the_newer_content()
+    {
+        var (paths, options) = CreatePaths(); var id = Guid.NewGuid();
+        Directory.CreateDirectory(paths.Instance(id));
+        await File.WriteAllTextAsync(Path.Combine(paths.Instance(id), "server.properties"), "motd=old");
+        var service = CreateService(paths, options, id, ServerState.Stopped, false);
+        var first = await service.ReadSnapshotAsync(id, "server.properties", default);
+        await service.WriteTextAsync(id, "server.properties", "motd=other-admin", default, first.Revision);
+        var error = await Assert.ThrowsAsync<PanelException>(() => service.WriteTextAsync(id, "server.properties", "motd=my-draft", default, first.Revision));
+        Assert.Equal("FILE_REVISION_CONFLICT", error.Code);
+        Assert.Equal("motd=other-admin", await File.ReadAllTextAsync(Path.Combine(paths.Instance(id), "server.properties")));
+    }
+
+    [Fact]
     public async Task Moves_directories_without_treating_them_as_files()
     {
         var options = new PanelOptions

@@ -31,12 +31,51 @@ public sealed class ApiValidationRegressionTests : IAsyncLifetime
     private const string SetupToken = "validation-regression-setup-token";
     private const string JavaId = "validation-test-java";
     private const int MaxUploadBytes = 1_024;
-    private readonly string _root = Path.Combine(Path.GetTempPath(), "mcpanel-validation-api-" + Guid.NewGuid().ToString("N"));
+    private readonly string _root = Path.Combine(OperatingSystem.IsLinux() ? "/var/tmp" : Path.GetTempPath(), "mcpanel-validation-api-" + Guid.NewGuid().ToString("N"));
     private readonly Guid _serverId = Guid.NewGuid();
     private WebApplicationFactory<Program>? _factory;
     private HttpClient? _client;
     private PanelPaths? _paths;
     private string _fakeJavaPath = null!;
+
+    [Fact]
+    public async Task Recovery_bundle_restores_a_clean_data_root_without_source_files()
+    {
+        var recovery = _factory!.Services.GetRequiredService<RecoveryBundleService>();
+        var job = await recovery.QueueAsync(default);
+        var outcome = await WaitForJobAsync(job.Id);
+        Assert.True(outcome.GetProperty("state").GetString() == "Completed", outcome.ToString());
+        var stateFactory = _factory.Services.GetRequiredService<IDbContextFactory<StateDbContext>>();
+        await using var db = await stateFactory.CreateDbContextAsync();
+        var point = await db.RecoveryPoints.SingleAsync();
+        Assert.Null(point.ReplicatedAt); Assert.Null(point.VerifiedAt);
+        var restored = Path.Combine(_root, "clean-data"); var config = Path.Combine(_root, "clean-config");
+        await ProductionCommand.RestoreAsync(Path.Combine(recovery.DirectoryPath, point.FileName), restored, config, new PanelOptions { ReservedDiskBytes = 0 }, default);
+        Assert.True(File.Exists(Path.Combine(restored, "instances", _serverId.ToString("N"), "server.jar")));
+        await using var restoredDb = new StateDbContext(new DbContextOptionsBuilder<StateDbContext>().UseSqlite($"Data Source={Path.Combine(restored, "state.db")};Pooling=False").Options);
+        Assert.Equal(_serverId, (await restoredDb.Servers.SingleAsync()).Id);
+        Assert.Empty(await restoredDb.Backups.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Backup_and_restore_support_worlds_over_two_gib_and_protect_selected_copy_during_retention()
+    {
+        var options = _factory!.Services.GetRequiredService<IOptions<PanelOptions>>().Value;
+        options.BackupRetentionCount = 1; options.BackupRetentionBytes = 1;
+        var world = Path.Combine(_paths!.Instance(_serverId), "large-world.dat");
+        const long worldSize = 2L * 1024 * 1024 * 1024 + 1024;
+        await using (var file = File.Create(world)) { file.SetLength(worldSize); file.Position = worldSize - 1; file.WriteByte(42); }
+        var backups = _factory.Services.GetRequiredService<BackupService>();
+        await backups.CreateAsync(_serverId, Guid.NewGuid(), "Large-world test", default);
+        var original = Assert.Single(await backups.ListAsync(_serverId, default));
+        Assert.NotNull(original.VerifiedAt);
+        await File.WriteAllTextAsync(world, "changed-after-backup");
+        await backups.RestoreAsync(_serverId, original.Id, Guid.NewGuid(), default);
+        Assert.Equal(worldSize, new FileInfo(world).Length);
+        await using var recovered = File.OpenRead(world); recovered.Position = worldSize - 1;
+        Assert.Equal(42, recovered.ReadByte());
+        Assert.Contains(await backups.ListAsync(_serverId, default), x => x.Id == original.Id);
+    }
 
     [Fact]
     public async Task Panel_shutdown_policy_defaults_to_preserve_and_is_persisted()
@@ -136,6 +175,7 @@ fi
 printf '%s\n' 'Done (0.01s)! For help, type "help"'
 while IFS= read -r line; do
     case "$line" in
+        "save-on") printf '%s\n' 'Automatic saving is now enabled' ;;
         "save-all flush") printf '%s\n' 'Saved the game' ;;
         crash) printf '%s\n' 'Simulated crash'; exit 1 ;;
         stop) printf '%s\n' 'Stopping server'; exit 0 ;;
@@ -1521,11 +1561,11 @@ END;
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Backup_creation_enforces_restore_archive_limits_before_commit(bool entryLimit)
+    public async Task Backup_creation_enforces_trusted_limits_before_staging(bool entryLimit)
     {
         var panelOptions = _factory!.Services.GetRequiredService<IOptions<PanelOptions>>().Value;
-        if (entryLimit) panelOptions.MaxArchiveEntries = 1;
-        else panelOptions.MaxExtractedBytes = 1;
+        if (entryLimit) panelOptions.MaxBackupEntries = 1;
+        else panelOptions.MaxBackupBytes = 1;
 
         using var response = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/backups", "{}");
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
@@ -1533,10 +1573,9 @@ END;
         var job = await WaitForJobAsync(document.RootElement.GetProperty("id").GetGuid());
 
         Assert.Equal("Failed", job.GetProperty("state").GetString());
-        Assert.Contains(entryLimit ? "too many entries" : "expands beyond", job.GetProperty("error").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("trusted backup limits", job.GetProperty("error").GetString(), StringComparison.OrdinalIgnoreCase);
         var backupDirectory = _paths!.ServerBackups(_serverId);
-        Assert.True(Directory.Exists(backupDirectory));
-        Assert.Empty(Directory.EnumerateFiles(backupDirectory, "*", SearchOption.AllDirectories));
+        if (Directory.Exists(backupDirectory)) Assert.Empty(Directory.EnumerateFiles(backupDirectory, "*", SearchOption.AllDirectories));
         Assert.Empty(Directory.EnumerateDirectories(_paths.Staging, $"backup-{_serverId:N}-*"));
         await using var verifyScope = _factory.Services.CreateAsyncScope();
         var verifyFactory = verifyScope.ServiceProvider.GetRequiredService<IDbContextFactory<StateDbContext>>();

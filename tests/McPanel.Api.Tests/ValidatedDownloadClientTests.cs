@@ -30,6 +30,33 @@ public sealed class ValidatedDownloadClientTests : IDisposable
     }
 
     [Fact]
+    public async Task Stalled_body_times_out_and_removes_the_partial_download()
+    {
+        var client = Client(new StubHandler(_ => Response(new StreamContent(new StalledStream()))));
+        client.IdleTimeout = TimeSpan.FromMilliseconds(50);
+        var destination = Destination();
+        var error = await Assert.ThrowsAsync<PanelException>(() => client.DownloadAsync(Artifact("sha256", new string('0', 64)), destination, CancellationToken.None));
+        Assert.Equal("UPSTREAM_TIMEOUT", error.Code);
+        Assert.False(File.Exists(destination));
+    }
+
+    [Fact]
+    public async Task Post_metadata_rejects_oversized_body_before_buffering()
+    {
+        var content = new StreamContent(new StalledStream()); content.Headers.ContentLength = 9 * 1024 * 1024;
+        var client = Client(new StubHandler(_ => Response(content)));
+        var error = await Assert.ThrowsAsync<PanelException>(() => client.JsonPostAsync(new Uri("https://api.modrinth.com/v2/version_files"), new { hashes = Array.Empty<string>() }, CancellationToken.None, DownloadPolicy.Modrinth));
+        Assert.Equal("INSTALL_DOWNLOAD_REJECTED", error.Code);
+    }
+
+    private sealed class StalledStream : NonSeekableReadStream
+    {
+        public StalledStream() : base([]) { }
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        { await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken); return 0; }
+    }
+
+    [Fact]
     public async Task Unsupported_checksum_algorithm_returns_controlled_502_without_downloading()
     {
         var handler = new StubHandler(_ => Response("abc"u8.ToArray()));

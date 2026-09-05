@@ -17,7 +17,7 @@ public sealed class SoftwareActivationService(
         SoftwareMetadataSnapshot originalMetadata) =>
         new(serverId, source, paths.Instance(serverId), rollback, originalMetadata);
 
-    public async Task<IReadOnlySet<Guid>> RecoverInterruptedAsync(StateDbContext state, CancellationToken cancellationToken)
+    public async Task<IReadOnlySet<Guid>> RecoverInterruptedAsync(StateDbContext state, CancellationToken cancellationToken, Guid? onlyServerId = null)
     {
         var unrecovered = new HashSet<Guid>();
         if (!Directory.Exists(paths.Staging)) return unrecovered;
@@ -26,6 +26,7 @@ public sealed class SoftwareActivationService(
             cancellationToken.ThrowIfCancellationRequested();
             ActivationTransaction? activation = null;
             Guid? serverId = TryServerIdFromRollback(rollback);
+            if (onlyServerId.HasValue && serverId != onlyServerId) continue;
             try
             {
                 activation = ActivationTransaction.Open(paths, rollback);
@@ -34,6 +35,7 @@ public sealed class SoftwareActivationService(
                 if (activation.IsCommitRecorded)
                 {
                     activation.Commit();
+                    if (server is not null) { server.RecoveryRequired = false; server.RecoveryReason = null; await state.SaveChangesAsync(cancellationToken); }
                     logger.LogInformation("Finalized interrupted server core activation for {ServerId}", activation.ServerId);
                     continue;
                 }
@@ -44,6 +46,7 @@ public sealed class SoftwareActivationService(
                     await state.SaveChangesAsync(cancellationToken);
                 }
                 activation.Rollback();
+                if (server is not null) { server.RecoveryRequired = false; server.RecoveryReason = null; await state.SaveChangesAsync(cancellationToken); }
                 logger.LogWarning("Rolled back interrupted server core activation for {ServerId}", activation.ServerId);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
@@ -57,6 +60,8 @@ public sealed class SoftwareActivationService(
                         if (server is not null)
                         {
                             server.State = ServerState.Error;
+                            server.RecoveryRequired = true;
+                            server.RecoveryReason = "Interrupted recovery could not restore the original files. Recovery artifacts have been preserved.";
                             server.ProcessId = null;
                             server.UpdatedAt = DateTimeOffset.UtcNow;
                             await state.SaveChangesAsync(cancellationToken);

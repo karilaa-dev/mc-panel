@@ -10,7 +10,7 @@ using Microsoft.Extensions.Options;
 
 namespace McPanel.Api.Services;
 
-public sealed class BackupService(
+public sealed partial class BackupService(
     PanelPaths paths,
     IDbContextFactory<StateDbContext> stateFactory,
     ProcessSupervisor supervisor,
@@ -32,18 +32,18 @@ public sealed class BackupService(
         await EnsureServerAsync(serverId, cancellationToken);
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         return await db.Backups.Where(x => x.ServerId == serverId).OrderByDescending(x => x.CreatedAt)
-            .Select(x => new BackupDto(x.Id, x.FileName, x.Size, x.CreatedAt, x.Reason, x.State)).ToListAsync(cancellationToken);
+            .Select(x => new BackupDto(x.Id, x.FileName, x.Size, x.CreatedAt, x.Reason, x.State, x.Pinned, x.VerifiedAt)).ToListAsync(cancellationToken);
     }
 
     public async Task<JobDto> QueueCreateAsync(Guid serverId, string reason, CancellationToken cancellationToken)
     {
         using var serverLock = await keyedLock.AcquireAsync(serverId, cancellationToken);
         await EnsureCreateAllowedAsync(serverId, cancellationToken);
-        return await operations.EnqueueAsync("Backup", serverId, (_, jobId, token) => CreateAsync(serverId, jobId, reason, token), cancellationToken);
+        return await operations.EnqueueAsync("Backup", serverId, (_, jobId, token) => CreateAsync(serverId, jobId, reason, token), cancellationToken, inputJson: System.Text.Json.JsonSerializer.Serialize(new { reason }));
     }
 
     public Task<JobDto> QueueRestoreAsync(Guid serverId, Guid backupId, CancellationToken cancellationToken) =>
-        operations.EnqueueAsync("Restore", serverId, (_, jobId, token) => RestoreAsync(serverId, backupId, jobId, token), cancellationToken);
+        operations.EnqueueAsync("Restore", serverId, (_, jobId, token) => RestoreAsync(serverId, backupId, jobId, token), cancellationToken, inputJson: System.Text.Json.JsonSerializer.Serialize(new { backupId }));
 
     public async Task RunScheduledAsync(Guid serverId, CancellationToken cancellationToken)
     {
@@ -65,6 +65,7 @@ public sealed class BackupService(
         using var serverLock = await keyedLock.AcquireAsync(serverId, cancellationToken);
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var backup = await db.Backups.SingleOrDefaultAsync(x => x.ServerId == serverId && x.Id == backupId, cancellationToken) ?? throw PanelProblems.NotFound("Backup");
+        if (backup.Pinned) throw PanelProblems.Conflict("BACKUP_PINNED", "Unpin this recovery copy before deleting it.");
         var path = Path.Combine(paths.ServerBackups(serverId), backup.FileName);
         if (File.Exists(path)) File.Delete(path);
         var modpack = BackupModpackState(serverId, backupId);
@@ -72,7 +73,7 @@ public sealed class BackupService(
         db.Backups.Remove(backup); await db.SaveChangesAsync(cancellationToken);
     }
 
-    private async Task CreateAsync(Guid serverId, Guid jobId, string reason, CancellationToken cancellationToken)
+    internal async Task CreateAsync(Guid serverId, Guid jobId, string reason, CancellationToken cancellationToken)
     {
         using var serverLock = await keyedLock.AcquireAsync(serverId, cancellationToken);
         await CreateLockedAsync(serverId, jobId, reason, cancellationToken);
@@ -86,12 +87,23 @@ public sealed class BackupService(
         EnsureCreateAllowed(server.State, running);
         var softwareMetadataJson = JsonSerializer.Serialize(
             SoftwareActivationService.SoftwareMetadataSnapshot.Capture(server), MetadataJsonOptions);
+        var measured = ArchiveIO.Measure(paths.Instance(serverId));
+        var modpackMeasured = ArchiveIO.Measure(paths.ServerModpack(serverId));
+        if (measured.Bytes > options.Value.MaxBackupBytes || measured.Entries > options.Value.MaxBackupEntries)
+            throw new PanelException(409, "BACKUP_LIMIT_EXCEEDED", "The server exceeds the configured trusted backup limits.");
+        using var diskReservation = ArchiveIO.ReserveSpace(paths.Data, checked((measured.Bytes + modpackMeasured.Bytes) * 2 + 16 * 1024 * 1024), options.Value.ReservedDiskBytes);
+        var capturedAt = DateTimeOffset.UtcNow;
         var id = Guid.NewGuid();
         var stage = Path.Combine(paths.Staging, $"backup-{serverId:N}-{id:N}");
         var modpackStage = stage + "-modpack";
         Directory.CreateDirectory(stage);
         server.State = ServerState.BackingUp; await db.SaveChangesAsync(cancellationToken);
         var saveDisabled = false;
+        RuntimeSaveLease? lease = null;
+        using var snapshotCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var renewalCancellation = new CancellationTokenSource();
+        Exception? leaseFailure = null;
+        Task renewal = Task.CompletedTask;
         try
         {
             try
@@ -99,6 +111,25 @@ public sealed class BackupService(
                 if (running)
                 {
                     await operations.ProgressAsync(jobId, 10, "Pausing world saves", cancellationToken);
+                    if (supervisor.UsesPersistentRuntime)
+                    {
+                        lease = await supervisor.AcquireSaveLeaseAsync(serverId, cancellationToken);
+                        renewal = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                while (!renewalCancellation.IsCancellationRequested)
+                                {
+                                    await Task.Delay(TimeSpan.FromSeconds(Math.Max(1, options.Value.BackupLeaseSeconds / 3)), renewalCancellation.Token);
+                                    lease = await supervisor.RenewSaveLeaseAsync(lease, renewalCancellation.Token);
+                                }
+                            }
+                            catch (OperationCanceledException) when (renewalCancellation.IsCancellationRequested) { }
+                            catch (Exception exception) { leaseFailure = exception; await snapshotCancellation.CancelAsync(); }
+                        });
+                    }
+                    else
+                    {
                     var cursor = await console.LatestSequenceAsync(serverId, cancellationToken);
                     saveDisabled = true;
                     await supervisor.CommandAsync(serverId, "save-off", cancellationToken);
@@ -107,21 +138,39 @@ public sealed class BackupService(
                         line => line.Text.Contains("Saved the game", StringComparison.OrdinalIgnoreCase) || line.Text.Contains("Saved the world", StringComparison.OrdinalIgnoreCase),
                         TimeSpan.FromSeconds(30), cancellationToken);
                     if (!saved) throw new PanelException(504, "OPERATION_FAILED", "Minecraft did not confirm a flushed save within 30 seconds.");
+                    }
                 }
                 await operations.ProgressAsync(jobId, 35, "Staging a consistent file snapshot", cancellationToken);
-                CopySnapshot(paths.Instance(serverId), stage);
+                var lastProgress = DateTimeOffset.MinValue;
+                await ArchiveIO.CopyAsync(paths.Instance(serverId), stage, snapshotCancellation.Token, async bytes =>
+                {
+                    if (DateTimeOffset.UtcNow - lastProgress < TimeSpan.FromSeconds(1)) return;
+                    lastProgress = DateTimeOffset.UtcNow;
+                    await operations.ProgressAsync(jobId, 35 + (int)Math.Min(25, bytes * 25 / Math.Max(1, measured.Bytes)), $"Copied {bytes:N0} of {measured.Bytes:N0} bytes", snapshotCancellation.Token);
+                });
                 if (Directory.Exists(paths.ServerModpack(serverId)))
-                    CopySnapshot(paths.ServerModpack(serverId), modpackStage);
+                    await ArchiveIO.CopyAsync(paths.ServerModpack(serverId), modpackStage, snapshotCancellation.Token);
             }
             finally
             {
                 try
                 {
-                    if (saveDisabled) await supervisor.CommandAsync(serverId, "save-on", CancellationToken.None);
+                    await renewalCancellation.CancelAsync();
+                    await renewal;
+                    if (lease is not null) await supervisor.ReleaseSaveLeaseAsync(lease, CancellationToken.None);
+                    if (saveDisabled)
+                    {
+                        var cursor = await console.LatestSequenceAsync(serverId, CancellationToken.None);
+                        await supervisor.CommandAsync(serverId, "save-on", CancellationToken.None);
+                        if (!await console.WaitForAsync(serverId, cursor, line => line.Text.Contains("saving", StringComparison.OrdinalIgnoreCase) && (line.Text.Contains("enabled", StringComparison.OrdinalIgnoreCase) || line.Text.Contains("turned on", StringComparison.OrdinalIgnoreCase)), TimeSpan.FromSeconds(5), CancellationToken.None))
+                            throw new IOException("Minecraft did not confirm save-on after backup.");
+                    }
+                    if (leaseFailure is not null) throw new IOException("The save suspension was lost; the snapshot was discarded.", leaseFailure);
                 }
                 catch
                 {
-                    try { await console.AppendAsync(serverId, "system", "WARNING: save-on could not be sent after backup."); } catch { }
+                    try { await console.AppendAsync(serverId, "system", "WARNING: backup save resumption could not be confirmed. Inspect saving state before continuing."); } catch { }
+                    throw;
                 }
                 finally
                 {
@@ -138,22 +187,34 @@ public sealed class BackupService(
             var committed = false;
             try
             {
-                ZipFile.CreateFromDirectory(stage, temporary, CompressionLevel.Fastest, false);
+                var lastCompressionProgress = DateTimeOffset.MinValue;
+                await ArchiveIO.CompressAsync(stage, temporary, cancellationToken, async bytes =>
+                {
+                    if (DateTimeOffset.UtcNow - lastCompressionProgress < TimeSpan.FromSeconds(1)) return;
+                    lastCompressionProgress = DateTimeOffset.UtcNow;
+                    await operations.ProgressAsync(jobId, 65 + (int)Math.Min(25, bytes * 25 / Math.Max(1, measured.Bytes)), $"Compressed {bytes:N0} of {measured.Bytes:N0} bytes", cancellationToken);
+                });
                 using (var archive = ZipFile.OpenRead(temporary)) ValidateArchiveLimits(archive);
                 File.Move(temporary, destination);
                 if (Directory.Exists(modpackStage)) Directory.Move(modpackStage, modpackDestination);
                 var backup = new BackupEntity
                 {
                     Id = id,
+                    CreatedAt = capturedAt,
                     ServerId = serverId,
                     FileName = fileName,
                     Size = new FileInfo(destination).Length,
                     Reason = reason,
-                    SoftwareMetadataJson = softwareMetadataJson
+                    SoftwareMetadataJson = softwareMetadataJson,
+                    Sha256 = await ArchiveIO.Sha256Async(destination, cancellationToken),
+                    VerifiedAt = DateTimeOffset.UtcNow,
+                    Pinned = reason.Contains("restore", StringComparison.OrdinalIgnoreCase)
                 };
                 db.Backups.Add(backup); await db.SaveChangesAsync(cancellationToken);
                 committed = true;
-                await console.AppendAsync(serverId, "system", $"Backup {fileName} completed.", cancellationToken);
+                try { await console.AppendAsync(serverId, "system", $"Backup {fileName} completed.", cancellationToken); }
+                catch (Exception exception) { logger?.LogWarning(exception, "Backup committed; console logging failed"); }
+                await ApplyRetentionLockedAsync(serverId, cancellationToken);
                 return backup;
             }
             finally
@@ -170,7 +231,10 @@ public sealed class BackupService(
         }
     }
 
-    private async Task RestoreAsync(Guid serverId, Guid backupId, Guid jobId, CancellationToken cancellationToken)
+    internal Task ExtractForRecoveryAsync(string archive, string stage, CancellationToken token)
+    { Directory.CreateDirectory(stage); return ExtractSafeAsync(archive, stage, token); }
+
+    internal async Task RestoreAsync(Guid serverId, Guid backupId, Guid jobId, CancellationToken cancellationToken)
     {
         using var serverLock = await keyedLock.AcquireAsync(serverId, cancellationToken);
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
@@ -186,6 +250,12 @@ public sealed class BackupService(
             targetMetadata = WithoutModpack(targetMetadata);
         var archivePath = Path.Combine(paths.ServerBackups(serverId), backup.FileName);
         if (!File.Exists(archivePath)) throw PanelProblems.NotFound("Backup file");
+        if (backup.Sha256 is not null && await ArchiveIO.Sha256Async(archivePath, cancellationToken) != backup.Sha256)
+            throw new InvalidDataException("The backup checksum does not match. Preserve the file and select another recovery copy.");
+        using (var archive = ZipFile.OpenRead(archivePath))
+        { ValidateArchiveLimits(archive); ArchiveIO.RequireSpace(paths.Data, checked(archive.Entries.Sum(x => x.Length) + ArchiveIO.Measure(paths.Instance(serverId)).Bytes * 2), options.Value.ReservedDiskBytes); }
+        // Retention during the safety backup must not delete the selected restore source.
+        await db.Backups.Where(x => x.Id == backupId).ExecuteUpdateAsync(setters => setters.SetProperty(x => x.Pinned, true), cancellationToken);
         await operations.ProgressAsync(jobId, 5, "Creating mandatory safety backup", cancellationToken);
         await CreateLockedAsync(serverId, jobId, "Pre-restore safety", cancellationToken);
         var restore = new RestoreTransaction(paths, Guid.NewGuid(), serverId, originalMetadata,
@@ -195,7 +265,7 @@ public sealed class BackupService(
         {
             await operations.ProgressAsync(jobId, 40, "Validating and extracting backup", cancellationToken);
             await ExtractSafeAsync(archivePath, restore.Stage, cancellationToken);
-            if (restoreModpack) CopySnapshot(modpackBackup, restore.ModpackStage);
+            if (restoreModpack) await ArchiveIO.CopyAsync(modpackBackup, restore.ModpackStage, cancellationToken);
             var launchTarget = ProcessSupervisor.ResolveLaunchTarget(restore.Stage, targetMetadata.LaunchTarget);
             if (!File.Exists(launchTarget))
                 throw new PanelException(400, "OPERATION_FAILED", "The backup does not contain this server's launch target.");
@@ -228,6 +298,8 @@ public sealed class BackupService(
                 catch (Exception rollbackException)
                 {
                     server.State = ServerState.Error;
+                            server.RecoveryRequired = true;
+                            server.RecoveryReason = "Interrupted recovery could not restore the original files. Recovery artifacts have been preserved.";
                     server.ProcessId = null;
                     try { await db.SaveChangesAsync(CancellationToken.None); } catch { }
                     throw new AggregateException(
@@ -273,7 +345,7 @@ public sealed class BackupService(
         Path.Combine(paths.ServerBackups(serverId), $".modpack-{backupId:N}");
 
     public async Task<IReadOnlySet<Guid>> RecoverInterruptedRestoresAsync(
-        StateDbContext state, CancellationToken cancellationToken)
+        StateDbContext state, CancellationToken cancellationToken, Guid? onlyServerId = null)
     {
         var unrecovered = new HashSet<Guid>();
         if (!Directory.Exists(paths.Staging)) return unrecovered;
@@ -287,6 +359,7 @@ public sealed class BackupService(
             {
                 restore = RestoreTransaction.Open(paths, journal);
                 serverId = restore.ServerId;
+                if (onlyServerId.HasValue && serverId != onlyServerId) continue;
                 var server = await state.Servers.SingleOrDefaultAsync(
                                  entity => entity.Id == restore.ServerId, cancellationToken)
                              ?? throw new InvalidDataException("The restored server no longer exists.");
@@ -297,6 +370,8 @@ public sealed class BackupService(
                     if (permissions is not null)
                         await permissions.NormalizeInstanceAsync(restore.ServerId, cancellationToken);
                     restore.Commit();
+                    server.RecoveryRequired = false; server.RecoveryReason = null;
+                    await state.SaveChangesAsync(cancellationToken);
                     logger?.LogInformation("Finalized interrupted backup restore for {ServerId}", restore.ServerId);
                 }
                 else
@@ -305,6 +380,8 @@ public sealed class BackupService(
                     restore.OriginalMetadata.Restore(server);
                     await state.SaveChangesAsync(cancellationToken);
                     restore.FinishRollback();
+                    server.RecoveryRequired = false; server.RecoveryReason = null;
+                    await state.SaveChangesAsync(cancellationToken);
                     logger?.LogWarning("Rolled back interrupted backup restore for {ServerId}", restore.ServerId);
                 }
             }
@@ -320,6 +397,8 @@ public sealed class BackupService(
                         if (server is not null)
                         {
                             server.State = ServerState.Error;
+                            server.RecoveryRequired = true;
+                            server.RecoveryReason = "Interrupted recovery could not restore the original files. Recovery artifacts have been preserved.";
                             server.ProcessId = null;
                             server.UpdatedAt = DateTimeOffset.UtcNow;
                             await state.SaveChangesAsync(cancellationToken);
@@ -525,7 +604,7 @@ public sealed class BackupService(
             while ((read = await source.ReadAsync(buffer, cancellationToken)) > 0)
             {
                 actual = checked(actual + read);
-                if (actual > options.Value.MaxExtractedBytes) throw new PanelException(400, "ZIP_LIMIT_EXCEEDED", "The backup expands beyond the safe limit.");
+                if (actual > options.Value.MaxBackupBytes) throw new PanelException(400, "ZIP_LIMIT_EXCEEDED", "The backup expands beyond the safe limit.");
                 await target.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
             }
         }
@@ -533,34 +612,15 @@ public sealed class BackupService(
 
     private void ValidateArchiveLimits(ZipArchive archive)
     {
-        if (archive.Entries.Count > options.Value.MaxArchiveEntries)
+        if (archive.Entries.Count > options.Value.MaxBackupEntries)
             throw new PanelException(400, "ZIP_LIMIT_EXCEEDED", "The backup contains too many entries.");
         long declared = 0;
         foreach (var entry in archive.Entries)
         {
             try { declared = checked(declared + entry.Length); }
             catch (OverflowException) { throw new PanelException(400, "ZIP_LIMIT_EXCEEDED", "The backup expands beyond the safe limit."); }
-            var excessiveRatio = entry.CompressedLength > 0 && entry.Length > 100L * 1024 * 1024 &&
-                (entry.CompressedLength > long.MaxValue / 100 ? false : entry.Length > entry.CompressedLength * 100);
-            if (declared > options.Value.MaxExtractedBytes || excessiveRatio)
+            if (declared > options.Value.MaxBackupBytes)
                 throw new PanelException(400, "ZIP_LIMIT_EXCEEDED", "The backup expands beyond the safe limit.");
-        }
-    }
-
-    private static void CopySnapshot(string source, string destination)
-    {
-        Directory.CreateDirectory(destination);
-        foreach (var file in Directory.EnumerateFiles(source))
-        {
-            var info = new FileInfo(file);
-            if ((info.Attributes & FileAttributes.ReparsePoint) != 0 || info.Name.Equals("session.lock", StringComparison.OrdinalIgnoreCase)) continue;
-            File.Copy(file, Path.Combine(destination, info.Name), true);
-        }
-        foreach (var directory in Directory.EnumerateDirectories(source))
-        {
-            var info = new DirectoryInfo(directory);
-            if ((info.Attributes & FileAttributes.ReparsePoint) != 0) continue;
-            CopySnapshot(directory, Path.Combine(destination, info.Name));
         }
     }
 
@@ -589,7 +649,7 @@ public sealed class BackupService(
         {
             var job = await operations.GetAsync(jobId, cancellationToken) ?? throw PanelProblems.NotFound("Job");
             if (job.State == JobState.Completed) return;
-            if (job.State == JobState.Failed) throw new PanelException(500, "OPERATION_FAILED", "Scheduled backup failed.", job.Error);
+            if (OperationQueue.IsTerminal(job.State)) throw new PanelException(500, "OPERATION_FAILED", "Scheduled backup failed.", job.Error);
             await Task.Delay(500, cancellationToken);
         }
     }

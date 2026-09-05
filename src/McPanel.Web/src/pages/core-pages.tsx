@@ -1,3 +1,5 @@
+import { QueryFeedback } from "@/components/query-feedback"
+import { useUnsavedChanges } from "@/hooks/use-unsaved-changes"
 import { useEffect, useMemo, useState } from "react"
 import { useForm, useWatch } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -75,12 +77,15 @@ function MetricCard({ label, value, icon: Icon, progress }: { label: string; val
 }
 
 export function DashboardPage() {
-  const { data: servers, isLoading: serversLoading } = useQuery({ queryKey: ["servers"], queryFn: api.servers, refetchInterval: 5_000 })
-  const { data: host, isLoading: hostLoading } = useQuery({ queryKey: ["host"], queryFn: api.host, refetchInterval: 5_000 })
+  const serversQuery = useQuery({ queryKey: ["servers"], queryFn: api.servers, refetchInterval: 5_000 })
+  const hostQuery = useQuery({ queryKey: ["host"], queryFn: api.host, refetchInterval: 5_000 })
+  const { data: servers, isLoading: serversLoading } = serversQuery
+  const { data: host, isLoading: hostLoading } = hostQuery
   const chartConfig = { cpu: { label: "CPU", color: "var(--chart-2)" }, memory: { label: "Memory", color: "var(--chart-4)" } } satisfies ChartConfig
   const serversSection = <section aria-labelledby="servers-heading" className="flex flex-col gap-4">
     <h2 id="servers-heading" className="text-lg font-semibold">Servers</h2>
-    {serversLoading ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-48" />)}</div> : servers?.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{servers.map((server) => <Card key={server.id}>
+    <QueryFeedback query={serversQuery} />
+    {serversQuery.isError && !servers ? null : serversLoading ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-48" />)}</div> : servers?.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{servers.map((server) => <Card key={server.id}>
       <CardHeader><div className="flex items-center gap-3"><ServerAvatar server={server} className="size-10" /><div className="min-w-0"><CardTitle className="truncate">{server.name}</CardTitle><CardDescription>{server.kind === "Gate" ? `Gate Proxy · ${server.version}` : `${serverKindLabel(server.kind)} · Minecraft ${server.version}`}</CardDescription></div></div><CardAction><StatusBadge state={server.state} /></CardAction></CardHeader>
       <CardContent className="grid grid-cols-2 gap-4"><div><p className="text-xs text-muted-foreground">{server.kind === "Gate" ? "Connections" : "Players"}</p><p className="font-medium">{server.kind === "Gate" ? server.playerCount : `${server.playerCount} / ${server.maxPlayers}`}</p></div><div><p className="text-xs text-muted-foreground">Memory</p><p className="font-medium">{server.memoryUsedMb.toFixed(0)} / {server.memoryMb} MiB</p></div><div><p className="text-xs text-muted-foreground">Address</p><p className="truncate font-mono text-sm font-medium" title={server.resolvedConnectionAddress ?? undefined}>{server.resolvedConnectionAddress ?? "Unavailable"}</p></div><div><p className="text-xs text-muted-foreground">Uptime</p><p className="font-medium">{duration(server.uptimeSeconds)}</p></div></CardContent>
       <CardFooter><Button variant="ghost" render={<Link to={`/servers/${server.id}`} />}>Manage<ArrowRightIcon data-icon="inline-end" /></Button></CardFooter>
@@ -88,9 +93,10 @@ export function DashboardPage() {
   </section>
   return <Page title="Dashboard" description="Host health and every Minecraft server at a glance." actions={<Button render={<Link to="/create" />}><PlusIcon data-icon="inline-start" />Create server</Button>}>
     {serversSection}
-    <Alert><AlertTriangleIcon /><AlertTitle>Trusted networks only</AlertTitle><AlertDescription>MC Panel includes HTTP for LAN use. Put it behind a trusted TLS reverse proxy before any Internet exposure.</AlertDescription></Alert>
+    {host && <QueryFeedback query={hostQuery} />}
+    <Alert><AlertTriangleIcon /><AlertTitle>Trusted networks only</AlertTitle><AlertDescription>Keep this panel on a private network. Use the documented private HTTPS configuration for encrypted administration. Do not expose the panel port to the Internet.</AlertDescription></Alert>
     <section aria-label="Host metrics" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      {hostLoading ? Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-28" />) : <>
+      {hostQuery.isError && !host ? <QueryFeedback query={hostQuery} /> : hostLoading ? Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-28" />) : <>
         <MetricCard label="Host CPU" value={`${host?.cpuPercent.toFixed(0) ?? 0}%`} icon={CpuIcon} progress={host?.cpuPercent} />
         <MetricCard label="Host memory" value={`${bytes(host?.memoryUsedBytes ?? 0)} / ${bytes(host?.memoryTotalBytes ?? 0)}`} icon={MemoryStickIcon} progress={(host?.memoryUsedBytes ?? 0) / Math.max(host?.memoryTotalBytes ?? 1, 1) * 100} />
         <MetricCard label="Panel disk" value={`${bytes(host?.diskUsedBytes ?? 0)} / ${bytes(host?.diskTotalBytes ?? 0)}`} icon={HardDriveIcon} progress={(host?.diskUsedBytes ?? 0) / Math.max(host?.diskTotalBytes ?? 1, 1) * 100} />
@@ -132,6 +138,9 @@ export function CreateServerPage() {
   const [selectedInstaller, setSelectedInstaller] = useState("")
   const [memoryMb, setMemoryMb] = useState(4096)
   const [showExperimental, setShowExperimental] = useState(false)
+  const [gateVersion, setGateVersion] = useState("")
+  const gateVersions = useQuery({ queryKey: ["gate-versions"], queryFn: api.gateVersions, enabled: category === "Proxy" })
+  const selectedGateVersion = gateVersions.data?.includes(gateVersion) ? gateVersion : (gateVersions.data?.[0] ?? "")
   const [gateName, setGateName] = useState("Gate Proxy")
   const [gatePort, setGatePort] = useState(25565)
   const [gateStartOnBoot, setGateStartOnBoot] = useState(false)
@@ -241,7 +250,7 @@ export function CreateServerPage() {
     }
     setGateSubmitting(true)
     try {
-      const job = await api.createGateServer({ name: gateName.trim(), port: gatePort, startOnBoot: gateStartOnBoot, clientRequestId })
+      const job = await api.createGateServer({ name: gateName.trim(), port: gatePort, startOnBoot: gateStartOnBoot, clientRequestId, version: selectedGateVersion })
       if (!job.serverId) throw new Error("Gate was queued, but its installation page could not be opened.")
       navigate(`/servers/${job.serverId}/creating/${job.id}`)
     } catch (error) {
@@ -262,12 +271,12 @@ export function CreateServerPage() {
     } finally { setCustomJarUploading(false) }
   }
 
-  if (isGate && step === 2) return <Page title="Create Gate Proxy" description="Install the latest complete stable Gate release as an independently managed server.">
+  if (isGate && step === 2) return <Page title="Create Gate Proxy" description="Choose a verified stable Gate release to install as an independently managed server.">
     <Card className="mx-auto w-full max-w-3xl">
       <CardHeader><CardTitle>Step 2 of 2</CardTitle><CardDescription>Name and install Gate</CardDescription></CardHeader>
       <CardContent><Progress value={100}><ProgressLabel>Setup progress</ProgressLabel><ProgressValue /></Progress></CardContent>
-      <CardContent><FieldGroup><Field><FieldLabel htmlFor="gate-name">Server name</FieldLabel><Input id="gate-name" value={gateName} onChange={(event) => setGateName(event.target.value)} /></Field><Field><FieldLabel htmlFor="gate-port">Real local listener port</FieldLabel><Input id="gate-port" type="number" min={1024} max={65535} value={gatePort} onChange={(event) => setGatePort(Number(event.target.value))} /><FieldDescription>This locally bound port is conflict-checked. The advertised external address can use a different NAT, SRV, or forwarded port.</FieldDescription></Field><Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="gate-start-on-boot">Start on boot</FieldLabel><FieldDescription>Start this Gate instance whenever the managed runtime starts.</FieldDescription></FieldContent><Switch id="gate-start-on-boot" checked={gateStartOnBoot} onCheckedChange={setGateStartOnBoot} /></Field></FieldGroup></CardContent>
-      <CardFooter className="justify-between"><Button variant="outline" disabled={gateSubmitting} onClick={() => setStep(1)}>Back</Button><Button disabled={gateSubmitting} onClick={() => void submitGate()}>{gateSubmitting && <Spinner data-icon="inline-start" />}Create Gate server</Button></CardFooter>
+      <CardContent><FieldGroup><Field><FieldLabel>Gate version</FieldLabel>{gateVersions.isPending ? <Skeleton className="h-9 w-full" /> : gateVersions.isError ? <Alert variant="destructive"><AlertTitle>Gate releases unavailable</AlertTitle><AlertDescription>{gateVersions.error.message}<Button variant="outline" onClick={() => void gateVersions.refetch()}>Retry</Button></AlertDescription></Alert> : <Select items={(gateVersions.data ?? []).map((value) => ({ value, label: value }))} value={selectedGateVersion} onValueChange={(value) => value && setGateVersion(value)}><SelectTrigger aria-label="Gate version" className="w-full"><SelectValue placeholder="Choose a stable Gate release" /></SelectTrigger><SelectContent><SelectGroup>{gateVersions.data?.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectGroup></SelectContent></Select>}<FieldDescription>The newest stable release is selected by default. Downloads are checked against Minekube's SHA-256 manifest.</FieldDescription></Field><Field><FieldLabel htmlFor="gate-name">Server name</FieldLabel><Input id="gate-name" value={gateName} onChange={(event) => setGateName(event.target.value)} /></Field><Field><FieldLabel htmlFor="gate-port">Real local listener port</FieldLabel><Input id="gate-port" type="number" min={1024} max={65535} value={gatePort} onChange={(event) => setGatePort(Number(event.target.value))} /><FieldDescription>This locally bound port is conflict-checked. The advertised external address can use a different NAT, SRV, or forwarded port.</FieldDescription></Field><Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="gate-start-on-boot">Start on boot</FieldLabel><FieldDescription>Start this Gate instance whenever the managed runtime starts.</FieldDescription></FieldContent><Switch id="gate-start-on-boot" checked={gateStartOnBoot} onCheckedChange={setGateStartOnBoot} /></Field></FieldGroup></CardContent>
+      <CardFooter className="justify-between"><Button variant="outline" disabled={gateSubmitting} onClick={() => setStep(1)}>Back</Button><Button disabled={gateSubmitting || !selectedGateVersion || gateVersions.isError} onClick={() => void submitGate()}>{gateSubmitting && <Spinner data-icon="inline-start" />}Create Gate server</Button></CardFooter>
     </Card>
   </Page>
 
@@ -321,7 +330,7 @@ export function ServerCreationPage() {
     navigate(`/servers/${serverId}`, { replace: true })
   }, [job.data?.state, navigate, queryClient, serverId])
 
-  const failed = job.data?.state === "Failed"
+  const failed = ["Failed", "Interrupted", "Canceled"].includes(job.data?.state ?? "")
   const progress = job.data?.progress ?? 0
   const message = job.data?.message ?? (job.isLoading ? "Preparing installation" : "Waiting for an update")
   const serverName = server.data?.name ?? "your server"
@@ -395,7 +404,7 @@ export function ServerOverviewPage() {
     {server.restartRequired && <Alert><AlertTriangleIcon /><AlertTitle>Restart required</AlertTitle><AlertDescription>Saved settings will take effect after the next graceful restart.</AlertDescription></Alert>}
     <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><MetricCard label="State" value={server.state} icon={CircleGaugeIcon} /><MetricCard label={server.kind === "Gate" ? "Connections" : "Players"} value={server.kind === "Gate" ? String(server.playerCount) : `${server.playerCount} / ${server.maxPlayers}`} icon={UsersIcon} /><MetricCard label="CPU" value={`${server.cpuPercent.toFixed(0)}%`} icon={CpuIcon} progress={server.cpuPercent} /><MetricCard label="Memory" value={`${server.memoryUsedMb.toFixed(0)} / ${server.memoryMb} MiB`} icon={MemoryStickIcon} progress={server.memoryUsedMb / server.memoryMb * 100} /></section>
     <Card size="sm"><CardHeader><CardTitle>Connection</CardTitle><CardDescription>{server.resolvedConnectionAddress ?? "No connection address is available until a global or custom address is set."}</CardDescription><CardAction><div className="flex items-center gap-2"><Badge variant="outline">{server.connectionAddressSource ?? "Unavailable"}</Badge>{server.resolvedConnectionAddress && <Button size="icon-sm" variant="ghost" onClick={() => { void navigator.clipboard.writeText(server.resolvedConnectionAddress!); toast.success("Connection address copied") }}><ClipboardIcon /><span className="sr-only">Copy connection address</span></Button>}</div></CardAction></CardHeader><CardContent><PublicHostEditor serverId={server.id} value={server.advertisedAddressOverride} addressRevision={server.addressRevision ?? ""} inheritedPreview={server.connectionAddressSource === "Global" ? server.resolvedConnectionAddress : undefined} compact /></CardContent></Card>
-    <Card><CardHeader><CardTitle>Runtime details</CardTitle><CardAction><StatusBadge state={server.state} /></CardAction></CardHeader><CardContent className="grid gap-5 sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Uptime</p><p className="font-medium">{duration(server.uptimeSeconds)}</p></div><div><p className="text-xs text-muted-foreground">Server build</p><p className="font-medium">{serverKindLabel(server.kind)} {server.version}</p></div><div><p className="text-xs text-muted-foreground">Memory limit</p><p className="font-medium">{server.kind === "Gate" ? "256 MiB fixed" : `${(server.memoryMb / 1024).toFixed(1)} GiB`}</p></div></CardContent></Card>
+    <Card><CardHeader><CardTitle>Runtime details</CardTitle><CardAction><StatusBadge state={server.state} /></CardAction></CardHeader><CardContent className="grid gap-5 sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Uptime</p><p className="font-medium">{duration(server.uptimeSeconds)}</p></div><div><p className="text-xs text-muted-foreground">Server build</p><p className="font-medium">{serverKindLabel(server.kind)} {server.version}</p></div><div><p className="text-xs text-muted-foreground">Memory limit</p><p className="font-medium">{server.kind === "Gate" ? `${server.memoryMb} MiB` : `${(server.memoryMb / 1024).toFixed(1)} GiB`}</p></div></CardContent></Card>
     {(canKill || canDelete) && <Card><CardHeader><CardTitle>Danger zone</CardTitle><CardDescription>Force-kill is only for an unresponsive process. Deletion permanently removes this managed workload, its files, backups, and instance-local secrets.</CardDescription></CardHeader><CardContent className="flex flex-wrap gap-2">{canKill && <AlertDialog><AlertDialogTrigger render={<Button variant="destructive" />}>Force-kill process</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Force-kill {server.name}?</AlertDialogTitle><AlertDialogDescription>This skips the workload’s graceful shutdown path. Unsaved data may be lost or corrupted.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => kill.mutate()}>Force-kill</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}{canDelete && <AlertDialog open={deleteOpen} onOpenChange={(open) => { if (!remove.isPending) { setDeleteOpen(open); if (!open) setDeleteError(undefined) } }}><AlertDialogTrigger render={<Button variant="destructive" />}><Trash2Icon data-icon="inline-start" />Delete server</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete {server.name}?</AlertDialogTitle><AlertDialogDescription>The server must not be running. Its panel-managed files and backups will be permanently removed. Gate instances also lose their private forwarding secrets.</AlertDialogDescription></AlertDialogHeader>{deleteError && <Alert variant="destructive"><AlertTriangleIcon /><AlertTitle>Deletion was blocked</AlertTitle><AlertDescription>{deleteError}</AlertDescription></Alert>}<AlertDialogFooter><AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={remove.isPending} onClick={(event) => { event.preventDefault(); remove.mutate() }}>{remove.isPending && <Spinner data-icon="inline-start" />}{remove.isPending ? "Deleting…" : "Delete server"}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}</CardContent></Card>}
   </Page>
 }
@@ -449,13 +458,18 @@ function supportedRange(ranges: Array<{ from: string; to?: string | null }>) {
 export function ServerPropertiesPage() {
   const { serverId = "" } = useParams()
   const { data: server, isLoading: serverLoading } = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
-  const { data, isLoading } = useQuery({ queryKey: ["properties", serverId], queryFn: () => api.properties(serverId) })
+  const propertiesQuery = useQuery({ queryKey: ["properties", serverId], queryFn: () => api.properties(serverId) })
+  const { data, isLoading } = propertiesQuery
+  if (propertiesQuery.isError && !data) return <Page title="Server properties"><QueryFeedback query={propertiesQuery} /></Page>
   if (serverLoading || isLoading || !server || !data) return <Page title="Server properties"><Skeleton className="h-96" /></Page>
-  return <ServerPropertiesEditor key={`${serverId}-${data.revision}`} serverId={serverId} serverState={server.state} initial={data} />
+  return <ServerPropertiesEditor key={serverId} serverId={serverId} serverState={server.state} initial={data} />
 }
 
 function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: string; serverState: ServerState; initial: ServerPropertiesDto }) {
   const queryClient = useQueryClient()
+  const [revision, setRevision] = useState(initial.revision)
+  const [baseline, setBaseline] = useState(() => Object.fromEntries(initial.entries.map((entry) => [entry.key, entry.value])))
+  const [conflict, setConflict] = useState<ServerPropertiesDto>()
   const [search, setSearch] = useState("")
   const [activeTab, setActiveTab] = useState<PropertyTab>("general")
   const [entries, setEntries] = useState<ServerPropertyDto[]>(() => initial.entries)
@@ -470,17 +484,20 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
   const tabGroups = propertyTabs.map((tab) => ({ ...tab, entries: filtered.filter((entry) => propertyTabFor(entry) === tab.value) }))
   const availableGroups = propertySections.map((section) => ({ section, definitions: initial.available.filter((definition) => definition.section === section && !(definition.key in values)) })).filter((group) => group.definitions.length)
   const save = useMutation({
-    mutationFn: () => api.saveProperties(serverId, { revision: initial.revision, values, acknowledgedIncompatibleKeys: [...acknowledged] }),
+    mutationFn: () => api.saveProperties(serverId, { revision, values, acknowledgedIncompatibleKeys: [...acknowledged] }),
     onSuccess: (saved) => {
+      setRevision(saved.revision); setEntries(saved.entries); setConflict(undefined)
+      const savedValues = Object.fromEntries(saved.entries.map((entry) => [entry.key, entry.value])); setValues(savedValues); setBaseline(savedValues)
       queryClient.setQueryData(["properties", serverId], saved)
       void queryClient.invalidateQueries({ queryKey: ["server", serverId] })
       toast.success("Server properties saved")
     },
     onError: (error) => {
       toast.error(error.message)
-      void queryClient.invalidateQueries({ queryKey: ["properties", serverId] })
+      if (error instanceof ApiError && error.status === 409) void api.properties(serverId).then(setConflict).catch(() => undefined)
     },
   })
+  const draft = useUnsavedChanges(JSON.stringify(values) !== JSON.stringify(baseline))
   const update = (key: string, value: string) => setValues((current) => ({ ...current, [key]: value }))
   const toggleReveal = (key: string) => setRevealed((current) => {
     const next = new Set(current)
@@ -528,6 +545,12 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
     </Field>
   }
   return <Page title="Server properties" description={`Minecraft ${initial.minecraftVersion} properties, grouped by purpose while preserving file order.`} actions={<><Button variant="outline" disabled={!canSave || !availableGroups.length} onClick={() => setAddOpen(true)}><PlusIcon data-icon="inline-start" />Add property</Button><Button disabled={save.isPending || !canSave} title={canSave ? undefined : `Properties cannot be saved while the server is ${serverState.toLowerCase()}.`} onClick={() => save.mutate()}>{save.isPending && <Spinner data-icon="inline-start" />}Save changes</Button></>}>
+    {draft.dialog}
+    {conflict && <Alert variant="destructive"><AlertTriangleIcon /><AlertTitle>Properties changed on the server</AlertTitle><AlertDescription><p>Your draft is still here. Reapply only your edited keys to the latest revision, then review and save.</p><Button variant="outline" onClick={() => {
+      const latest = Object.fromEntries(conflict.entries.map((entry) => [entry.key, entry.value]))
+      const changed = Object.fromEntries(Object.entries(values).filter(([key, value]) => value !== baseline[key]))
+      setBaseline(latest); setValues({ ...latest, ...changed }); setEntries([...conflict.entries, ...entries.filter((entry) => !(entry.key in latest))]); setRevision(conflict.revision); setConflict(undefined)
+    }}>Reapply draft</Button></AlertDescription></Alert>}
     <InputGroup className="max-w-md">
       <InputGroupAddon><SearchIcon /><span className="sr-only">Search</span></InputGroupAddon>
       <InputGroupInput aria-label="Search server properties" placeholder="Search properties" value={search} onChange={(event) => changeSearch(event.target.value)} />

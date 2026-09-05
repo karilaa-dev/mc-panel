@@ -16,7 +16,10 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.HttpOverrides;
+using System.Net;
 
+if (ProductionCommand.IsInvocation(args)) return await ProductionCommand.RunAsync(args);
 if (CgroupProcessLauncher.TryExec(args, out var launcherExitCode)) return launcherExitCode;
 if (PersistentRuntimeHost.IsInvocation(args)) return await PersistentRuntimeHost.RunAsync(args);
 if (PersistentRuntimeUpgradeCommand.IsInvocation(args)) return await PersistentRuntimeUpgradeCommand.RunAsync();
@@ -50,7 +53,7 @@ builder.Services.AddPooledDbContextFactory<ConsoleDbContext>(options => options.
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(options =>
 {
     options.Cookie.Name = "mcpanel.auth"; options.Cookie.HttpOnly = true; options.Cookie.SameSite = SameSiteMode.Strict;
-    options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest; options.SlidingExpiration = true; options.ExpireTimeSpan = TimeSpan.FromHours(12);
+    options.Cookie.SecurePolicy = panelOptions.RequireHttps ? CookieSecurePolicy.Always : CookieSecurePolicy.SameAsRequest; options.SlidingExpiration = true; options.ExpireTimeSpan = TimeSpan.FromHours(12);
     options.Events.OnRedirectToLogin = context => { context.Response.StatusCode = 401; return Task.CompletedTask; };
     options.Events.OnRedirectToAccessDenied = context => { context.Response.StatusCode = 403; return Task.CompletedTask; };
     options.Events.OnValidatePrincipal = async context =>
@@ -62,8 +65,16 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
     };
 });
 builder.Services.AddAuthorization();
+builder.Services.Configure<ForwardedHeadersOptions>(forwarding =>
+{
+    forwarding.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    forwarding.ForwardLimit = 1;
+    forwarding.KnownProxies.Clear(); forwarding.KnownIPNetworks.Clear();
+    foreach (var proxy in panelOptions.TrustedProxies)
+        forwarding.KnownProxies.Add(IPAddress.Parse(proxy));
+});
 builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
-builder.Services.AddAntiforgery(options => { options.HeaderName = "X-XSRF-TOKEN"; options.Cookie.Name = "mcpanel.xsrf"; options.Cookie.HttpOnly = true; options.Cookie.SameSite = SameSiteMode.Strict; });
+builder.Services.AddAntiforgery(options => { options.HeaderName = "X-XSRF-TOKEN"; options.Cookie.Name = "mcpanel.xsrf"; options.Cookie.SecurePolicy = panelOptions.RequireHttps ? CookieSecurePolicy.Always : CookieSecurePolicy.SameAsRequest; options.Cookie.HttpOnly = true; options.Cookie.SameSite = SameSiteMode.Strict; });
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -81,6 +92,9 @@ builder.Services.AddHttpClient("upstream", client =>
 {
     client.Timeout = TimeSpan.FromMinutes(10); client.DefaultRequestHeaders.UserAgent.ParseAdd(panelOptions.PaperUserAgent);
 }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, AutomaticDecompression = System.Net.DecompressionMethods.All });
+builder.Services.AddHttpClient("alerts", client => client.Timeout = TimeSpan.FromSeconds(10))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Logging.AddFilter("System.Net.Http.HttpClient.alerts", LogLevel.None);
 builder.Services.AddHttpClient("minecraft-profile", client =>
 {
     client.BaseAddress = new Uri("https://api.minecraftservices.com/");
@@ -96,8 +110,13 @@ builder.Services.AddSingleton<ValidatedDownloadClient>(); builder.Services.AddSi
 builder.Services.AddSingleton<JavaDiscoveryService>(); builder.Services.AddSingleton<ConsoleService>();
 builder.Services.AddSingleton<PersistentRuntimeClient>();
 builder.Services.AddSingleton<GateReleaseService>(); builder.Services.AddSingleton<GateConfigurationService>();
+builder.Services.AddSingleton<GateBackendConfigurationService>();
 builder.Services.AddSingleton<GateApiClient>(); builder.Services.AddSingleton<GateProxyService>();
 builder.Services.AddHostedService<GateConfigurationReconciler>();
+builder.Services.AddSingleton<ServerExportService>();
+builder.Services.AddSingleton<RecoveryBundleService>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<RecoveryBundleService>());
+builder.Services.AddSingleton<JobRecoveryService>();
+builder.Services.AddSingleton<OperationsMonitor>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<OperationsMonitor>());
 builder.Services.AddSingleton<OperationQueue>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<OperationQueue>());
 builder.Services.AddSingleton<ProcessSupervisor>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<ProcessSupervisor>());
 builder.Services.AddSingleton<IServerProcessStatus>(sp => sp.GetRequiredService<ProcessSupervisor>());
@@ -110,7 +129,21 @@ builder.Services.AddSingleton<BackupService>(); builder.Services.AddSingleton<Pl
 builder.Services.AddSingleton<IPasswordHasher<AdminEntity>, PasswordHasher<AdminEntity>>();
 
 var app = builder.Build();
+using var panelInstanceLock = new FileStream(paths.StateDatabase + ".panel-lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+using var releasePanelLock = app.Lifetime.ApplicationStopped.Register(panelInstanceLock.Dispose);
 await InitializeAsync(app.Services);
+if (panelOptions.TrustedProxies.Length > 0) app.UseForwardedHeaders();
+app.Use(async (context, next) =>
+{
+    context.Response.Headers.XContentTypeOptions = "nosniff";
+    context.Response.Headers.XFrameOptions = "DENY";
+    context.Response.Headers["Referrer-Policy"] = "same-origin";
+    context.Response.Headers.ContentSecurityPolicy = "frame-ancestors 'none'; base-uri 'self'; object-src 'none'";
+    if (panelOptions.RequireHttps && !context.Request.IsHttps && !context.Request.Path.StartsWithSegments("/health"))
+    { context.Response.StatusCode = 426; await context.Response.WriteAsJsonAsync(new { code = "HTTPS_REQUIRED", message = "Use the configured private HTTPS address." }); return; }
+    if (panelOptions.RequireHttps && context.Request.IsHttps) context.Response.Headers.StrictTransportSecurity = "max-age=31536000";
+    await next(context);
+});
 app.Use(async (context, next) =>
 {
     try { await next(context); }
@@ -127,11 +160,50 @@ app.Use(async (context, next) =>
 app.UseRateLimiter(); app.UseAuthentication(); app.UseAuthorization();
 app.Use(async (context, next) =>
 {
+    var mutation = context.Request.Path.StartsWithSegments("/api/v1") && !HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method) && !HttpMethods.IsOptions(context.Request.Method);
+    try
+    {
+        if (mutation && context.User.Identity?.IsAuthenticated == true)
+        {
+            var segments = context.Request.Path.Value!.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (segments.Length >= 4 && segments[2] == "servers" && Guid.TryParse(segments[3], out var id) &&
+                !(segments.Length == 6 && segments[4] == "actions" && segments[5] is "stop" or "kill") &&
+                !(segments.Length == 5 && segments[4] == "recover"))
+            {
+                await using var db = await context.RequestServices.GetRequiredService<IDbContextFactory<StateDbContext>>().CreateDbContextAsync(context.RequestAborted);
+                var server = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, context.RequestAborted);
+                if (server?.RecoveryRequired == true) throw PanelProblems.Conflict("RECOVERY_REQUIRED", server.RecoveryReason ?? "Repair the interrupted recovery before changing this server.");
+            }
+        }
+        await next(context);
+    }
+    catch
+    {
+        context.Items["audit-failed"] = true;
+        throw;
+    }
+    finally
+    {
+        if (mutation)
+        {
+            try
+            {
+                await context.RequestServices.GetRequiredService<OperationsMonitor>().AuditAsync(context.User.Identity?.Name ?? "anonymous", context.Items["audit-action"] as string ?? context.Request.Method,
+                    context.Items["audit-target"] as string ?? ((context.Request.Path.Value ?? "") + (context.Request.Query.TryGetValue("path", out var filePath) ? $" path={filePath}" : "")), context.Items.ContainsKey("audit-failed") ? "failed" : context.Response.StatusCode.ToString(), context.TraceIdentifier,
+                    context.Connection.RemoteIpAddress?.ToString(), CancellationToken.None);
+            }
+            catch (Exception exception) { app.Logger.LogError(exception, "Administrative audit persistence failed"); }
+        }
+    }
+});
+app.Use(async (context, next) =>
+{
     if (context.Request.Path.StartsWithSegments("/api") && !HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method) && !HttpMethods.IsOptions(context.Request.Method))
         await context.RequestServices.GetRequiredService<IAntiforgery>().ValidateRequestAsync(context);
     await next(context);
 });
 app.MapPanelApi("/api/v1");
+app.MapOperationalEndpoints();
 app.MapHub<PanelHub>("/hubs/panel").RequireAuthorization();
 
 var webRoot = panelOptions.WebRoot ?? Path.Combine(app.Environment.ContentRootPath, "wwwroot");
@@ -166,7 +238,8 @@ static async Task InitializeAsync(IServiceProvider services)
     string? sessionStamp;
     await using (var state = await stateFactory.CreateDbContextAsync())
     {
-        await state.Database.EnsureCreatedAsync();
+        await SchemaMigration.CheckConsoleAsync(scope.ServiceProvider.GetRequiredService<PanelPaths>().ConsoleDatabase);
+        await SchemaMigration.MigrateAsync(scope.ServiceProvider.GetRequiredService<PanelPaths>().StateDatabase);
         if (!await state.PanelSettings.AnyAsync()) state.PanelSettings.Add(new PanelSettingsEntity());
         await state.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
         await ServerImportService.RecoverInterruptedActivationsAsync(
@@ -178,7 +251,7 @@ static async Task InitializeAsync(IServiceProvider services)
         var unrecoveredActivations = await scope.ServiceProvider.GetRequiredService<SoftwareActivationService>()
             .RecoverInterruptedAsync(state, CancellationToken.None);
         var staleJobs = await state.Jobs.Where(x => x.State == JobState.Running || x.State == JobState.Queued).ToListAsync();
-        foreach (var job in staleJobs) { job.State = JobState.Failed; job.Progress = 100; job.Message = "Interrupted"; job.Error = "The panel restarted before this operation completed."; }
+        foreach (var job in staleJobs) { job.State = JobState.Interrupted; job.Progress = 100; job.Message = "Interrupted"; job.Error = "The panel restarted before this operation completed."; }
         var interruptedUpdates = await state.Servers.Where(x => x.State == ServerState.Updating).ToListAsync();
         foreach (var server in interruptedUpdates.Where(server => !unrecoveredActivations.Contains(server.Id)))
         { server.State = ServerState.Stopped; server.ProcessId = null; }

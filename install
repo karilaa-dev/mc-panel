@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly DEFAULT_RELEASE="main"
+readonly DEFAULT_RELEASE="stable"
 readonly GITHUB_REPOSITORY="karilaa-dev/mc-panel"
 readonly RELEASE_MANIFEST_NAME="release-manifest.txt"
 readonly RELEASE_BASE_URL="${MCPANEL_RELEASE_BASE_URL:-https://github.com/$GITHUB_REPOSITORY/releases/download}"
@@ -40,6 +40,15 @@ selected_release() {
   done
   validate_release_ref "$release"
   printf '%s\n' "$release"
+}
+
+resolve_stable_release() {
+  local destination tag
+  destination="$(curl --location --head --fail --silent --show-error --connect-timeout 15 --max-time 60 \
+    --output /dev/null --write-out '%{url_effective}' "${RELEASE_BASE_URL%/download}/latest")" || die "no stable release is available; select --release main only if you want a rolling development build"
+  tag="${destination##*/}"
+  [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "latest release did not resolve to an immutable version tag"
+  printf '%s\n' "$tag"
 }
 
 download_release_asset() {
@@ -90,6 +99,7 @@ main() {
   local release work_root="" attempt attempt_dir manager=""
   require_commands chmod curl mkdir mktemp rm sha256sum
   release="$(selected_release "$@")"
+  if [[ "$release" == "stable" ]]; then release="$(resolve_stable_release)"; set -- "$@" --release "$release"; fi
   work_root="$(mktemp -d /tmp/mcpanel-bootstrap.XXXXXX)"
   cleanup() {
     local rc=$?

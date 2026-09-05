@@ -8,7 +8,7 @@ import { defaultGateClassicConfiguration, type GateStatusDto, type ServerSummary
 import { GateProxyPage } from "@/pages/gate-proxy-page"
 
 vi.mock("@/lib/api", () => ({ api: {
-  gate: vi.fn(), server: vi.fn(), updateGate: vi.fn(), saveGate: vi.fn(),
+  prepareGateBackends: vi.fn(), gateVersions: vi.fn(), gate: vi.fn(), server: vi.fn(), updateGate: vi.fn(), saveGate: vi.fn(),
   revealGateSecret: vi.fn(), generateGateSecret: vi.fn(),
 } }))
 const mockedApi = vi.mocked(api)
@@ -25,6 +25,7 @@ function renderPage() { return render(<MemoryRouter initialEntries={["/servers/g
 
 describe("GateProxyPage", () => {
   beforeEach(() => {
+    mockedApi.gateVersions.mockResolvedValue(["0.73.0", "0.72.6", "0.71.1"])
     mockedApi.gate.mockResolvedValue(status)
     mockedApi.server.mockResolvedValue(gateServer)
     mockedApi.saveGate.mockResolvedValue(status)
@@ -39,6 +40,37 @@ describe("GateProxyPage", () => {
     expect(screen.queryByText(/I configured every selected backend/i)).not.toBeInTheDocument()
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
     expect(screen.queryByText(/acknowledgement is invalidated/i)).not.toBeInTheDocument()
+  })
+
+  it("queues the selected Gate version after confirmation", async () => {
+    mockedApi.updateGate.mockResolvedValue({ id: "version-job", type: "GateUpdate", state: "Queued", progress: 0 })
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole("combobox", { name: "Gate release" }))
+    await user.click(screen.getByRole("option", { name: "0.72.6" }))
+    await user.click(screen.getByRole("button", { name: "Change Gate version" }))
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent("Install Gate 0.72.6?")
+    await user.click(screen.getByRole("button", { name: "Queue version change" }))
+    await waitFor(() => expect(mockedApi.updateGate).toHaveBeenCalledWith("gate-1", true, "0.72.6"))
+  })
+
+  it("prepares the saved mode using the current revision after reviewing network changes", async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole("button", { name: "Prepare backends for Classic" }))
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent("bind only to loopback")
+    await user.click(screen.getByRole("button", { name: "Prepare network settings" }))
+    await waitFor(() => expect(mockedApi.prepareGateBackends).toHaveBeenCalledWith("gate-1", "revision-1"))
+  })
+
+  it("shows backend connection problems and release fetch failures", async () => {
+    mockedApi.gate.mockResolvedValue({ ...status, connectionProblems: ["Vanilla world requires online authentication. Use Lite."] })
+    mockedApi.gateVersions.mockRejectedValue(new Error("Release service unavailable"))
+    renderPage()
+    expect(await screen.findByText("Backend setup prevents joining")).toBeVisible()
+    expect(screen.getByText("Vanilla world requires online authentication. Use Lite.")).toBeVisible()
+    expect(await screen.findByText("Release service unavailable")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Change Gate version" })).toBeDisabled()
   })
 
   it("generates the first forwarding secret without a replacement confirmation", async () => {

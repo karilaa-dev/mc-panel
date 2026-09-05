@@ -1,0 +1,8 @@
+# Replace mcpanel.home.arpa with your private DNS name.
+# Install this CA certificate on administrator devices before using the panel.
+mcpanel.home.arpa {
+    tls internal
+    reverse_proxy 127.0.0.1:6050 {
+        header_up Host mcpanel.home.arpa
+    }
+}

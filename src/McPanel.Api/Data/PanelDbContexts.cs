@@ -16,6 +16,10 @@ public sealed class StateDbContext(DbContextOptions<StateDbContext> options) : D
     public DbSet<GateSettingsEntity> GateSettings => Set<GateSettingsEntity>();
     public DbSet<GateBackendEntity> GateBackends => Set<GateBackendEntity>();
     public DbSet<GateExternalBackendEntity> GateExternalBackends => Set<GateExternalBackendEntity>();
+    public DbSet<IncidentEntity> Incidents => Set<IncidentEntity>();
+    public DbSet<AuditEventEntity> AuditEvents => Set<AuditEventEntity>();
+    public DbSet<ScheduleRunEntity> ScheduleRuns => Set<ScheduleRunEntity>();
+    public DbSet<RecoveryPointEntity> RecoveryPoints => Set<RecoveryPointEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -37,6 +41,9 @@ public sealed class StateDbContext(DbContextOptions<StateDbContext> options) : D
         modelBuilder.Entity<PlayerEntity>().HasIndex(x => new { x.ServerId, x.Name }).IsUnique();
         modelBuilder.Entity<ScheduleEntity>().HasIndex(x => new { x.Enabled, x.NextRunAt });
         modelBuilder.Entity<BackupEntity>().HasIndex(x => new { x.ServerId, x.CreatedAt });
+        modelBuilder.Entity<IncidentEntity>().HasIndex(x => new { x.Code, x.ServerId });
+        modelBuilder.Entity<AuditEventEntity>().HasIndex(x => x.Timestamp);
+        modelBuilder.Entity<ScheduleRunEntity>().HasIndex(x => new { x.ScheduleId, x.StartedAt });
         ConfigureUtcTimestamps(modelBuilder);
     }
 

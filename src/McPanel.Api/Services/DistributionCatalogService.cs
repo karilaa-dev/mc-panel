@@ -20,8 +20,29 @@ public sealed record InstallPlan(
     ServerKind Kind, string Version, int RequiredJavaMajor, DownloadArtifact Artifact,
     string? Build = null, string? LoaderVersion = null, string? InstallerVersion = null, bool Experimental = false);
 
-public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
+public sealed class ValidatedDownloadClient(IHttpClientFactory clients, IOptions<PanelOptions>? options = null)
 {
+    internal TimeSpan IdleTimeout { get; set; } = TimeSpan.FromSeconds(Math.Clamp(options?.Value.DownloadIdleSeconds ?? 30, 1, 600));
+    internal TimeSpan TotalTimeout { get; set; } = TimeSpan.FromSeconds(Math.Clamp(options?.Value.DownloadTotalSeconds ?? 600, 1, 3600));
+
+    private async Task<T> WithDeadlineAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken token)
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(token);
+        budget.CancelAfter(TotalTimeout);
+        try { return await action(budget.Token); }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        { throw new PanelException(504, "UPSTREAM_TIMEOUT", "The upstream response exceeded its time limit. Retry the operation."); }
+    }
+
+    private async Task<int> ReadWithIdleTimeoutAsync(Stream stream, Memory<byte> buffer, CancellationToken token)
+    {
+        using var idle = CancellationTokenSource.CreateLinkedTokenSource(token);
+        idle.CancelAfter(IdleTimeout);
+        try { return await stream.ReadAsync(buffer, idle.Token).AsTask().WaitAsync(idle.Token); }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        { throw new PanelException(504, "UPSTREAM_TIMEOUT", "The upstream response stopped sending data. Retry the operation."); }
+    }
+
     private const long MaximumArtifactBytes = 1_073_741_824;
     private const long MaximumMetadataBytes = 8 * 1024 * 1024;
     private static readonly HashSet<string> DistributionHosts = new(StringComparer.OrdinalIgnoreCase)
@@ -45,7 +66,16 @@ public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
         "release-assets.githubusercontent.com"
     };
 
-    public async Task<JsonDocument> JsonAsync(
+    public Task<JsonDocument> JsonAsync(Uri uri, CancellationToken token, DownloadPolicy policy = DownloadPolicy.Distribution, long maximumBytes = MaximumMetadataBytes) =>
+        WithDeadlineAsync(ct => JsonCoreAsync(uri, ct, policy, maximumBytes), token);
+    public Task<string> StringAsync(Uri uri, CancellationToken token, DownloadPolicy policy = DownloadPolicy.Distribution, long maximumBytes = MaximumMetadataBytes) =>
+        WithDeadlineAsync(ct => StringCoreAsync(uri, ct, policy, maximumBytes), token);
+    public Task<JsonDocument> JsonPostAsync<T>(Uri uri, T body, CancellationToken token, DownloadPolicy policy = DownloadPolicy.Distribution) =>
+        WithDeadlineAsync(ct => JsonPostCoreAsync(uri, body, ct, policy), token);
+    public Task DownloadAsync(DownloadArtifact artifact, string destination, CancellationToken token) =>
+        WithDeadlineAsync(async ct => { await DownloadCoreAsync(artifact, destination, ct); return true; }, token);
+
+    private async Task<JsonDocument> JsonCoreAsync(
         Uri uri, CancellationToken cancellationToken,
         DownloadPolicy policy = DownloadPolicy.Distribution,
         long maximumBytes = MaximumMetadataBytes)
@@ -55,7 +85,7 @@ public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
         return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
     }
 
-    public async Task<string> StringAsync(
+    private async Task<string> StringCoreAsync(
         Uri uri, CancellationToken cancellationToken,
         DownloadPolicy policy = DownloadPolicy.Distribution,
         long maximumBytes = MaximumMetadataBytes)
@@ -64,7 +94,7 @@ public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
         return System.Text.Encoding.UTF8.GetString(await ReadBoundedAsync(response.Content, maximumBytes, cancellationToken));
     }
 
-    public async Task<JsonDocument> JsonPostAsync<T>(
+    private async Task<JsonDocument> JsonPostCoreAsync<T>(
         Uri uri, T body, CancellationToken cancellationToken,
         DownloadPolicy policy = DownloadPolicy.Distribution)
     {
@@ -74,7 +104,7 @@ public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
             Content = JsonContent.Create(body)
         };
         using var response = await clients.CreateClient("upstream").SendAsync(
-            request, HttpCompletionOption.ResponseContentRead, cancellationToken);
+            request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if ((int)response.StatusCode is >= 300 and < 400)
             throw new PanelException(
                 502, "INSTALL_DOWNLOAD_REJECTED",
@@ -84,11 +114,11 @@ public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
                 502, "UPSTREAM_UNAVAILABLE",
                 "The upstream distribution service is unavailable.",
                 $"Upstream returned {(int)response.StatusCode} {response.StatusCode}.");
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        await using var stream = new MemoryStream(await ReadBoundedAsync(response.Content, MaximumMetadataBytes, cancellationToken), writable: false);
         return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
     }
 
-    public async Task DownloadAsync(DownloadArtifact artifact, string destination, CancellationToken cancellationToken)
+    private async Task DownloadCoreAsync(DownloadArtifact artifact, string destination, CancellationToken cancellationToken)
     {
         var (algorithm, expectedHash) = ValidateChecksumMetadata(artifact);
         if (artifact.Size is < 0)
@@ -112,7 +142,7 @@ public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
             var buffer = new byte[128 * 1024];
             long total = 0;
             int read;
-            while ((read = await source.ReadAsync(buffer, cancellationToken)) > 0)
+            while ((read = await ReadWithIdleTimeoutAsync(source, buffer, cancellationToken)) > 0)
             {
                 total += read;
                 if (total > MaximumArtifactBytes) throw new PanelException(502, "INSTALL_DOWNLOAD_REJECTED", "The upstream artifact is unexpectedly large.");
@@ -186,7 +216,7 @@ public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
         throw new PanelException(502, "INSTALL_DOWNLOAD_REJECTED", "The upstream download redirected too many times.");
     }
 
-    private static async Task<byte[]> ReadBoundedAsync(HttpContent content, long maximumBytes, CancellationToken cancellationToken)
+    private async Task<byte[]> ReadBoundedAsync(HttpContent content, long maximumBytes, CancellationToken cancellationToken)
     {
         if (maximumBytes < 1 || content.Headers.ContentLength is > 0 && content.Headers.ContentLength > maximumBytes)
             throw new PanelException(502, "INSTALL_DOWNLOAD_REJECTED", "The upstream metadata response is unexpectedly large.");
@@ -195,7 +225,7 @@ public sealed class ValidatedDownloadClient(IHttpClientFactory clients)
         var buffer = new byte[64 * 1024];
         long total = 0;
         int read;
-        while ((read = await source.ReadAsync(buffer, cancellationToken)) > 0)
+        while ((read = await ReadWithIdleTimeoutAsync(source, buffer, cancellationToken)) > 0)
         {
             total += read;
             if (total > maximumBytes)

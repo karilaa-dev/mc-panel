@@ -18,6 +18,23 @@ public sealed class PanelOptions
     public int MaxArchiveEntries { get; set; } = 20_000;
     public int ConsoleLinesPerServer { get; set; } = 50_000;
     public int ConsoleRetentionDays { get; set; } = 7;
+    public int ConsoleBufferLines { get; set; } = 4096;
+    public int BackupLeaseSeconds { get; set; } = 30;
+    public int StartupTimeoutSeconds { get; set; } = 180;
+    public long MaxBackupBytes { get; set; } = 1024L * 1024 * 1024 * 1024;
+    public int MaxBackupEntries { get; set; } = 2_000_000;
+    public long ReservedDiskBytes { get; set; } = 1024L * 1024 * 1024;
+    public int BackupRetentionCount { get; set; } = 48;
+    public int BackupRetentionDays { get; set; } = 7;
+    public long BackupRetentionBytes { get; set; } = 100L * 1024 * 1024 * 1024;
+    public int DownloadIdleSeconds { get; set; } = 30;
+    public int DownloadTotalSeconds { get; set; } = 600;
+    public int RecoveryIntervalMinutes { get; set; } = 30;
+    public string? ReplicationDirectory { get; set; }
+    public string? AlertWebhookFile { get; set; }
+    public int AuditRetentionDays { get; set; } = 90;
+    public bool RequireHttps { get; set; }
+    public string[] TrustedProxies { get; set; } = [];
     public double MemoryAllocationFraction { get; set; } = 0.85;
     public string PaperUserAgent { get; set; } = "mc-panel/1.0 (https://github.com/mc-panel/mc-panel)";
 }

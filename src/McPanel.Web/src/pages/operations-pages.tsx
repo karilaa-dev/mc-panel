@@ -1,3 +1,5 @@
+import { QueryFeedback } from "@/components/query-feedback"
+import { useUnsavedChanges } from "@/hooks/use-unsaved-changes"
 import {
   lazy,
   Suspense,
@@ -244,7 +246,7 @@ function ConsoleSession({ serverId }: { serverId: string }) {
       if (currentServer) queryClient.setQueryData(["server", serverId], currentServer)
     })
     connection.on("JobUpdated", (job: JobDto) => {
-      if (disposed || (job.state !== "Completed" && job.state !== "Failed")) return
+      if (disposed || !["Completed", "Failed", "Interrupted", "Canceled"].includes(job.state)) return
       void queryClient.invalidateQueries({ queryKey: ["server", serverId] })
       void queryClient.invalidateQueries({ queryKey: ["servers"] })
     })
@@ -262,6 +264,12 @@ function ConsoleSession({ serverId }: { serverId: string }) {
       if (disposed) return
       bufferingLiveEvents = true
       setConnected(false)
+    })
+    connection.onclose(() => {
+      if (disposed) return
+      setConnected(false)
+      bufferingLiveEvents = true
+      void (async () => { if (await startWithRetry()) await finishCatchUp() })()
     })
     connection.onreconnected(() => {
       if (!disposed) void finishCatchUp()
@@ -393,12 +401,18 @@ type FileOperation =
 
 export function FilesPage() {
   const { serverId = "" } = useParams()
+  return <ServerFiles key={serverId} serverId={serverId} />
+}
+
+function ServerFiles({ serverId }: { serverId: string }) {
   const queryClient = useQueryClient()
   const uploadRef = useRef<HTMLInputElement>(null)
   const [path, setPath] = useState("")
   const [operation, setOperation] = useState<FileOperation>()
   const [operationValue, setOperationValue] = useState("")
-  const [editing, setEditing] = useState<{ path: string; content: string }>()
+  const [editing, setEditing] = useState<{ path: string; content: string; original: string; revision: string }>()
+  const draft = useUnsavedChanges(Boolean(editing && editing.content !== editing.original))
+  const [replaceUpload, setReplaceUpload] = useState<File>()
   const server = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
   const queryKey = ["files", serverId, path]
   const files = useQuery({ queryKey, queryFn: () => api.files(serverId, path) })
@@ -420,7 +434,7 @@ export function FilesPage() {
   async function openEditor(entry: FileEntryDto) {
     try {
       const result = await api.readFile(serverId, entry.path)
-      setEditing({ path: entry.path, content: result.content })
+      setEditing({ path: entry.path, content: result.content, original: result.content, revision: result.revision })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "This file cannot be edited as text.")
     }
@@ -451,7 +465,7 @@ export function FilesPage() {
           disabled={!canModify}
           onChange={(event) => {
             const file = event.target.files?.[0]
-            if (file) mutate.mutate(() => api.uploadFile(serverId, path, file))
+            if (file) { if (files.data?.some((entry) => entry.name === file.name)) setReplaceUpload(file); else mutate.mutate(() => api.uploadFile(serverId, path, file)) }
             event.target.value = ""
           }}
         />
@@ -475,7 +489,8 @@ export function FilesPage() {
               </span>
             ))}
           </nav>
-          {files.isLoading ? <Skeleton className="h-72" /> : files.data?.length ? (
+          <QueryFeedback query={files} />
+          {files.isLoading ? <Skeleton className="h-72" /> : files.isError && !files.data ? null : files.data?.length ? (
             <ScrollArea className="max-h-[60vh]">
               <Table>
                 <TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Size</TableHead><TableHead>Modified</TableHead><TableHead><span className="sr-only">Actions</span></TableHead></TableRow></TableHeader>
@@ -532,13 +547,15 @@ export function FilesPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(editing)} onOpenChange={(open) => !open && setEditing(undefined)}>
+      <Dialog open={Boolean(editing)} onOpenChange={(open) => !open && draft.confirmDiscard(() => setEditing(undefined))}>
         <DialogContent className="sm:max-w-5xl">
           <DialogHeader><DialogTitle>Edit {editing?.path.split("/").at(-1)}</DialogTitle><DialogDescription>Only UTF-8 text files within the configured size limit can be edited.</DialogDescription></DialogHeader>
           {editing && <Suspense fallback={<Skeleton className="h-96" />}><CodeEditor fileName={editing.path} value={editing.content} onChange={(content) => setEditing({ ...editing, content })} /></Suspense>}
-          <DialogFooter showCloseButton><Button disabled={!canModify || !editing || mutate.isPending} title={modifyHint} onClick={() => editing && mutate.mutate(async () => { await api.saveFile(serverId, editing.path, editing.content); setEditing(undefined) })}>{mutate.isPending && <Spinner data-icon="inline-start" />}Save file</Button></DialogFooter>
+          <DialogFooter showCloseButton><Button disabled={!canModify || !editing || mutate.isPending} title={modifyHint} onClick={() => editing && mutate.mutate(async () => { await api.saveFile(serverId, editing.path, editing.content, editing.revision); setEditing(undefined) })}>{mutate.isPending && <Spinner data-icon="inline-start" />}Save file</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+      {draft.dialog}
+      <AlertDialog open={Boolean(replaceUpload)} onOpenChange={(open) => !open && setReplaceUpload(undefined)}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Replace {replaceUpload?.name}?</AlertDialogTitle><AlertDialogDescription>The existing file will be overwritten by this upload.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => { if (replaceUpload) mutate.mutate(() => api.uploadFile(serverId, path, replaceUpload, true)); setReplaceUpload(undefined) }}>Replace file</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
     </Page>
   )
 }
@@ -632,16 +649,18 @@ export function BackupsPage() {
     ? "Restore is unavailable while the server state loads."
     : "Stop the server before restoring a backup."
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["backups", serverId] })
+  const exportServer = useMutation({ mutationFn: () => api.exportServer(serverId), onSuccess: () => toast.message("Export queued. Open Activity to follow progress and download it."), onError: (error) => toast.error(error.message) })
   const create = useMutation({
     mutationFn: () => api.createBackup(serverId),
-    onSuccess: (job) => { toast.success("Backup started", { description: `Operation ${job.id.slice(0, 8)}` }); void refresh() },
+    onSuccess: (job) => { toast.message("Backup queued", { description: `Operation ${job.id.slice(0, 8)}` }); void refresh() },
     onError: (error) => toast.error(error.message),
   })
   const restore = useMutation({
     mutationFn: (id: string) => api.restoreBackup(serverId, id),
-    onSuccess: () => toast.success("Restore started", { description: "A safety backup will be created first." }),
+    onSuccess: () => toast.message("Restore queued", { description: "A safety backup will be created first." }),
     onError: (error) => toast.error(error.message),
   })
+  const pin = useMutation({ mutationFn: ({ id, pinned }: { id: string; pinned: boolean }) => api.pinBackup(serverId, id, pinned), onSuccess: refresh, onError: (error) => toast.error(error.message) })
   const remove = useMutation({
     mutationFn: (id: string) => api.deleteBackup(serverId, id),
     onSuccess: () => { toast.success("Backup deleted"); void refresh() },
@@ -649,13 +668,14 @@ export function BackupsPage() {
   })
 
   return (
-    <Page title="Backups" description="Consistent world backups with automatic save-off, flush, and save-on handling." actions={<Button disabled={create.isPending || !canCreate} title={createHint} onClick={() => create.mutate()}>{create.isPending ? <Spinner data-icon="inline-start" /> : <PlusIcon data-icon="inline-start" />}Create backup</Button>}>
+    <Page title="Backups" description="Consistent world backups with automatic save-off, flush, and save-on handling." actions={<><Button variant="outline" disabled={exportServer.isPending || !canCreate} onClick={() => exportServer.mutate()}>Export server</Button><Button disabled={create.isPending || !canCreate} title={createHint} onClick={() => create.mutate()}>{create.isPending ? <Spinner data-icon="inline-start" /> : <PlusIcon data-icon="inline-start" />}Create backup</Button></>}>
       <Card>
         <CardHeader><CardTitle>Backup archive</CardTitle><CardDescription>Restores require the server to be stopped and always create a safety backup first.</CardDescription></CardHeader>
         <CardContent>
-          {backups.isLoading ? <Skeleton className="h-64" /> : backups.data?.length ? <Table>
+          <QueryFeedback query={backups} />
+          {backups.isLoading ? <Skeleton className="h-64" /> : backups.isError && !backups.data ? null : backups.data?.length ? <Table>
             <TableHeader><TableRow><TableHead>Created</TableHead><TableHead>Reason</TableHead><TableHead>Size</TableHead><TableHead>Status</TableHead><TableHead><span className="sr-only">Actions</span></TableHead></TableRow></TableHeader>
-            <TableBody>{backups.data.map((backup) => <TableRow key={backup.id}><TableCell>{formatDate(backup.createdAt)}</TableCell><TableCell>{backup.reason}</TableCell><TableCell>{formatBytes(backup.size)}</TableCell><TableCell><Badge variant={backup.state === "Completed" ? "success" : "outline"}>{backup.state}</Badge></TableCell><TableCell className="text-right"><a className={buttonVariants({ variant: "ghost", size: "icon-sm" })} href={api.backupDownloadUrl(serverId, backup.id)}><DownloadIcon /><span className="sr-only">Download {backup.fileName}</span></a><AlertDialog><AlertDialogTrigger render={<Button variant="ghost" size="icon-sm" disabled={!canRestore} title={canRestore ? undefined : restoreHint} />}><ArchiveRestoreIcon /><span className="sr-only">Restore {backup.fileName}</span></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Restore this backup?</AlertDialogTitle><AlertDialogDescription>The server must be stopped. Current data is protected with a safety backup before files are replaced.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => restore.mutate(backup.id)}>Restore backup</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog><AlertDialog><AlertDialogTrigger render={<Button variant="ghost" size="icon-sm" />}><Trash2Icon /><span className="sr-only">Delete {backup.fileName}</span></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete this backup?</AlertDialogTitle><AlertDialogDescription>{backup.fileName} will be permanently removed.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => remove.mutate(backup.id)}>Delete</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog></TableCell></TableRow>)}</TableBody>
+            <TableBody>{backups.data.map((backup) => <TableRow key={backup.id}><TableCell>{formatDate(backup.createdAt)}</TableCell><TableCell>{backup.reason}{backup.pinned && <Badge variant="outline">Pinned</Badge>}</TableCell><TableCell>{formatBytes(backup.size)}</TableCell><TableCell><Badge variant={backup.state === "Completed" ? "success" : "outline"}>{backup.state}</Badge></TableCell><TableCell className="text-right"><Button size="sm" variant="ghost" disabled={pin.isPending} onClick={() => pin.mutate({ id: backup.id, pinned: !backup.pinned })}>{backup.pinned ? "Unpin" : "Pin"}</Button><a className={buttonVariants({ variant: "ghost", size: "icon-sm" })} href={api.backupDownloadUrl(serverId, backup.id)}><DownloadIcon /><span className="sr-only">Download {backup.fileName}</span></a><AlertDialog><AlertDialogTrigger render={<Button variant="ghost" size="icon-sm" disabled={!canRestore} title={canRestore ? undefined : restoreHint} />}><ArchiveRestoreIcon /><span className="sr-only">Restore {backup.fileName}</span></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Restore this backup?</AlertDialogTitle><AlertDialogDescription>The server must be stopped. Current data is protected with a safety backup before files are replaced.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => restore.mutate(backup.id)}>Restore backup</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog><AlertDialog><AlertDialogTrigger render={<Button variant="ghost" size="icon-sm" />}><Trash2Icon /><span className="sr-only">Delete {backup.fileName}</span></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete this backup?</AlertDialogTitle><AlertDialogDescription>{backup.fileName} will be permanently removed.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => remove.mutate(backup.id)}>Delete</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog></TableCell></TableRow>)}</TableBody>
           </Table> : <Empty><EmptyHeader><EmptyMedia variant="icon"><RefreshCwIcon /></EmptyMedia><EmptyTitle>No backups yet</EmptyTitle><EmptyDescription>Create a manual backup or add one to a schedule.</EmptyDescription></EmptyHeader></Empty>}
         </CardContent>
       </Card>

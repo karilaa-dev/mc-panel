@@ -98,6 +98,7 @@ public sealed class SchedulerService(
     OperationQueue operations,
     ILogger<SchedulerService> logger) : BackgroundService
 {
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, Task> _runs = new();
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public async Task<IReadOnlyList<ScheduleDto>> ListAsync(Guid serverId, CancellationToken cancellationToken)
@@ -166,25 +167,63 @@ public sealed class SchedulerService(
                     .Select(x => x.Id)
                     .Take(20)
                     .ToListAsync(stoppingToken);
-                foreach (var id in due) _ = RunAsync(id, stoppingToken);
+                foreach (var id in due) StartTracked(id, stoppingToken);
             }
             catch (Exception exception) when (exception is not OperationCanceledException) { logger.LogError(exception, "Schedule polling failed"); }
             await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken);
         }
     }
 
+    private void StartTracked(Guid id, CancellationToken token)
+    {
+        // Reserve the tracking slot before the task can finish or another poll can claim it.
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_runs.TryAdd(id, completion.Task)) return;
+        _ = Task.Run(async () =>
+        {
+            try { await RunAsync(id, token); }
+            catch (Exception exception) when (exception is not OperationCanceledException) { logger.LogError(exception, "Schedule execution could not be recorded"); }
+            finally { _runs.TryRemove(id, out _); completion.TrySetResult(); }
+        }, CancellationToken.None);
+    }
+
+    public async Task RunNowAsync(Guid serverId, Guid id, CancellationToken token)
+    {
+        await using var db = await stateFactory.CreateDbContextAsync(token);
+        var schedule = await db.Schedules.SingleOrDefaultAsync(x => x.Id == id && x.ServerId == serverId, token) ?? throw PanelProblems.NotFound("Schedule");
+        if (schedule.IsRunning) throw PanelProblems.Conflict("SCHEDULE_RUNNING", "This schedule is already running.");
+        if (!schedule.Enabled) throw PanelProblems.Conflict("SCHEDULE_DISABLED", "Enable this schedule before running it.");
+        schedule.NextRunAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(token);
+    }
+
+    public async Task<IReadOnlyList<ScheduleRunEntity>> HistoryAsync(Guid serverId, Guid id, CancellationToken token)
+    {
+        await using var db = await stateFactory.CreateDbContextAsync(token);
+        return await db.ScheduleRuns.AsNoTracking().Where(x => x.ScheduleId == id && x.ServerId == serverId).OrderByDescending(x => x.StartedAt).Take(100).ToListAsync(token);
+    }
+
+    public override async Task StopAsync(CancellationToken token)
+    {
+        await base.StopAsync(token);
+        await Task.WhenAll(_runs.Values).WaitAsync(token);
+    }
+
     private async Task RunAsync(Guid id, CancellationToken cancellationToken)
     {
         ScheduleEntity entity;
+        var run = new ScheduleRunEntity { ScheduleId = id, Result = "Running" };
         await using (var db = await stateFactory.CreateDbContextAsync(cancellationToken))
         {
             var found = await db.Schedules.SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
             if (found is null) return;
             entity = found;
             if (entity.IsRunning || !entity.Enabled) return;
+            if (await db.Schedules.Where(x => x.Id == id && !x.IsRunning && x.Enabled).ExecuteUpdateAsync(updates => updates.SetProperty(x => x.IsRunning, true), cancellationToken) != 1) return;
             entity.IsRunning = true; entity.LastRunAt = DateTimeOffset.UtcNow;
             entity.NextRunAt = ScheduleCalculator.Next(entity.Frequency, Trigger(entity), entity.TimeZone, entity.LastRunAt.Value);
             if (entity.Frequency.Equals("Once", StringComparison.OrdinalIgnoreCase)) entity.Enabled = false;
+            run.ServerId = entity.ServerId; db.ScheduleRuns.Add(run);
             await db.SaveChangesAsync(cancellationToken);
         }
         try
@@ -197,7 +236,10 @@ public sealed class SchedulerService(
         {
             await using var db = await stateFactory.CreateDbContextAsync(CancellationToken.None);
             var current = await db.Schedules.FindAsync(id);
-            if (current is not null) { current.IsRunning = false; current.LastResult = entity.LastResult; await db.SaveChangesAsync(); }
+            if (current is not null) { current.IsRunning = false; current.LastResult = entity.LastResult; }
+            var recorded = await db.ScheduleRuns.FindAsync(run.Id);
+            if (recorded is not null) { recorded.FinishedAt = DateTimeOffset.UtcNow; recorded.Result = entity.LastResult ?? "Interrupted"; }
+            await db.SaveChangesAsync();
         }
     }
 
@@ -226,7 +268,7 @@ public sealed class SchedulerService(
         {
             var job = await operations.GetAsync(id, cancellationToken) ?? throw PanelProblems.NotFound("Job");
             if (job.State == JobState.Completed) return;
-            if (job.State == JobState.Failed) throw new PanelException(500, "OPERATION_FAILED", "Scheduled action failed.", job.Error);
+            if (OperationQueue.IsTerminal(job.State)) throw new PanelException(500, "OPERATION_FAILED", "Scheduled action failed.", job.Error);
             await Task.Delay(500, cancellationToken);
         }
     }
@@ -238,10 +280,15 @@ public sealed class SchedulerService(
         var schedules = await db.Schedules.Where(x => x.IsRunning || x.Enabled && x.NextRunAt <= now).ToListAsync(cancellationToken);
         foreach (var entity in schedules)
         {
-            entity.IsRunning = false; entity.LastResult = "Missed while panel was offline; not replayed.";
+            var backupOnly = Actions(entity).Count > 0 && Actions(entity).All(action => action.Action.Equals("Backup", StringComparison.OrdinalIgnoreCase));
+            entity.IsRunning = false;
+            if (entity.Enabled && backupOnly) { entity.LastResult = "One overdue backup will run after downtime."; entity.NextRunAt = now; continue; }
+            entity.LastResult = "Missed while panel was offline; not replayed.";
             entity.NextRunAt = ScheduleCalculator.Next(entity.Frequency, Trigger(entity), entity.TimeZone, now);
             if (entity.Frequency.Equals("Once", StringComparison.OrdinalIgnoreCase)) entity.Enabled = false;
         }
+        var interrupted = await db.ScheduleRuns.Where(x => x.FinishedAt == null).ToListAsync(cancellationToken);
+        foreach (var run in interrupted) { run.FinishedAt = now; run.Result = "Interrupted by panel restart; inspect operation history."; }
         await db.SaveChangesAsync(cancellationToken);
     }
 
