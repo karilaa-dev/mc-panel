@@ -62,7 +62,7 @@ function NavigationItem({ label, path, icon: Icon, server }: { label: string; pa
         isActive={active}
         render={<Link to={path} onClick={() => isMobile && setOpenMobile(false)} />}
       >
-        {server ? <ServerAvatar server={server} className="size-5" compact /> : <Icon />}
+        {server ? <ServerAvatar server={server} className="size-5 group-data-[collapsible=icon]:size-4" /> : <Icon />}
         <span>{label}</span>
       </SidebarMenuButton>
     </SidebarMenuItem>
@@ -123,11 +123,11 @@ export function AppShell() {
     <SidebarProvider>
       <MobileSidebarCloser />
       <Sidebar variant="inset" collapsible="icon">
-        <SidebarHeader>
+        <SidebarHeader className="pb-3">
           <SidebarMenu>
             <SidebarMenuItem>
               <SidebarMenuButton size="lg" render={<Link to="/" />} tooltip="MC Panel">
-                <span className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground"><CommandIcon /></span>
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"><CommandIcon /></span>
                 <span className="grid flex-1 text-left text-sm leading-tight"><span className="truncate font-semibold">MC Panel</span><span className="truncate text-xs text-muted-foreground">Minecraft, simply managed</span></span>
               </SidebarMenuButton>
             </SidebarMenuItem>
@@ -139,7 +139,7 @@ export function AppShell() {
           </SidebarGroup>
           {serverId && (
             <SidebarGroup>
-              <SidebarGroupLabel>{currentServer && <ServerAvatar server={currentServer} className="size-5" compact />}{currentServer?.name ?? "Active server"}</SidebarGroupLabel>
+              <SidebarGroupLabel>{currentServer && <ServerAvatar server={currentServer} className="size-5" />}{currentServer?.name ?? "Active server"}</SidebarGroupLabel>
               <SidebarGroupContent>
                 <SidebarMenu>{visibleServerItems.map((item) => <NavigationItem key={item.label} label={item.label} icon={item.icon} path={`/servers/${serverId}${item.path}`} />)}</SidebarMenu>
               </SidebarGroupContent>
@@ -161,12 +161,12 @@ export function AppShell() {
               </CollapsibleContent>
             </SidebarGroup>
           </Collapsible>
-          <SidebarGroup className="mt-auto">
+          <SidebarGroup className="mt-auto pt-4">
             <SidebarGroupLabel>System</SidebarGroupLabel>
             <SidebarGroupContent><SidebarMenu>{systemItems.map((item) => <NavigationItem key={item.path} {...item} />)}</SidebarMenu></SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-        <SidebarFooter>
+        <SidebarFooter className="border-t border-sidebar-border pt-3">
           <SidebarMenu>
             <SidebarMenuItem>
               <DropdownMenu>
@@ -190,12 +190,12 @@ export function AppShell() {
         <SidebarRail />
       </Sidebar>
       <SidebarInset>
-        <header className="sticky top-0 flex h-14 shrink-0 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur md:px-6">
+        <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur md:rounded-t-xl md:px-6 lg:px-8">
           <SidebarTrigger />
-          <Separator orientation="vertical" className="h-4" />
+          <Separator orientation="vertical" className="h-4 data-vertical:self-center" />
           <Breadcrumb className="min-w-0 flex-1">
             <BreadcrumbList>
-              {currentServer && <><BreadcrumbItem className="hidden items-center gap-2 sm:inline-flex"><ServerAvatar server={currentServer} className="size-5" />{currentServer.name}</BreadcrumbItem><BreadcrumbSeparator className="hidden sm:inline-flex" /></>}
+              {currentServer && <><BreadcrumbItem className="hidden min-w-0 items-center gap-2 sm:inline-flex"><ServerAvatar server={currentServer} className="size-5" /><span className="max-w-48 truncate">{currentServer.name}</span></BreadcrumbItem><BreadcrumbSeparator className="hidden sm:inline-flex" /></>}
               <BreadcrumbItem><BreadcrumbPage>{pageName}</BreadcrumbPage></BreadcrumbItem>
             </BreadcrumbList>
           </Breadcrumb>

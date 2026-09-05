@@ -1,7 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen, waitFor } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { createMemoryRouter, RouterProvider } from "react-router-dom"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { api } from "@/lib/api"
 import type { ServerState, ServerSummaryDto } from "@/lib/contracts"
 import { FilesPage } from "@/pages/operations-pages"
@@ -10,6 +11,9 @@ vi.mock("@/lib/api", () => ({
   api: {
     server: vi.fn(),
     files: vi.fn(),
+    downloadFile: vi.fn(),
+    fileDownloadUrl: vi.fn(() => "/download-image"),
+    readFile: vi.fn(),
   },
 }))
 
@@ -82,5 +86,44 @@ describe("FilesPage mutation availability", () => {
     expect(await screen.findByText("Manage this Gate instance’s files. Forwarding secrets remain protected.")).toBeVisible()
     expect(screen.getByText("Gate configuration, versions, rollback data, and logs are available here. The keys directory is intentionally hidden.")).toBeVisible()
     expect(screen.getByRole("button", { name: "New file" })).toBeEnabled()
+  })
+})
+
+describe("File image preview", () => {
+  const createObjectURL = vi.fn<(blob: Blob) => string>().mockReturnValue("blob:image-preview")
+  const revokeObjectURL = vi.fn()
+
+  beforeEach(() => {
+    Object.defineProperty(Element.prototype, "getAnimations", { configurable: true, value: () => [] })
+    vi.stubGlobal("URL", class extends URL {
+      static createObjectURL = createObjectURL
+      static revokeObjectURL = revokeObjectURL
+    })
+    mockedApi.server.mockResolvedValue(server("Running"))
+    mockedApi.files.mockResolvedValue([{ name: "server-icon.PNG", path: "server-icon.PNG", size: 100, isDirectory: false, modifiedAt: "2026-09-05T00:00:00Z" }])
+    mockedApi.downloadFile.mockResolvedValue(new Blob(["image"], { type: "application/octet-stream" }))
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  it("opens images as images and releases the preview URL when closed", async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole("button", { name: "server-icon.PNG" }))
+    const dialog = await screen.findByRole("dialog")
+    expect(await within(dialog).findByRole("img", { name: "server-icon.PNG" })).toHaveAttribute("src", "blob:image-preview")
+    expect(mockedApi.readFile).not.toHaveBeenCalled()
+    expect(mockedApi.downloadFile).toHaveBeenCalledWith("server-1", "server-icon.PNG", expect.any(AbortSignal))
+    expect(createObjectURL.mock.calls[0][0]).toHaveProperty("type", "image/png")
+    await user.click(within(dialog).getAllByRole("button", { name: "Close" })[0])
+    await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:image-preview"))
+  })
+
+  it("shows a failed image request with a download option", async () => {
+    mockedApi.downloadFile.mockRejectedValueOnce(new Error("Image unavailable"))
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole("button", { name: "server-icon.PNG" }))
+    expect(await screen.findByText("Could not preview image")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Download image" })).toHaveAttribute("href", "/download-image")
   })
 })

@@ -39,11 +39,11 @@ export function AuthScreen({ status }: { status: AuthStatusDto }) {
   }
 
   return (
-    <main className="flex min-h-svh items-center justify-center bg-muted p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader className="items-center text-center">
-          <span className="flex size-10 items-center justify-center rounded-xl bg-primary text-primary-foreground"><CommandIcon /></span>
-          <CardTitle><h1>{setup ? "Set up MC Panel" : "Welcome back"}</h1></CardTitle>
+    <main className="flex min-h-svh items-center justify-center p-4 sm:p-8">
+      <Card className="w-full max-w-md [--card-spacing:--spacing(6)] sm:[--card-spacing:--spacing(8)]">
+        <CardHeader className="justify-items-center gap-3 text-center">
+          <span className="mb-2 flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-xs"><CommandIcon /></span>
+          <CardTitle><h1 className="text-2xl font-semibold tracking-tight">{setup ? "Set up MC Panel" : "Welcome back"}</h1></CardTitle>
           <CardDescription>{setup ? "Create the single administrator account for this host." : "Sign in to manage your Minecraft servers."}</CardDescription>
         </CardHeader>
         <CardContent>

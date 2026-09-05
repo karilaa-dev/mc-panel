@@ -4,12 +4,13 @@ import { ServerAvatar } from "@/components/server-icon"
 
 vi.mock("@/lib/api", () => ({ api: { serverIconUrl: vi.fn(() => "/server-icon.png") } }))
 
-it("uses a rounded-square clip and border for server icons", () => {
-  const { container } = render(<ServerAvatar server={{ id: "server-1", name: "Test server", iconRevision: "revision" }} />)
-  expect(container.querySelector('[data-slot="avatar"]')).toHaveClass("overflow-hidden", "rounded-lg", "after:rounded-lg")
+it.each(["size-5", "size-10", "size-20"])("uses the same square shape at %s", (className) => {
+  const { container } = render(<ServerAvatar className={className} server={{ id: "server-1", name: "Test server", iconRevision: "revision" }} />)
+  expect(container.querySelector('[data-slot="avatar"]')).toHaveAttribute("data-shape", "square")
 })
 
-it("uses a tighter proportional radius for compact sidebar icons", () => {
-  const { container } = render(<ServerAvatar compact server={{ id: "server-1", name: "Test server", iconRevision: "revision" }} />)
-  expect(container.querySelector('[data-slot="avatar"]')).toHaveClass("rounded-sm", "after:rounded-sm")
+it("keeps the square shape when an icon is missing", () => {
+  const { container } = render(<ServerAvatar server={{ id: "server-1", name: "Test server" }} />)
+  expect(container.querySelector('[data-slot="avatar"]')).toHaveAttribute("data-shape", "square")
+  expect(container.querySelector('[data-slot="avatar-fallback"]')).toBeInTheDocument()
 })

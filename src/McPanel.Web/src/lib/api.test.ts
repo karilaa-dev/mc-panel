@@ -42,6 +42,27 @@ afterEach(() => {
   vi.resetModules()
 })
 
+it("downloads image bytes using the authenticated file endpoint", async () => {
+  const blob = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "application/octet-stream" })
+  const fetchMock = vi.fn().mockResolvedValue({ ...response(), blob: async () => blob })
+  vi.stubGlobal("fetch", fetchMock)
+  const { api } = await import("@/lib/api")
+  const signal = new AbortController().signal
+  expect(await api.downloadFile("server-id", "icons/server image.png", signal)).toBe(blob)
+  expect(fetchMock).toHaveBeenCalledWith("/api/v1/servers/server-id/files/download?path=icons%2Fserver%20image.png", expect.objectContaining({ credentials: "same-origin", signal }))
+})
+
+it("handles image download failures through the normal session-expiry path", async () => {
+  const expired = vi.fn()
+  window.addEventListener("mcpanel-session-expired", expired)
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ detail: "Sign in again" }, 401)))
+  try {
+    const { api } = await import("@/lib/api")
+    await expect(api.downloadFile("server-id", "icon.png")).rejects.toThrow("Sign in again")
+    expect(expired).toHaveBeenCalledOnce()
+  } finally { window.removeEventListener("mcpanel-session-expired", expired) }
+})
+
 describe("API antiforgery token lifecycle", () => {
   it("refreshes the anonymous request token after login", async () => {
     const calls = installFetchMock()

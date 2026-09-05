@@ -23,6 +23,7 @@ import {
   FileIcon,
   FolderIcon,
   FolderPlusIcon,
+  ImageIcon,
   MoreHorizontalIcon,
   PlayIcon,
   PlusIcon,
@@ -40,6 +41,8 @@ import {
 import { toast } from "sonner"
 import { Page } from "@/components/page"
 import { PlayerInventorySheet } from "@/components/player-inventory-sheet"
+import { FileImagePreview } from "@/components/file-image-preview"
+import { imageFileType } from "@/lib/image-file"
 import type { TerminalHandle } from "@/components/terminal-view"
 import { api } from "@/lib/api"
 import { isConsoleError } from "@/lib/terminal-format"
@@ -411,6 +414,7 @@ function ServerFiles({ serverId }: { serverId: string }) {
   const [operation, setOperation] = useState<FileOperation>()
   const [operationValue, setOperationValue] = useState("")
   const [editing, setEditing] = useState<{ path: string; content: string; original: string; revision: string }>()
+  const [previewing, setPreviewing] = useState<string>()
   const draft = useUnsavedChanges(Boolean(editing && editing.content !== editing.original))
   const [replaceUpload, setReplaceUpload] = useState<File>()
   const server = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
@@ -501,9 +505,9 @@ function ServerFiles({ serverId }: { serverId: string }) {
                         <Button
                           variant="ghost"
                           className="max-w-sm justify-start"
-                          onClick={() => entry.isDirectory ? setPath(entry.path) : void openEditor(entry)}
+                          onClick={() => entry.isDirectory ? setPath(entry.path) : imageFileType(entry.path) ? setPreviewing(entry.path) : void openEditor(entry)}
                         >
-                          {entry.isDirectory ? <FolderIcon data-icon="inline-start" /> : <FileIcon data-icon="inline-start" />}
+                          {entry.isDirectory ? <FolderIcon data-icon="inline-start" /> : imageFileType(entry.path) ? <ImageIcon data-icon="inline-start" /> : <FileIcon data-icon="inline-start" />}
                           <span className="truncate">{entry.name}</span>
                         </Button>
                       </TableCell>
@@ -514,7 +518,7 @@ function ServerFiles({ serverId }: { serverId: string }) {
                           <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" />}><MoreHorizontalIcon /><span className="sr-only">Actions for {entry.name}</span></DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
                             <DropdownMenuGroup>
-                              {!entry.isDirectory && <DropdownMenuItem onClick={() => void openEditor(entry)}><Edit3Icon />Edit text</DropdownMenuItem>}
+                              {!entry.isDirectory && (imageFileType(entry.path) ? <DropdownMenuItem onClick={() => setPreviewing(entry.path)}><ImageIcon />Preview image</DropdownMenuItem> : <DropdownMenuItem onClick={() => void openEditor(entry)}><Edit3Icon />Edit text</DropdownMenuItem>)}
                               {!entry.isDirectory && <DropdownMenuItem render={<a href={api.fileDownloadUrl(serverId, entry.path)} />}><DownloadIcon />Download</DropdownMenuItem>}
                               {!entry.isDirectory && entry.name.toLowerCase().endsWith(".zip") && <DropdownMenuItem disabled={!canModify} onClick={() => mutate.mutate(() => api.extractFile(serverId, entry.path, path))}><FileArchiveIcon />Extract here</DropdownMenuItem>}
                               <DropdownMenuItem disabled={!canModify} onClick={() => { setOperation({ type: "move", entry }); setOperationValue(entry.path) }}><PlayIcon />Move or rename</DropdownMenuItem>
@@ -548,11 +552,14 @@ function ServerFiles({ serverId }: { serverId: string }) {
       </Dialog>
 
       <Dialog open={Boolean(editing)} onOpenChange={(open) => !open && draft.confirmDiscard(() => setEditing(undefined))}>
-        <DialogContent className="sm:max-w-5xl">
-          <DialogHeader><DialogTitle>Edit {editing?.path.split("/").at(-1)}</DialogTitle><DialogDescription>Only UTF-8 text files within the configured size limit can be edited.</DialogDescription></DialogHeader>
-          {editing && <Suspense fallback={<Skeleton className="h-96" />}><CodeEditor fileName={editing.path} value={editing.content} onChange={(content) => setEditing({ ...editing, content })} /></Suspense>}
+        <DialogContent className="grid h-[calc(100dvh-2rem)] min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)_auto] sm:h-[min(90dvh,56rem)] sm:max-w-6xl">
+          <DialogHeader className="min-w-0 pr-8"><DialogTitle className="truncate" title={editing?.path}>Edit {editing?.path.split("/").at(-1)}</DialogTitle><DialogDescription>Changes are saved when you select Save file.</DialogDescription></DialogHeader>
+          {editing && <Suspense fallback={<Skeleton className="h-full min-h-0" />}><CodeEditor fileName={editing.path} value={editing.content} onChange={(content) => setEditing({ ...editing, content })} /></Suspense>}
           <DialogFooter showCloseButton><Button disabled={!canModify || !editing || mutate.isPending} title={modifyHint} onClick={() => editing && mutate.mutate(async () => { await api.saveFile(serverId, editing.path, editing.content, editing.revision); setEditing(undefined) })}>{mutate.isPending && <Spinner data-icon="inline-start" />}Save file</Button></DialogFooter>
         </DialogContent>
+      </Dialog>
+      <Dialog open={Boolean(previewing)} onOpenChange={(open) => !open && setPreviewing(undefined)}>
+        {previewing && <FileImagePreview key={previewing} serverId={serverId} path={previewing} />}
       </Dialog>
       {draft.dialog}
       <AlertDialog open={Boolean(replaceUpload)} onOpenChange={(open) => !open && setReplaceUpload(undefined)}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Replace {replaceUpload?.name}?</AlertDialogTitle><AlertDialogDescription>The existing file will be overwritten by this upload.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => { if (replaceUpload) mutate.mutate(() => api.uploadFile(serverId, path, replaceUpload, true)); setReplaceUpload(undefined) }}>Replace file</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>

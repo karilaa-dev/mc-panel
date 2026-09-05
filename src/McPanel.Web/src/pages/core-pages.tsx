@@ -40,7 +40,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
+import { ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
@@ -73,7 +73,18 @@ const lifecycleStateLabels: Record<ServerState, string> = {
 }
 
 function MetricCard({ label, value, icon: Icon, progress }: { label: string; value: string; icon: typeof CpuIcon; progress?: number }) {
-  return <Card size="sm"><CardHeader><CardDescription>{label}</CardDescription><CardAction><Icon className="size-4 text-muted-foreground" /></CardAction><CardTitle className="text-2xl">{value}</CardTitle></CardHeader>{progress !== undefined && <CardContent><Progress value={Math.min(progress, 100)} aria-label={`${label}: ${progress.toFixed(0)} percent`} /></CardContent>}</Card>
+  return (
+    <Card size="sm">
+      <CardHeader>
+        <CardDescription>{label}</CardDescription>
+        <CardAction><Icon className="size-4 text-muted-foreground" /></CardAction>
+      </CardHeader>
+      <CardContent className="flex flex-1 flex-col gap-4">
+        <p className="text-2xl leading-tight font-semibold tracking-tight tabular-nums">{value}</p>
+        {progress !== undefined && <Progress className="mt-auto" value={Math.min(progress, 100)} aria-label={`${label}: ${progress.toFixed(0)} percent`} />}
+      </CardContent>
+    </Card>
+  )
 }
 
 export function DashboardPage() {
@@ -81,14 +92,32 @@ export function DashboardPage() {
   const hostQuery = useQuery({ queryKey: ["host"], queryFn: api.host, refetchInterval: 5_000 })
   const { data: servers, isLoading: serversLoading } = serversQuery
   const { data: host, isLoading: hostLoading } = hostQuery
-  const chartConfig = { cpu: { label: "CPU", color: "var(--chart-2)" }, memory: { label: "Memory", color: "var(--chart-4)" } } satisfies ChartConfig
+  const chartConfig = { cpu: { label: "CPU", color: "var(--chart-1)" }, memory: { label: "Memory", color: "var(--chart-2)" } } satisfies ChartConfig
   const serversSection = <section aria-labelledby="servers-heading" className="flex flex-col gap-4">
     <h2 id="servers-heading" className="text-lg font-semibold">Servers</h2>
     <QueryFeedback query={serversQuery} />
-    {serversQuery.isError && !servers ? null : serversLoading ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-48" />)}</div> : servers?.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{servers.map((server) => <Card key={server.id}>
-      <CardHeader><div className="flex items-center gap-3"><ServerAvatar server={server} className="size-10" /><div className="min-w-0"><CardTitle className="truncate">{server.name}</CardTitle><CardDescription>{server.kind === "Gate" ? `Gate Proxy · ${server.version}` : `${serverKindLabel(server.kind)} · Minecraft ${server.version}`}</CardDescription></div></div><CardAction><StatusBadge state={server.state} /></CardAction></CardHeader>
-      <CardContent className="grid grid-cols-2 gap-4"><div><p className="text-xs text-muted-foreground">{server.kind === "Gate" ? "Connections" : "Players"}</p><p className="font-medium">{server.kind === "Gate" ? server.playerCount : `${server.playerCount} / ${server.maxPlayers}`}</p></div><div><p className="text-xs text-muted-foreground">Memory</p><p className="font-medium">{server.memoryUsedMb.toFixed(0)} / {server.memoryMb} MiB</p></div><div><p className="text-xs text-muted-foreground">Address</p><p className="truncate font-mono text-sm font-medium" title={server.resolvedConnectionAddress ?? undefined}>{server.resolvedConnectionAddress ?? "Unavailable"}</p></div><div><p className="text-xs text-muted-foreground">Uptime</p><p className="font-medium">{duration(server.uptimeSeconds)}</p></div></CardContent>
-      <CardFooter><Button variant="ghost" render={<Link to={`/servers/${server.id}`} />}>Manage<ArrowRightIcon data-icon="inline-end" /></Button></CardFooter>
+    {serversQuery.isError && !servers ? null : serversLoading ? <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,20rem),1fr))] gap-4">{Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-48" />)}</div> : servers?.length ? <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,20rem),1fr))] gap-4">{servers.map((server) => <Card key={server.id}>
+      <CardHeader>
+        <div className="flex min-w-0 items-center gap-3">
+          <ServerAvatar server={server} className="size-11 shrink-0" />
+          <div className="flex min-w-0 flex-col gap-1">
+            <CardTitle className="truncate" title={server.name}>{server.name}</CardTitle>
+            <CardDescription>{server.kind === "Gate" ? `Gate Proxy · ${server.version}` : `${serverKindLabel(server.kind)} · Minecraft ${server.version}`}</CardDescription>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-5 text-sm tabular-nums">
+          <div className="flex min-w-0 flex-col gap-1"><dt className="text-xs text-muted-foreground">{server.kind === "Gate" ? "Connections" : "Players"}</dt><dd className="font-medium">{server.kind === "Gate" ? server.playerCount : `${server.playerCount} / ${server.maxPlayers}`}</dd></div>
+          <div className="flex min-w-0 flex-col gap-1"><dt className="text-xs text-muted-foreground">Memory</dt><dd className="font-medium">{server.memoryUsedMb.toFixed(0)} / {server.memoryMb} MiB</dd></div>
+          <div className="flex min-w-0 flex-col gap-1"><dt className="text-xs text-muted-foreground">Address</dt><dd className="truncate font-mono text-sm" title={server.resolvedConnectionAddress ?? undefined}>{server.resolvedConnectionAddress ?? "Unavailable"}</dd></div>
+          <div className="flex min-w-0 flex-col gap-1"><dt className="text-xs text-muted-foreground">Uptime</dt><dd className="font-medium">{duration(server.uptimeSeconds)}</dd></div>
+        </dl>
+      </CardContent>
+      <CardFooter className="justify-between">
+        <StatusBadge state={server.state} />
+        <Button variant="ghost" size="sm" render={<Link to={`/servers/${server.id}`} />}>Manage<ArrowRightIcon data-icon="inline-end" /></Button>
+      </CardFooter>
     </Card>)}</div> : <Empty className="border"><EmptyHeader><EmptyMedia variant="icon"><ServerIcon /></EmptyMedia><EmptyTitle>No servers yet</EmptyTitle><EmptyDescription>Create Vanilla, Paper, Fabric, Forge, or NeoForge without leaving the panel.</EmptyDescription></EmptyHeader><EmptyContent><Button render={<Link to="/create" />}><PlusIcon />Create your first server</Button></EmptyContent></Empty>}
   </section>
   return <Page title="Dashboard" description="Host health and every Minecraft server at a glance." actions={<Button render={<Link to="/create" />}><PlusIcon data-icon="inline-start" />Create server</Button>}>
@@ -107,7 +136,7 @@ export function DashboardPage() {
       <CardHeader><CardTitle>Host activity</CardTitle><CardDescription>15-minute in-memory view; history is not persisted.</CardDescription></CardHeader>
       <CardContent>
         <ChartContainer config={chartConfig} className="h-64 w-full aspect-auto">
-          <AreaChart data={host?.samples ?? []} accessibilityLayer><CartesianGrid vertical={false} /><XAxis dataKey="time" tickFormatter={(value) => new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} tickLine={false} axisLine={false} /><YAxis domain={[0, 100]} tickLine={false} axisLine={false} width={32} /><ChartTooltip content={<ChartTooltipContent />} /><Area type="monotone" dataKey="cpu" stroke="var(--color-cpu)" fill="var(--color-cpu)" fillOpacity={0.16} /><Area type="monotone" dataKey="memory" stroke="var(--color-memory)" fill="var(--color-memory)" fillOpacity={0.1} /></AreaChart>
+          <AreaChart data={host?.samples ?? []} accessibilityLayer><CartesianGrid vertical={false} strokeDasharray="3 3" /><XAxis dataKey="time" tickFormatter={(value) => new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} tickLine={false} axisLine={false} /><YAxis domain={[0, 100]} tickFormatter={(value) => `${value}%`} tickLine={false} axisLine={false} width={38} /><ChartTooltip content={<ChartTooltipContent />} /><ChartLegend content={<ChartLegendContent />} /><Area type="monotone" dataKey="cpu" stroke="var(--color-cpu)" strokeWidth={2} fill="var(--color-cpu)" fillOpacity={0.16} /><Area type="monotone" dataKey="memory" stroke="var(--color-memory)" strokeWidth={2} fill="var(--color-memory)" fillOpacity={0.1} /></AreaChart>
         </ChartContainer>
       </CardContent>
     </Card>
@@ -287,8 +316,8 @@ export function CreateServerPage() {
       <CardContent>
         <form id="create-form" onSubmit={handleSubmit(submit)}>
           {step === 1 && <FieldGroup>
-            <Field><FieldLabel>Server category</FieldLabel><ToggleGroup value={[category]} onValueChange={(values) => { if (!values[0]) return; const next = values[0] as "Regular" | "Proxy"; setCategory(next); if (next === "Regular") setSource("Official") }} variant="outline" spacing={0}><ToggleGroupItem value="Regular">Regular server</ToggleGroupItem><ToggleGroupItem value="Proxy">Proxy</ToggleGroupItem></ToggleGroup><FieldDescription>Regular servers run a Minecraft world. Proxies route players to one or more servers.</FieldDescription></Field>
-            {category === "Regular" ? <><Field><FieldLabel>Installation source</FieldLabel><ToggleGroup value={[source]} onValueChange={(values) => values[0] && setSource(values[0] as "Official" | "CustomJar" | "Modpack")} variant="outline" spacing={0}><ToggleGroupItem value="Official">Official server core</ToggleGroupItem><ToggleGroupItem value="CustomJar">Custom JAR</ToggleGroupItem><ToggleGroupItem value="Modpack">Modrinth modpack</ToggleGroupItem></ToggleGroup></Field>{source === "Official" && <Field><FieldLabel>Server core</FieldLabel><ToggleGroup value={[kind]} onValueChange={(values) => values[0] && setKind(values[0] as ServerKind)} variant="outline" spacing={0}><ToggleGroupItem value="Vanilla">Vanilla</ToggleGroupItem><ToggleGroupItem value="Paper">Paper</ToggleGroupItem><ToggleGroupItem value="Fabric">Fabric</ToggleGroupItem><ToggleGroupItem value="Forge">Forge</ToggleGroupItem><ToggleGroupItem value="NeoForge">NeoForge</ToggleGroupItem></ToggleGroup></Field>}</> : <Alert><NetworkIcon /><AlertTitle>Minekube Gate</AlertTitle><AlertDescription>Gate uses a separate two-step proxy setup and keeps its files and forwarding secrets private.</AlertDescription></Alert>}
+            <Field><FieldLabel>Server category</FieldLabel><ToggleGroup value={[category]} onValueChange={(values) => { if (!values[0]) return; const next = values[0] as "Regular" | "Proxy"; setCategory(next); if (next === "Regular") setSource("Official") }} variant="outline" spacing={2} className="max-w-full flex-wrap gap-2"><ToggleGroupItem value="Regular">Regular server</ToggleGroupItem><ToggleGroupItem value="Proxy">Proxy</ToggleGroupItem></ToggleGroup><FieldDescription>Regular servers run a Minecraft world. Proxies route players to one or more servers.</FieldDescription></Field>
+            {category === "Regular" ? <><Field><FieldLabel>Installation source</FieldLabel><ToggleGroup value={[source]} onValueChange={(values) => values[0] && setSource(values[0] as "Official" | "CustomJar" | "Modpack")} variant="outline" spacing={2} className="max-w-full flex-wrap gap-2"><ToggleGroupItem value="Official">Official server core</ToggleGroupItem><ToggleGroupItem value="CustomJar">Custom JAR</ToggleGroupItem><ToggleGroupItem value="Modpack">Modrinth modpack</ToggleGroupItem></ToggleGroup></Field>{source === "Official" && <Field><FieldLabel>Server core</FieldLabel><ToggleGroup value={[kind]} onValueChange={(values) => values[0] && setKind(values[0] as ServerKind)} variant="outline" spacing={2} className="max-w-full flex-wrap gap-2"><ToggleGroupItem value="Vanilla">Vanilla</ToggleGroupItem><ToggleGroupItem value="Paper">Paper</ToggleGroupItem><ToggleGroupItem value="Fabric">Fabric</ToggleGroupItem><ToggleGroupItem value="Forge">Forge</ToggleGroupItem><ToggleGroupItem value="NeoForge">NeoForge</ToggleGroupItem></ToggleGroup></Field>}</> : <Alert><NetworkIcon /><AlertTitle>Minekube Gate</AlertTitle><AlertDescription>Gate uses a separate two-step proxy setup and keeps its files and forwarding secrets private.</AlertDescription></Alert>}
           </FieldGroup>}
           {step === 2 && isGate && <FieldGroup><Field><FieldLabel htmlFor="gate-name">Server name</FieldLabel><Input id="gate-name" value={gateName} onChange={(event) => setGateName(event.target.value)} /></Field><Field><FieldLabel htmlFor="gate-port">Real local listener port</FieldLabel><Input id="gate-port" type="number" min={1024} max={65535} value={gatePort} onChange={(event) => setGatePort(Number(event.target.value))} /><FieldDescription>This locally bound port is conflict-checked. The advertised external address can use a different NAT, SRV, or forwarded port.</FieldDescription></Field><Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="gate-start-on-boot">Start on boot</FieldLabel><FieldDescription>Start this Gate instance whenever the managed runtime starts.</FieldDescription></FieldContent><Switch id="gate-start-on-boot" checked={gateStartOnBoot} onCheckedChange={setGateStartOnBoot} /></Field></FieldGroup>}
           {step === 2 && source === "Modpack" && <ModpackPicker inspection={packInspection} selectedOptionalFiles={selectedOptionalFiles} onChange={(value, optional) => { setPackInspection(value); setSelectedOptionalFiles(optional) }} />}
@@ -347,7 +376,7 @@ export function ServerCreationPage() {
       </CardHeader>
       <CardContent className="flex flex-col gap-6">
         <div className="flex items-center gap-4">
-          {server.data ? <ServerAvatar server={server.data} className="size-12" /> : <Skeleton className="size-12 rounded-full" />}
+          {server.data ? <ServerAvatar server={server.data} className="size-12" /> : <Skeleton className="size-12 rounded-[20%]" />}
           <div className="min-w-0">
             <p className="font-medium">{message}</p>
             <p className="text-sm text-muted-foreground">{failed ? "Review the error below before opening the server." : "Large mod loaders can take a few minutes to finish."}</p>
@@ -400,7 +429,7 @@ export function ServerOverviewPage() {
   const canDelete = server.state === "Stopped" || server.state === "Error" || server.state === "Crashed"
   const lifecycleAction = running ? "stop" : canStart ? "start" : undefined
   const lifecycleBusy = server.state === "Installing" || server.state === "Starting" || server.state === "Stopping" || server.state === "BackingUp" || server.state === "Updating"
-  return <Page title={<span className="flex items-center gap-3"><ServerAvatar server={server} className="size-10" /><span>{server.name}</span></span>} description={server.kind === "Gate" ? `Gate Proxy · ${server.version}` : `${serverKindLabel(server.kind)} · Minecraft ${server.version}`} actions={<>{server.kind === "Gate" ? <Button variant="ghost" nativeButton={false} render={<Link to={`/servers/${server.id}/gate`} />}>Gate settings</Button> : server.kind === "CustomJar" ? <Button variant="ghost" nativeButton={false} render={<Link to={`/servers/${server.id}/runtime`} />}>Change server core</Button> : <Button variant="ghost" disabled={lifecycle.isPending || !stopped} title={stopped ? undefined : "Updates require a stopped server."} onClick={() => lifecycle.mutate("update")}>Update</Button>}<Button variant="outline" disabled={lifecycle.isPending || !running} title={running ? undefined : "Restart is available while the server is running."} onClick={() => lifecycle.mutate("restart")}><RotateCwIcon data-icon="inline-start" />Restart</Button><Button aria-label={lifecycleStateLabels[server.state]} variant={running ? "outline" : "default"} disabled={lifecycle.isPending || !lifecycleAction} title={lifecycleAction ? undefined : `No lifecycle action is available while the server is ${server.state.toLowerCase()}.`} onClick={() => lifecycleAction && lifecycle.mutate(lifecycleAction)}>{lifecycle.isPending || lifecycleBusy ? <Spinner data-icon="inline-start" /> : running ? <SquareIcon data-icon="inline-start" /> : canStart ? <CheckIcon data-icon="inline-start" /> : null}{lifecycleStateLabels[server.state]}</Button></>}>
+  return <Page title={<span className="flex items-center gap-3"><ServerAvatar server={server} className="size-10" /><span className="min-w-0">{server.name}</span></span>} description={server.kind === "Gate" ? `Gate Proxy · ${server.version}` : `${serverKindLabel(server.kind)} · Minecraft ${server.version}`} actions={<>{server.kind === "Gate" ? <Button variant="ghost" nativeButton={false} render={<Link to={`/servers/${server.id}/gate`} />}>Gate settings</Button> : server.kind === "CustomJar" ? <Button variant="ghost" nativeButton={false} render={<Link to={`/servers/${server.id}/runtime`} />}>Change server core</Button> : <Button variant="ghost" disabled={lifecycle.isPending || !stopped} title={stopped ? undefined : "Updates require a stopped server."} onClick={() => lifecycle.mutate("update")}>Update</Button>}<Button variant="outline" disabled={lifecycle.isPending || !running} title={running ? undefined : "Restart is available while the server is running."} onClick={() => lifecycle.mutate("restart")}><RotateCwIcon data-icon="inline-start" />Restart</Button><Button aria-label={lifecycleStateLabels[server.state]} variant={running ? "outline" : "default"} disabled={lifecycle.isPending || !lifecycleAction} title={lifecycleAction ? undefined : `No lifecycle action is available while the server is ${server.state.toLowerCase()}.`} onClick={() => lifecycleAction && lifecycle.mutate(lifecycleAction)}>{lifecycle.isPending || lifecycleBusy ? <Spinner data-icon="inline-start" /> : running ? <SquareIcon data-icon="inline-start" /> : canStart ? <CheckIcon data-icon="inline-start" /> : null}{lifecycleStateLabels[server.state]}</Button></>}>
     {server.restartRequired && <Alert><AlertTriangleIcon /><AlertTitle>Restart required</AlertTitle><AlertDescription>Saved settings will take effect after the next graceful restart.</AlertDescription></Alert>}
     <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><MetricCard label="State" value={server.state} icon={CircleGaugeIcon} /><MetricCard label={server.kind === "Gate" ? "Connections" : "Players"} value={server.kind === "Gate" ? String(server.playerCount) : `${server.playerCount} / ${server.maxPlayers}`} icon={UsersIcon} /><MetricCard label="CPU" value={`${server.cpuPercent.toFixed(0)}%`} icon={CpuIcon} progress={server.cpuPercent} /><MetricCard label="Memory" value={`${server.memoryUsedMb.toFixed(0)} / ${server.memoryMb} MiB`} icon={MemoryStickIcon} progress={server.memoryUsedMb / server.memoryMb * 100} /></section>
     <Card size="sm"><CardHeader><CardTitle>Connection</CardTitle><CardDescription>{server.resolvedConnectionAddress ?? "No connection address is available until a global or custom address is set."}</CardDescription><CardAction><div className="flex items-center gap-2"><Badge variant="outline">{server.connectionAddressSource ?? "Unavailable"}</Badge>{server.resolvedConnectionAddress && <Button size="icon-sm" variant="ghost" onClick={() => { void navigator.clipboard.writeText(server.resolvedConnectionAddress!); toast.success("Connection address copied") }}><ClipboardIcon /><span className="sr-only">Copy connection address</span></Button>}</div></CardAction></CardHeader><CardContent><PublicHostEditor serverId={server.id} value={server.advertisedAddressOverride} addressRevision={server.addressRevision ?? ""} inheritedPreview={server.connectionAddressSource === "Global" ? server.resolvedConnectionAddress : undefined} compact /></CardContent></Card>

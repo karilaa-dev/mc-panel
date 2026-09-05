@@ -72,7 +72,7 @@ async function getAntiforgeryToken() {
   return antiforgeryToken
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, options: RequestInit = {}, responseType: "auto" | "blob" = "auto"): Promise<T> {
   const method = options.method?.toUpperCase() ?? "GET"
   const headers = new Headers(options.headers)
   if (options.body && !(options.body instanceof FormData)) {
@@ -87,6 +87,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     credentials: "same-origin",
   })
   if (response.status === 204) return undefined as T
+  if (response.ok && responseType === "blob") return await response.blob() as T
   const contentType = response.headers.get("content-type") ?? ""
   const body = contentType.includes("json")
     ? await response.json().catch(() => undefined)
@@ -284,6 +285,8 @@ export const api = {
     request<FileEntryDto[]>(`${serverPath(id)}/files?path=${encodeURIComponent(path)}`),
   readFile: (id: string, path: string) =>
     request<{ content: string; revision: string }>(`${serverPath(id)}/files/content?path=${encodeURIComponent(path)}`),
+  downloadFile: (id: string, path: string, signal?: AbortSignal) =>
+    request<Blob>(`${serverPath(id)}/files/download?path=${encodeURIComponent(path)}`, { signal }, "blob"),
   saveFile: (id: string, path: string, content: string, revision?: string) =>
     request<void>(`${serverPath(id)}/files/content?path=${encodeURIComponent(path)}`, {
       method: "PUT",

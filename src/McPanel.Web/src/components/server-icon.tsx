@@ -18,15 +18,13 @@ import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
 import { Slider } from "@/components/ui/slider"
 import { Spinner } from "@/components/ui/spinner"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
-import { cn } from "@/lib/utils"
 
 const acceptedTypes = new Set(["image/png", "image/jpeg", "image/webp"])
 
-export function ServerAvatar({ server, className, compact = false }: { server: Pick<ServerSummaryDto, "id" | "name" | "iconRevision"> & { kind?: ServerSummaryDto["kind"] }; className?: string; compact?: boolean }) {
-  const radius = compact ? "rounded-sm" : "rounded-lg"
-  return <Avatar className={cn("overflow-hidden", radius, compact ? "after:rounded-sm" : "after:rounded-lg", className)}>
-    {server.iconRevision && <AvatarImage className={radius} src={api.serverIconUrl(server.id, server.iconRevision)} alt={`${server.name} icon`} />}
-    <AvatarFallback className={radius}>{server.kind === "Gate" ? <NetworkIcon aria-hidden="true" /> : <ServerGlyphIcon aria-hidden="true" />}</AvatarFallback>
+export function ServerAvatar({ server, className }: { server: Pick<ServerSummaryDto, "id" | "name" | "iconRevision"> & { kind?: ServerSummaryDto["kind"] }; className?: string }) {
+  return <Avatar shape="square" className={className}>
+    {server.iconRevision && <AvatarImage src={api.serverIconUrl(server.id, server.iconRevision)} alt={`${server.name} icon`} />}
+    <AvatarFallback>{server.kind === "Gate" ? <NetworkIcon style={{ width: "60%", height: "60%" }} aria-hidden="true" /> : <ServerGlyphIcon style={{ width: "60%", height: "60%" }} aria-hidden="true" />}</AvatarFallback>
   </Avatar>
 }
 
@@ -137,7 +135,7 @@ export function ServerIconEditor({ server, disabled = false }: { server: ServerS
       {library.isLoading ? <Spinner className="self-start" /> : library.data?.length ? (
         <div className="grid grid-cols-3 gap-3 sm:grid-cols-5 md:grid-cols-7">
           {library.data.map((icon, index) => <Button key={icon.revision} type="button" variant={server.iconRevision === icon.revision ? "secondary" : "outline"} className="aspect-square h-auto p-2" disabled={disabled || upload.isPending || remove.isPending || select.isPending || server.iconRevision === icon.revision} aria-label={`Select panel icon ${index + 1}${server.iconRevision === icon.revision ? ", currently selected" : ""}`} onClick={() => select.mutate(icon.revision)}>
-            <img className="size-full rounded-md object-cover" src={api.panelIconUrl(icon.revision)} alt="" />
+            <img className="size-full rounded-[20%] object-cover" src={api.panelIconUrl(icon.revision)} alt="" />
           </Button>)}
         </div>
       ) : <Empty className="border">
@@ -166,7 +164,7 @@ export function PanelIconExplorer() {
     {library.isLoading ? <Spinner className="self-start" /> : library.data?.length ? (
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-6">
         {library.data.map((icon, index) => <Card key={icon.revision} size="sm">
-          <CardContent><img className="aspect-square size-full rounded-lg object-cover" src={api.panelIconUrl(icon.revision)} alt={`Panel icon ${index + 1}`} /></CardContent>
+          <CardContent><img className="aspect-square size-full rounded-[20%] object-cover" src={api.panelIconUrl(icon.revision)} alt={`Panel icon ${index + 1}`} /></CardContent>
           <CardFooter className="justify-end">
             <AlertDialog>
               <AlertDialogTrigger render={<Button variant="ghost" size="icon-sm" disabled={remove.isPending || upload.isPending} />}><Trash2Icon /><span className="sr-only">Delete panel icon {index + 1}</span></AlertDialogTrigger>
