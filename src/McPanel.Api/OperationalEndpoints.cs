@@ -31,17 +31,19 @@ public static class OperationalEndpoints
         }).AllowAnonymous();
         var api = app.MapGroup("/api/v1").RequireAuthorization();
         api.MapPost("/servers/{id:guid}/export", async (Guid id, ServerExportService exports, CancellationToken token) => Results.Accepted(value: await exports.QueueAsync(id, token)));
-        api.MapGet("/exports/{id:guid}/download", async (Guid id, ServerExportService exports, OperationQueue jobs, CancellationToken token) =>
+        api.MapPost("/exports/instances", async (InstanceExportRequest request, InstanceExportService exports, CancellationToken token) => Results.Accepted(value: await exports.QueueAsync(request, token)));
+        api.MapGet("/exports/{id:guid}/download", async (Guid id, ServerExportService exports, InstanceExportService instances, OperationQueue jobs, CancellationToken token) =>
         {
             var job = await jobs.GetAsync(id, token) ?? throw PanelProblems.NotFound("Export");
-            if (job.Type != "ServerExport" || job.State != JobState.Completed || !File.Exists(exports.FilePath(id))) throw PanelProblems.NotFound("Completed export");
-            return Results.File(exports.FilePath(id), "application/zip", $"server-{id:N}.zip", enableRangeProcessing: true);
+            var file = job.Type == "InstancesExport" ? instances.FilePath(id) : exports.FilePath(id);
+            if (job.Type is not ("ServerExport" or "InstancesExport") || job.State != JobState.Completed || !File.Exists(file)) throw PanelProblems.NotFound("Completed export");
+            return Results.File(file, "application/zip", Path.GetFileName(file), enableRangeProcessing: true);
         });
         api.MapGet("/recovery", async (IDbContextFactory<StateDbContext> factory, Microsoft.Extensions.Options.IOptions<PanelOptions> settings, CancellationToken token) =>
         {
             await using var db = await factory.CreateDbContextAsync(token);
             var points = await db.RecoveryPoints.AsNoTracking().OrderByDescending(x => x.CreatedAt).Take(100).ToListAsync(token);
-            return Results.Ok(new { configured = !string.IsNullOrWhiteSpace(settings.Value.ReplicationDirectory), intervalMinutes = settings.Value.RecoveryIntervalMinutes, points });
+            return Results.Ok(new { configured = !string.IsNullOrWhiteSpace(settings.Value.ReplicationDirectory), intervalMinutes = settings.Value.RecoveryIntervalMinutes, points = points.Select(point => new { point.Id, point.FileName, point.Sha256, point.CreatedAt, point.Size, point.VerifiedAt, point.ReplicatedAt, point.Error, includesInstances = !point.FileName.StartsWith("panel-settings-", StringComparison.Ordinal) }) });
         });
         api.MapPost("/recovery", async (RecoveryBundleService recovery, CancellationToken token) => Results.Accepted(value: await recovery.QueueAsync(token)));
         api.MapGet("/recovery/{id:guid}/download", async (Guid id, RecoveryBundleService recovery, IDbContextFactory<StateDbContext> factory, CancellationToken token) =>

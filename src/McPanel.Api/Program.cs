@@ -114,6 +114,7 @@ builder.Services.AddSingleton<GateBackendConfigurationService>();
 builder.Services.AddSingleton<GateApiClient>(); builder.Services.AddSingleton<GateProxyService>();
 builder.Services.AddHostedService<GateConfigurationReconciler>();
 builder.Services.AddSingleton<ServerExportService>();
+builder.Services.AddSingleton<InstanceExportService>();
 builder.Services.AddSingleton<RecoveryBundleService>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<RecoveryBundleService>());
 builder.Services.AddSingleton<JobRecoveryService>();
 builder.Services.AddSingleton<OperationsMonitor>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<OperationsMonitor>());

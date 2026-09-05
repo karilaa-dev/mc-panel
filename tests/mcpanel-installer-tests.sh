@@ -550,6 +550,33 @@ test_global_command_scope() {
   assert_fails "global local-source update" env MCPANEL_SOURCE_ONLY=0 "$global_copy" update --source local
 }
 
+test_recovery_configuration_access() (
+  local fixture="$test_root/recovery-access"
+  local config_dir="$fixture/config" data_dir="$fixture/data"
+  credential_file_for() { printf '%s/credentials/%s.setup-token\n' "$fixture" "$1"; }
+  mktemp() { command mktemp "${1/\/etc\/credstore/$fixture/credentials}"; }
+  mkdir -p "$config_dir"
+  printf 'ASPNETCORE_URLS=http://0.0.0.0:6050\n' > "$config_dir/mcpanel.env"
+  chmod 0600 "$config_dir/mcpanel.env"
+  validate_access_user() { :; }
+  usermod() { :; }
+  find() { :; }
+  chown() { printf '%s\n' "$*" >> "$fixture/ownership"; }
+  install() {
+    local -a args=()
+    while (($#)); do
+      case "$1" in -o|-g) shift 2 ;; *) args+=("${1/\/etc\/credstore/$fixture/credentials}"); shift ;; esac
+    done
+    command install "${args[@]}"
+  }
+  configure_access_layout "$config_dir" "$data_dir" mcpanel agent
+  assert_equal "640" "$(stat -c %a "$config_dir/mcpanel.env")" "recovery configuration readable by panel group"
+  grep -Fxq "root:$PANEL_GROUP $config_dir/mcpanel.env" "$fixture/ownership" || fail "recovery config does not belong to panel group"
+  assert_equal 'ASPNETCORE_URLS=http://0.0.0.0:6050' "$(cat "$config_dir/mcpanel.env")" "existing environment preserved"
+  assert_equal "600" "$(stat -c %a "$fixture/credentials/mcpanel.setup-token")" "setup credential remains private"
+)
+
+test_recovery_configuration_access
 test_option_parsing
 test_rid_detection
 test_release_validation

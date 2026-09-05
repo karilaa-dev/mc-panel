@@ -59,7 +59,7 @@ internal static class ProductionCommand
                 case "--mcpanel-import-export":
                     if (args.Length != 2) throw new ArgumentException("Usage: --mcpanel-import-export ARCHIVE (panel must be stopped)");
                     await ServerExportService.ImportAsync(args[1], paths, options, token);
-                    Console.WriteLine("Server export restored. Select a Java runtime before starting.");
+                    Console.WriteLine("Instance export restored. Autostart and schedules are disabled. Review Java runtimes and proxy settings before starting.");
                     return 0;
                 case "--mcpanel-restore-bundle":
                     if (args.Length != 4) throw new ArgumentException("Usage: --mcpanel-restore-bundle ARCHIVE NEW_DATA_DIRECTORY NEW_CONFIG_DIRECTORY");
@@ -126,12 +126,14 @@ internal static class ProductionCommand
         try
         {
             var manifest = await RecoveryArchive.ExtractAsync(archive, stage, options.MaxBackupBytes, options.MaxBackupEntries, options.ReservedDiskBytes, token);
-            if (manifest.Kind != "panel") throw new InvalidDataException("Use a whole-panel recovery bundle for this command.");
+            if (manifest.Kind is not ("panel" or "panel-settings")) throw new InvalidDataException("Use a panel backup for this command.");
             var database = Path.Combine(stage, "data", "state.db");
             if (!File.Exists(database)) throw new InvalidDataException("Panel state database is missing.");
             await SchemaMigration.MigrateAsync(database, token);
             await using (var db = new StateDbContext(new DbContextOptionsBuilder<StateDbContext>().UseSqlite($"Data Source={database};Pooling=False").Options))
             {
+                if (manifest.Kind == "panel-settings" && await db.Servers.AnyAsync(token))
+                    throw new InvalidDataException("A panel-only backup must not contain instance records.");
                 foreach (var server in await db.Servers.ToListAsync(token))
                 {
                     if (!Directory.Exists(Path.Combine(stage, "data", "instances", server.Id.ToString("N")))) throw new InvalidDataException("A server's recovery files are missing.");

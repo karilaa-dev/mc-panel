@@ -100,3 +100,20 @@ Clients should branch on the `code` field, not the message. Common codes are
 Feature-specific codes are declared next to the checks that return them. Search
 for `PanelException` and `PanelProblems` when adding client behavior for one of
 those failures.
+
+## Panel backups and instance exports
+
+`POST /api/v1/recovery` queues a panel-only backup. New backups exclude instance
+files and instance records. `GET /api/v1/recovery` lists backups and exposes
+`includesInstances` for legacy whole-panel archives.
+
+`POST /api/v1/exports/instances` accepts either `{"all":true}` or
+`{"all":false,"serverIds":["<instance UUID>"]}` and returns an accepted
+`InstancesExport` job. An empty selection, unknown ID, or `all` together with
+IDs is rejected. The set of all instances is fixed when the job is accepted.
+Each selected instance must be running or stopped and free of recovery blocks
+when capture begins. Jobs retain their outcome in Activity; download a completed
+ZIP with `GET /api/v1/exports/{jobId}/download`.
+
+Import collections with `--mcpanel-import-export` while the panel is stopped.
+Single-instance exports and old whole-panel restore archives remain compatible.

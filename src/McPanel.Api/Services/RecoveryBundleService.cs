@@ -1,4 +1,3 @@
-using System.Text.Json;
 using McPanel.Api.Configuration;
 using McPanel.Api.Data;
 using McPanel.Api.Infrastructure;
@@ -9,7 +8,7 @@ using Microsoft.Extensions.Options;
 namespace McPanel.Api.Services;
 
 public sealed class RecoveryBundleService(PanelPaths paths, IDbContextFactory<StateDbContext> factory,
-    BackupService backups, OperationQueue jobs, AsyncKeyedLock locks, IOptions<PanelOptions> options,
+    OperationQueue jobs, IOptions<PanelOptions> options,
     OperationsMonitor monitor, ILogger<RecoveryBundleService> logger) : BackgroundService
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -43,61 +42,51 @@ public sealed class RecoveryBundleService(PanelPaths paths, IDbContextFactory<St
     internal async Task CreateAsync(Guid jobId, CancellationToken token)
     {
         await _gate.WaitAsync(token);
-        var held = new List<IDisposable>();
         var id = Guid.NewGuid(); var stage = Path.Combine(paths.Staging, $"recovery-{id:N}");
         var temporary = Path.Combine(DirectoryPath, $".{id:N}.partial");
         try
         {
             await using var db = await factory.CreateDbContextAsync(token);
-            var servers = await db.Servers.AsNoTracking().OrderBy(x => x.Id).ToListAsync(token);
-            foreach (var server in servers) held.Add(await locks.AcquireAsync(server.Id, token));
-            servers = await db.Servers.AsNoTracking().Where(x => servers.Select(s => s.Id).Contains(x.Id)).ToListAsync(token);
-            if (servers.Any(x => x.RecoveryRequired || x.State is not (ServerState.Stopped or ServerState.Running)))
-                throw PanelProblems.Conflict("RECOVERY_BUSY", "Finish installation, updates, or repairs before capturing panel recovery.");
-            var required = servers.Sum(x => ArchiveIO.Measure(paths.Instance(x.Id)).Bytes + ArchiveIO.Measure(paths.ServerModpack(x.Id)).Bytes);
-            required = checked(required + ArchiveIO.Measure(paths.Keys).Bytes + ArchiveIO.Measure(paths.Icons).Bytes + ArchiveIO.Measure(paths.Config).Bytes);
-            foreach (var file in new[] { paths.StateDatabase, paths.StateDatabase + "-wal", paths.ConsoleDatabase, paths.ConsoleDatabase + "-wal" })
+            var required = checked(ArchiveIO.Measure(paths.Keys).Bytes + ArchiveIO.Measure(paths.Icons).Bytes + ArchiveIO.Measure(paths.Config).Bytes);
+            foreach (var file in new[] { paths.StateDatabase, paths.StateDatabase + "-wal" })
                 if (File.Exists(file)) required = checked(required + new FileInfo(file).Length);
             using var diskReservation = ArchiveIO.ReserveSpace(paths.Data, checked(required * 3 + 64 * 1024 * 1024), options.Value.ReservedDiskBytes);
             Directory.CreateDirectory(stage); Directory.CreateDirectory(DirectoryPath);
             if (!OperatingSystem.IsWindows()) { File.SetUnixFileMode(stage, (UnixFileMode)448); File.SetUnixFileMode(DirectoryPath, (UnixFileMode)448); }
-            var data = Path.Combine(stage, "data"); Directory.CreateDirectory(Path.Combine(data, "instances"));
+            var data = Path.Combine(stage, "data"); Directory.CreateDirectory(data);
             var capturedAt = DateTimeOffset.UtcNow;
-            foreach (var server in servers)
-            {
-                await jobs.ProgressAsync(jobId, 10, $"Capturing {server.Name}", token);
-                var target = Path.Combine(data, "instances", server.Id.ToString("N"));
-                if (server.Kind == ServerKind.Gate) await ArchiveIO.CopyAsync(paths.Instance(server.Id), target, token);
-                else
-                {
-                    var backup = await backups.CreateLockedAsync(server.Id, jobId, "Panel recovery", token);
-                    await backups.ExtractForRecoveryAsync(Path.Combine(paths.ServerBackups(server.Id), backup.FileName), target, token);
-                }
-                var modpack = paths.ServerModpack(server.Id);
-                if (Directory.Exists(modpack)) await ArchiveIO.CopyAsync(modpack, Path.Combine(data, "modpacks", server.Id.ToString("N")), token);
-            }
             foreach (var name in new[] { "keys", "icons" })
                 if (Directory.Exists(Path.Combine(paths.Data, name))) await ArchiveIO.CopyAsync(Path.Combine(paths.Data, name), Path.Combine(data, name), token);
             await ArchiveIO.CopyAsync(paths.Config, Path.Combine(stage, "config"), token);
-            foreach (var name in new[] { "state.db", "console.db" })
+            foreach (var name in new[] { "state.db" })
             {
                 if (!File.Exists(Path.Combine(paths.Data, name))) continue;
                 await using var source = new SqliteConnection($"Data Source={Path.Combine(paths.Data, name)};Mode=ReadOnly;Pooling=False");
                 await source.OpenAsync(token);
                 await SchemaMigration.SnapshotAsync(source, Path.Combine(data, name), token);
             }
-            // Only captured servers belong to this point. Historical backups remain on the source host.
+            // Only panel-owned state belongs to this archive. Instances are exported separately.
             await using (var snapshot = new StateDbContext(new DbContextOptionsBuilder<StateDbContext>().UseSqlite($"Data Source={Path.Combine(data, "state.db")};Pooling=False").Options))
             {
-                var ids = servers.Select(x => x.Id).ToArray();
-                await snapshot.Servers.Where(x => !ids.Contains(x.Id)).ExecuteDeleteAsync(token);
+                await snapshot.Servers.ExecuteDeleteAsync(token);
                 await snapshot.Backups.ExecuteDeleteAsync(token);
+                await snapshot.Schedules.ExecuteDeleteAsync(token);
+                await snapshot.ScheduleRuns.ExecuteDeleteAsync(token);
+                await snapshot.Players.ExecuteDeleteAsync(token);
+                await snapshot.GateBackends.ExecuteDeleteAsync(token);
+                await snapshot.GateExternalBackends.ExecuteDeleteAsync(token);
+                await snapshot.GateSettings.ExecuteDeleteAsync(token);
+                await snapshot.Jobs.ExecuteDeleteAsync(token);
+                await snapshot.Incidents.ExecuteDeleteAsync(token);
                 await snapshot.RecoveryPoints.ExecuteDeleteAsync(token);
+                await snapshot.Admins.ExecuteUpdateAsync(update => update.SetProperty(x => x.LastConsoleSequence, 0), token);
+                // Deleted instance records must not remain in SQLite's free pages.
+                await snapshot.Database.ExecuteSqlRawAsync("VACUUM;", token);
+                await snapshot.Database.ExecuteSqlRawAsync("PRAGMA wal_checkpoint(TRUNCATE);", token);
             }
-            foreach (var heldLock in held) heldLock.Dispose(); held.Clear();
             await jobs.ProgressAsync(jobId, 80, "Packaging and checksumming recovery data", token);
-            await RecoveryArchive.PackAsync(stage, temporary, "panel", capturedAt, token);
-            var fileName = $"panel-{capturedAt:yyyyMMddTHHmmss}-{id:N}.zip";
+            await RecoveryArchive.PackAsync(stage, temporary, "panel-settings", capturedAt, token);
+            var fileName = $"panel-settings-{capturedAt:yyyyMMddTHHmmss}-{id:N}.zip";
             var destination = Path.Combine(DirectoryPath, fileName); File.Move(temporary, destination);
             var point = new RecoveryPointEntity { Id = id, CreatedAt = capturedAt, FileName = fileName, Size = new FileInfo(destination).Length, Sha256 = await ArchiveIO.Sha256Async(destination, token) };
             db.RecoveryPoints.Add(point); await db.SaveChangesAsync(token);
@@ -123,7 +112,6 @@ public sealed class RecoveryBundleService(PanelPaths paths, IDbContextFactory<St
         }
         finally
         {
-            foreach (var heldLock in held) heldLock.Dispose();
             try { if (Directory.Exists(stage)) Directory.Delete(stage, true); if (File.Exists(temporary)) File.Delete(temporary); }
             finally { _gate.Release(); }
         }

@@ -1,7 +1,9 @@
+import { InstanceExports } from "@/components/instance-exports"
+import { PanelBackups } from "@/components/panel-backups"
 import { QueryFeedback } from "@/components/query-feedback"
 import { useState, type FormEvent } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { useParams } from "react-router-dom"
+import { useParams, useSearchParams } from "react-router-dom"
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -274,6 +276,8 @@ function PanelSystemSettings({ value, pending, onSave }: { value: PanelSettingsD
 }
 
 export function PanelSettingsPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const selectedTab = searchParams.get("tab") ?? "system"
   const { theme, setTheme } = useTheme()
   const auth = useQuery({ queryKey: ["auth-status"], queryFn: api.authStatus })
   const info = useQuery({ queryKey: ["system-info"], queryFn: api.systemInfo })
@@ -295,10 +299,11 @@ export function PanelSettingsPage() {
   })
 
   return (
-    <Page title="Panel settings" description="System details, appearance, reusable icons, and the single administrator account.">
-      <Tabs defaultValue="system">
-        <TabsList><TabsTrigger value="system">System</TabsTrigger><TabsTrigger value="appearance">Appearance</TabsTrigger><TabsTrigger value="icons">Icons</TabsTrigger><TabsTrigger value="account">Account</TabsTrigger></TabsList>
+    <Page title="Panel settings" description="System settings, panel backups, appearance, and your administrator account.">
+      <Tabs value={selectedTab} onValueChange={(value) => setSearchParams({ tab: String(value) })}>
+        <TabsList className="h-auto flex-wrap"><TabsTrigger value="system">System</TabsTrigger><TabsTrigger value="backups">Backups</TabsTrigger><TabsTrigger value="appearance">Appearance</TabsTrigger><TabsTrigger value="icons">Icons</TabsTrigger><TabsTrigger value="account">Account</TabsTrigger></TabsList>
         <TabsContent value="system"><div className="flex flex-col gap-4"><Card><CardHeader><CardTitle>MC Panel</CardTitle><CardDescription>Read-only installation details for this host.</CardDescription></CardHeader><CardContent>{info.isLoading ? <Skeleton className="h-48" /> : info.data && <dl className="grid gap-5 sm:grid-cols-2"><div><dt className="text-xs text-muted-foreground">Version</dt><dd className="font-medium">{info.data.version}</dd></div><div><dt className="text-xs text-muted-foreground">Memory allocation ceiling</dt><dd className="font-medium">{(info.data.memoryAllocationLimitBytes / 1024 ** 3).toFixed(1)} GiB</dd></div><div><dt className="text-xs text-muted-foreground">Data directory</dt><dd className="truncate font-mono text-sm" title={info.data.dataDirectory}>{info.data.dataDirectory}</dd></div><div><dt className="text-xs text-muted-foreground">Instances directory</dt><dd className="truncate font-mono text-sm" title={info.data.instancesDirectory}>{info.data.instancesDirectory}</dd></div></dl>}</CardContent></Card>{settings.isLoading ? <Skeleton className="h-48" /> : settings.data && <PanelSystemSettings key={settings.data.revision} value={settings.data} pending={saveSettings.isPending} onSave={(value) => saveSettings.mutate(value)} />}</div></TabsContent>
+        <TabsContent value="backups"><div className="grid items-start gap-5 xl:grid-cols-2"><PanelBackups /><InstanceExports /></div></TabsContent>
         <TabsContent value="appearance"><Card><CardHeader><CardTitle>Appearance</CardTitle><CardDescription>Stored locally in this browser.</CardDescription></CardHeader><CardContent><Field><FieldLabel>Theme</FieldLabel><ToggleGroup variant="outline" spacing={1} value={[theme]} onValueChange={(values) => values[0] && setTheme(values[0] as "system" | "light" | "dark")}><ToggleGroupItem value="system"><MonitorCogIcon />System</ToggleGroupItem><ToggleGroupItem value="light"><CheckIcon />Light</ToggleGroupItem><ToggleGroupItem value="dark"><HardDriveIcon />Dark</ToggleGroupItem></ToggleGroup></Field></CardContent></Card></TabsContent>
         <TabsContent value="icons"><Card><CardHeader><CardTitle>Icon explorer</CardTitle><CardDescription>Upload, review, and remove reusable server icons without opening an instance.</CardDescription></CardHeader><CardContent><PanelIconExplorer /></CardContent></Card></TabsContent>
         <TabsContent value="account"><Card><CardHeader><CardTitle>{auth.data?.admin?.username ?? "Administrator"}</CardTitle><CardDescription>MC Panel intentionally supports one local administrator in this release.</CardDescription></CardHeader><CardContent><form onSubmit={(event) => { event.preventDefault(); if (validPassword) change.mutate() }}><FieldGroup><Field><FieldLabel htmlFor="current-password">Current password</FieldLabel><Input id="current-password" type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></Field><Field><FieldLabel htmlFor="new-password">New password</FieldLabel><Input id="new-password" type="password" autoComplete="new-password" minLength={12} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /><FieldDescription>Use at least 12 characters.</FieldDescription></Field><Field data-invalid={Boolean(confirmPassword && confirmPassword !== newPassword)}><FieldLabel htmlFor="confirm-password">Confirm new password</FieldLabel><Input id="confirm-password" type="password" autoComplete="new-password" aria-invalid={Boolean(confirmPassword && confirmPassword !== newPassword)} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></Field><Button className="self-start" type="submit" disabled={!currentPassword || !validPassword || change.isPending}>{change.isPending && <Spinner data-icon="inline-start" />}Change password</Button></FieldGroup></form></CardContent></Card></TabsContent>

@@ -33,7 +33,7 @@ public static class RecoveryArchive
         if (entry.Length > 64 * 1024 * 1024) throw new InvalidDataException("Recovery manifest is too large.");
         using var manifestStream = entry.Open();
         var manifest = await JsonSerializer.DeserializeAsync<RecoveryManifest>(manifestStream, cancellationToken: token) ?? throw new InvalidDataException("Recovery manifest is invalid.");
-        if (manifest.Format != 1 || manifest.Schema > SchemaMigration.CurrentVersion || manifest.Kind is not ("panel" or "server")) throw new InvalidDataException("Recovery format requires a compatible MC Panel release.");
+        if (manifest.Format != 1 || manifest.Schema > SchemaMigration.CurrentVersion || manifest.Kind is not ("panel" or "panel-settings" or "server" or "instances")) throw new InvalidDataException("Recovery format requires a compatible MC Panel release.");
         var expected = manifest.Files.ToDictionary(x => x.Path, StringComparer.Ordinal);
         if (expected.ContainsKey("manifest.json")) throw new InvalidDataException("Recovery manifest lists itself.");
         long size = 0;

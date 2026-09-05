@@ -86,7 +86,9 @@ public sealed class OperationsMonitor(IDbContextFactory<StateDbContext> factory,
             await SetIncidentAsync("BACKUP_FAILED", job.ServerId, job.Error ?? "A backup failed.", !recovered, token);
         }
         var point = await db.RecoveryPoints.Where(x => x.ReplicatedAt != null && x.VerifiedAt != null).OrderByDescending(x => x.CreatedAt).FirstOrDefaultAsync(token);
-        await SetIncidentAsync("OFF_HOST_RECOVERY_OVERDUE", null, "No verified off-host recovery point is available from the last hour.", point is null || point.CreatedAt < DateTimeOffset.UtcNow.AddHours(-1), token);
+        await SetIncidentAsync("OFF_HOST_RECOVERY_OVERDUE", null,
+            "No verified panel backup has reached the remote destination in the last hour. Check that the network storage is mounted and writable.",
+            !string.IsNullOrWhiteSpace(options.Value.ReplicationDirectory) && (point is null || point.CreatedAt < DateTimeOffset.UtcNow.AddHours(-1)), token);
         await DeliverAlertsAsync(token);
         var auditCutoff = DateTimeOffset.UtcNow.AddDays(-Math.Max(1, options.Value.AuditRetentionDays));
         var historyCutoff = DateTimeOffset.UtcNow.AddDays(-30);

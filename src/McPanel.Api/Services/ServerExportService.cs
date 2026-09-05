@@ -19,7 +19,7 @@ public sealed class ServerExportService(PanelPaths paths, IDbContextFactory<Stat
         using var held = await locks.AcquireAsync(id, token);
         await using var db = await factory.CreateDbContextAsync(token);
         var server = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, token) ?? throw PanelProblems.NotFound("Server");
-        if (server.Kind == ServerKind.Gate) throw PanelProblems.Conflict("PANEL_EXPORT_REQUIRED", "Use a panel recovery bundle to preserve Gate's backend relationships and keys.");
+        if (server.Kind == ServerKind.Gate) throw PanelProblems.Conflict("PANEL_EXPORT_REQUIRED", "Use the instance export in Panel settings to include Gate and its selected backends.");
         if (server.RecoveryRequired) throw PanelProblems.Conflict("RECOVERY_REQUIRED", "Repair the server before exporting it.");
         var stage = Path.Combine(paths.Staging, $"export-{job:N}"); var file = FilePath(job); var temporary = file + ".partial";
         try
@@ -46,6 +46,7 @@ public sealed class ServerExportService(PanelPaths paths, IDbContextFactory<Stat
         try
         {
             var manifest = await RecoveryArchive.ExtractAsync(archive, stage, options.MaxBackupBytes, options.MaxBackupEntries, options.ReservedDiskBytes, token);
+            if (manifest.Kind == "instances") { await InstanceExportService.ImportExtractedAsync(stage, paths, token); return; }
             if (manifest.Kind != "server") throw new InvalidDataException("This command requires a server export.");
             var server = JsonSerializer.Deserialize<ServerEntity>(await File.ReadAllTextAsync(Path.Combine(stage, "server.json"), token)) ?? throw new InvalidDataException("Launch metadata is missing.");
             if (server.Kind == ServerKind.Gate || server.Id == Guid.Empty) throw new InvalidDataException("Unsupported server export.");

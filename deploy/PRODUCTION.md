@@ -24,22 +24,47 @@ and runtime compatibility. The readiness response reports panel and runtime
 versions separately. Minecraft readiness requires startup confirmation; time
 alive alone is insufficient.
 
-## Recovery points and off-host replication
+## Panel backups and remote copies
+
+Open **Panel settings > Backups** for two separate exports:
+
+- **Panel backups** contain panel settings, the administrator account, shared icons,
+  encryption keys, Java runtime registrations, and administrative history. They exclude
+  instance files, instance registrations, player records, schedules, and console logs.
+- **Instance exports** contain all instances or a selected set in one ZIP, including
+  current worlds, server files, mods, launch settings, player records, schedules,
+  and selected Gate proxies with their keys. Managed Gate backend relationships
+  are included only when both instances are selected. External backends are retained.
+  Panel accounts and settings, old backups, and Java installations are excluded.
+
+New panel archives use the `panel-settings` manifest kind. Older `panel` archives
+still restore with their included instances and are labeled as legacy backups in
+the UI. Existing archives are preserved. New instance collections use `instances`;
+older single-instance `server` exports remain supported.
+
+The installer gives the panel read access to `mcpanel.env` with root ownership,
+the `mcpanel` group, and mode `0640`.
+
+Remote copies are optional. "Off-host" means storing a copy on another machine
+so it survives loss of this host. Without a configured destination, no remote
+backup overdue incident is raised.
 
 Mount storage from a different machine at `Panel__ReplicationDirectory` using
 NFS or SMB. The directory must already exist, be writable by `mcpanel`, and be
 reported as a network filesystem. A local directory, bind mount, or another local
 disk is rejected. Protect the destination with access controls, encrypted disks,
-and a private VPN or encrypted transport. Recovery bundles contain credentials,
-worlds, and Data Protection keys; treat them as secrets.
+and a private VPN or encrypted transport. Panel backups contain credentials and
+Data Protection keys; instance exports can include proxy keys and plugin
+credentials. Keep both private.
 
 Use a systemd mount with explicit dependencies on `mcpanel.service`. Ensure a
 failed mount cannot silently fall back to a local directory. The panel performs
 one capture when overdue, every 30 minutes by default. It copies to a partial
 file, flushes it, reads it back, checks SHA-256, and then publishes its final name.
-The Activity page shows the capture time, replication outcome, and failure.
-A verified point older than one hour creates an incident. A capture lasting over
-30 minutes may miss the target: measure duration for the actual world sizes.
+The Backups tab shows saved bundles and remote-copy verification. Activity shows
+backup jobs and failures. When a remote destination is configured, no verified
+copy from the last hour creates an incident. Automatic remote replication covers
+panel backups only; export and store instance data separately.
 
 Local retention uses age, count, and byte limits, retaining the latest verified
 copy and explicitly pinned backups. Restore pins its selected source and safety
@@ -63,15 +88,27 @@ incidents produce recovery notifications.
    Both destination paths must be absent. Extraction checks version, file hashes,
    sizes, paths, and available space before activating the result. Existing data
    is never overwritten. SQLite snapshots are created with its backup API.
-3. Review the restored configuration for host-specific paths, Java executables,
+3. For new panel-only backups, import an instance export into the restored panel
+   while it is stopped:
+
+   ```sh
+   MCPANEL_DATA_DIR=/path/to/restored-data MCPANEL_CONFIG_DIR=/path/to/restored-config \
+     /opt/mcpanel/McPanel.Api --mcpanel-import-export /path/to/instances.zip
+   ```
+
+   Run with the panel service account and readable archive permissions. Import
+   rejects conflicting IDs, names, or ports before moving any instance files.
+   Imported instances are stopped; autostart, crash recovery, and schedules are
+   disabled. Gate configuration is regenerated from imported relationships.
+4. Review the restored configuration for host-specific paths, Java executables,
    IP addresses, proxy names, and mount locations. Restore file ownership to the
    panel service account. Install using these recovered data/config directories.
    Recovered sessions are revoked; autostart, crash recovery, and schedules are
    disabled until reviewed. The administrator password is retained.
-4. Verify readiness, select Java runtimes, start each server, and check world
+5. Verify readiness, select Java runtimes, start each server, and check world
    progress, modpack metadata, Gate routing, and authentication. Enable the
    desired schedules and automatic recovery. Capture and verify a new off-host
-   point before declaring recovery complete.
+   panel backup and a separate instance export before declaring recovery complete.
 
 A server export contains the instance, launch metadata, and modpack baseline.
 Create it from Backups and download it from Activity. With the panel stopped,

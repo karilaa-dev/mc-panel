@@ -38,22 +38,160 @@ public sealed class ApiValidationRegressionTests : IAsyncLifetime
     private PanelPaths? _paths;
     private string _fakeJavaPath = null!;
 
-    [Fact]
-    public async Task Recovery_bundle_restores_a_clean_data_root_without_source_files()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Instance_exports_include_only_selected_files_and_restore_after_panel_backup(bool all)
     {
-        var recovery = _factory!.Services.GetRequiredService<RecoveryBundleService>();
+        var secondId = Guid.NewGuid();
+        var factory = _factory!.Services.GetRequiredService<IDbContextFactory<StateDbContext>>();
+        await using (var db = await factory.CreateDbContextAsync())
+        {
+            db.Servers.Add(new ServerEntity { Id = secondId, Name = "Second instance", Version = "1.20.4", Kind = ServerKind.Paper,
+                JavaRuntimeId = JavaId, Port = 32125, State = ServerState.Stopped, StartOnBoot = true });
+            db.Schedules.Add(new ScheduleEntity { Id = Guid.NewGuid(), ServerId = _serverId, Name = "Selected schedule", Frequency = "Daily" });
+            db.Schedules.Add(new ScheduleEntity { Id = Guid.NewGuid(), ServerId = secondId, Name = "Other schedule", Frequency = "Daily" });
+            await db.SaveChangesAsync();
+        }
+        Directory.CreateDirectory(_paths!.Instance(secondId));
+        await File.WriteAllTextAsync(Path.Combine(_paths.Instance(secondId), "server.jar"), "second-jar");
+        await File.WriteAllTextAsync(Path.Combine(_paths.Instance(secondId), "second-world.dat"), "second-world");
+        await File.WriteAllTextAsync(Path.Combine(_paths.Instance(_serverId), "selected-world.dat"), "selected-world");
+        var exports = _factory.Services.GetRequiredService<InstanceExportService>();
+        using var response = await SendJsonAsync(HttpMethod.Post, "/api/v1/exports/instances",
+            JsonSerializer.Serialize(new { all, serverIds = all ? null : new[] { _serverId } }));
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        using var accepted = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var jobId = accepted.RootElement.GetProperty("id").GetGuid();
+        var outcome = await WaitForJobAsync(jobId);
+        Assert.True(outcome.GetProperty("state").GetString() == "Completed", outcome.ToString());
+        using (var download = await _client!.GetAsync($"/api/v1/exports/{jobId}/download"))
+        {
+            Assert.Equal(HttpStatusCode.OK, download.StatusCode);
+            Assert.StartsWith("instances-", download.Content.Headers.ContentDisposition!.FileNameStar!);
+        }
+        using (var zip = ZipFile.OpenRead(exports.FilePath(jobId)))
+        {
+            Assert.NotNull(zip.GetEntry($"instances/{_serverId:N}/selected-world.dat"));
+            Assert.Equal(all, zip.GetEntry($"instances/{secondId:N}/second-world.dat") is not null);
+            Assert.DoesNotContain(zip.Entries, entry => entry.FullName.Contains("state.db") || entry.FullName.StartsWith("config/") || entry.FullName.StartsWith("keys/"));
+        }
+        var recovery = _factory.Services.GetRequiredService<RecoveryBundleService>();
+        var panelJob = await recovery.QueueAsync(default);
+        Assert.Equal("Completed", (await WaitForJobAsync(panelJob.Id)).GetProperty("state").GetString());
+        await using var sourceDb = await factory.CreateDbContextAsync();
+        var point = await sourceDb.RecoveryPoints.SingleAsync();
+        var options = new PanelOptions { DataDirectory = Path.Combine(_root, "split-restored"), ConfigDirectory = Path.Combine(_root, "split-config"), ReservedDiskBytes = 0 };
+        await ProductionCommand.RestoreAsync(Path.Combine(recovery.DirectoryPath, point.FileName), options.DataDirectory, options.ConfigDirectory, options, default);
+        var restored = new PanelPaths(options);
+        await ServerExportService.ImportAsync(exports.FilePath(jobId), restored, options, default);
+        await using var dbCheck = new StateDbContext(new DbContextOptionsBuilder<StateDbContext>().UseSqlite($"Data Source={restored.StateDatabase};Pooling=False").Options);
+        Assert.Equal(all ? 2 : 1, await dbCheck.Servers.CountAsync());
+        Assert.Equal(all ? 2 : 1, await dbCheck.Schedules.CountAsync());
+        Assert.False(await dbCheck.Servers.AnyAsync(x => x.StartOnBoot || x.CrashRecovery || x.State != ServerState.Stopped));
+        Assert.False(await dbCheck.Schedules.AnyAsync(x => x.Enabled));
+        Assert.NotEmpty(await dbCheck.Admins.ToListAsync());
+        Assert.Equal("selected-world", await File.ReadAllTextAsync(Path.Combine(restored.Instance(_serverId), "selected-world.dat")));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => ServerExportService.ImportAsync(exports.FilePath(jobId), restored, options, default));
+        Assert.Equal(all ? 2 : 1, await dbCheck.Servers.CountAsync());
+    }
+
+    [Fact]
+    public async Task Instance_export_rejects_empty_ambiguous_or_missing_selections()
+    {
+        foreach (var body in new[] { "{}", "{\"all\":false,\"serverIds\":[]}", JsonSerializer.Serialize(new { all = true, serverIds = new[] { _serverId } }) })
+        {
+            using var response = await SendJsonAsync(HttpMethod.Post, "/api/v1/exports/instances", body);
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        }
+        using var missing = await SendJsonAsync(HttpMethod.Post, "/api/v1/exports/instances", JsonSerializer.Serialize(new { all = false, serverIds = new[] { Guid.NewGuid() } }));
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Gate_instance_export_preserves_keys_and_only_selected_backend_relationships(bool includeBackend)
+    {
+        var gateId = Guid.NewGuid();
+        var stateFactory = _factory!.Services.GetRequiredService<IDbContextFactory<StateDbContext>>();
+        await using (var db = await stateFactory.CreateDbContextAsync())
+        {
+            db.Servers.Add(new ServerEntity { Id = gateId, Name = "Exported Gate", Version = "1", JavaRuntimeId = "", Kind = ServerKind.Gate, Port = 32126, State = ServerState.Stopped });
+            db.GateSettings.Add(new GateSettingsEntity { ServerId = gateId, DefaultBackendServerId = _serverId, ApiPort = 32127 });
+            db.GateBackends.Add(new GateBackendEntity { GateServerId = gateId, BackendServerId = _serverId });
+            await db.SaveChangesAsync();
+        }
+        Directory.CreateDirectory(_paths!.GateKeys(gateId));
+        await File.WriteAllTextAsync(_paths.GateVelocitySecret(gateId), "exported-test-key");
+        var service = _factory.Services.GetRequiredService<InstanceExportService>();
+        var job = await service.QueueAsync(new(false, includeBackend ? [gateId, _serverId] : [gateId]), default);
+        var outcome = await WaitForJobAsync(job.Id);
+        Assert.True(outcome.GetProperty("state").GetString() == "Completed", outcome.ToString());
+        var options = new PanelOptions { DataDirectory = Path.Combine(_root, "gate-export-restored"), ConfigDirectory = Path.Combine(_root, "gate-export-config"), ReservedDiskBytes = 0 };
+        var restored = new PanelPaths(options);
+        await ServerExportService.ImportAsync(service.FilePath(job.Id), restored, options, default);
+        await using var check = new StateDbContext(new DbContextOptionsBuilder<StateDbContext>().UseSqlite($"Data Source={restored.StateDatabase};Pooling=False").Options);
+        Assert.Equal(includeBackend ? 1 : 0, await check.GateBackends.CountAsync());
+        Assert.Equal(includeBackend ? _serverId : (Guid?)null, (await check.GateSettings.SingleAsync()).DefaultBackendServerId);
+        Assert.Equal("exported-test-key", await File.ReadAllTextAsync(restored.GateVelocitySecret(gateId)));
+    }
+
+    [Fact]
+    public async Task Remote_recovery_alert_only_applies_when_replication_is_configured()
+    {
+        var monitor = _factory!.Services.GetRequiredService<OperationsMonitor>();
+        var options = _factory.Services.GetRequiredService<IOptions<PanelOptions>>().Value;
+        var stateFactory = _factory.Services.GetRequiredService<IDbContextFactory<StateDbContext>>();
+        await monitor.SetIncidentAsync("OFF_HOST_RECOVERY_OVERDUE", null, "Old alert", true, default);
+        await monitor.InspectAsync(default);
+        await using var db = await stateFactory.CreateDbContextAsync();
+        Assert.False(await db.Incidents.AnyAsync(x => x.Code == "OFF_HOST_RECOVERY_OVERDUE" && x.ResolvedAt == null));
+
+        options.ReplicationDirectory = Path.Combine(_root, "remote");
+        await monitor.InspectAsync(default);
+        Assert.True(await db.Incidents.AnyAsync(x => x.Code == "OFF_HOST_RECOVERY_OVERDUE" && x.ResolvedAt == null));
+        db.RecoveryPoints.Add(new RecoveryPointEntity { Id = Guid.NewGuid(), CreatedAt = DateTimeOffset.UtcNow, ReplicatedAt = DateTimeOffset.UtcNow, VerifiedAt = DateTimeOffset.UtcNow, FileName = "test.zip", Sha256 = "test" });
+        await db.SaveChangesAsync();
+        await monitor.InspectAsync(default);
+        Assert.False(await db.Incidents.AnyAsync(x => x.Code == "OFF_HOST_RECOVERY_OVERDUE" && x.ResolvedAt == null));
+        options.ReplicationDirectory = null;
+    }
+
+    [Fact]
+    public async Task Panel_backup_excludes_instances_and_restores_panel_configuration()
+    {
+        var environmentFile = Path.Combine(_paths!.Config, "mcpanel.env");
+        const string environment = "ASPNETCORE_URLS=http://0.0.0.0:6050\n";
+        await File.WriteAllTextAsync(environmentFile, environment);
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(environmentFile, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead);
+        var stateFactory = _factory!.Services.GetRequiredService<IDbContextFactory<StateDbContext>>();
+        await using (var original = await stateFactory.CreateDbContextAsync())
+        {
+            await original.Admins.ExecuteUpdateAsync(update => update.SetProperty(x => x.LastConsoleSequence, 1234));
+            await original.Servers.ExecuteUpdateAsync(update => update.SetProperty(x => x.RecoveryRequired, true).SetProperty(x => x.State, ServerState.Error));
+        }
+        var recovery = _factory.Services.GetRequiredService<RecoveryBundleService>();
         var job = await recovery.QueueAsync(default);
         var outcome = await WaitForJobAsync(job.Id);
         Assert.True(outcome.GetProperty("state").GetString() == "Completed", outcome.ToString());
-        var stateFactory = _factory.Services.GetRequiredService<IDbContextFactory<StateDbContext>>();
         await using var db = await stateFactory.CreateDbContextAsync();
         var point = await db.RecoveryPoints.SingleAsync();
         Assert.Null(point.ReplicatedAt); Assert.Null(point.VerifiedAt);
         var restored = Path.Combine(_root, "clean-data"); var config = Path.Combine(_root, "clean-config");
         await ProductionCommand.RestoreAsync(Path.Combine(recovery.DirectoryPath, point.FileName), restored, config, new PanelOptions { ReservedDiskBytes = 0 }, default);
-        Assert.True(File.Exists(Path.Combine(restored, "instances", _serverId.ToString("N"), "server.jar")));
+        Assert.False(Directory.Exists(Path.Combine(restored, "instances")));
+        Assert.False(File.Exists(Path.Combine(restored, "console.db")));
+        using (var zip = ZipFile.OpenRead(Path.Combine(recovery.DirectoryPath, point.FileName)))
+            Assert.DoesNotContain(zip.Entries, x => x.FullName.StartsWith("data/instances/") || x.FullName.StartsWith("data/modpacks/"));
+        Assert.Equal(environment, await File.ReadAllTextAsync(Path.Combine(config, "mcpanel.env")));
         await using var restoredDb = new StateDbContext(new DbContextOptionsBuilder<StateDbContext>().UseSqlite($"Data Source={Path.Combine(restored, "state.db")};Pooling=False").Options);
-        Assert.Equal(_serverId, (await restoredDb.Servers.SingleAsync()).Id);
+        Assert.Empty(await restoredDb.Servers.ToListAsync());
+        Assert.Equal(0, (await restoredDb.Admins.SingleAsync()).LastConsoleSequence);
+        Assert.Empty(await db.Backups.ToListAsync());
+        Assert.True((await db.Servers.SingleAsync()).RecoveryRequired);
+        Assert.Empty(await restoredDb.Schedules.ToListAsync());
+        Assert.Empty(await restoredDb.GateSettings.ToListAsync());
         Assert.Empty(await restoredDb.Backups.ToListAsync());
     }
 

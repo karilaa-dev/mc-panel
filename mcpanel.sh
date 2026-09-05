@@ -449,6 +449,13 @@ configure_access_layout() {
 
   validate_access_user "$access_user"
   install -d -o root -g root -m 0755 -- "$config_dir"
+  # Recovery archives include the environment file. Keep it root-owned and
+  # readable by the panel, including upgrades from older root-only installs.
+  if [[ -e "$config_dir/mcpanel.env" ]]; then
+    [[ -f "$config_dir/mcpanel.env" && ! -L "$config_dir/mcpanel.env" ]] || die "unsafe environment file: $config_dir/mcpanel.env"
+    chown root:"$PANEL_GROUP" "$config_dir/mcpanel.env"
+    chmod 0640 "$config_dir/mcpanel.env"
+  fi
   install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 0750 -- "$data_dir"
   install -d -o "$PANEL_USER" -g "$PANEL_GROUP" -m 2750 -- "$data_dir/instances"
   for state_dir in staging backups logs runtime runtime/state keys icons modpacks modpack-imports custom-jar-imports; do
