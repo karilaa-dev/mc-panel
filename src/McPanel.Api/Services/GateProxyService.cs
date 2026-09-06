@@ -13,6 +13,7 @@ using McPanel.Api.Contracts;
 using McPanel.Api.Data;
 using McPanel.Api.Infrastructure;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace McPanel.Api.Services;
 
@@ -601,8 +602,12 @@ public sealed class GateConfigurationService(PanelPaths paths)
         if (gate.PublicPort is { } publicPort && publicPort != gate.Port)
             warnings.Add($"Forward advertised public port {publicPort} to Gate's real local port {gate.Port}.");
         if (settings.Mode == GateMode.Classic) warnings.Add(ForwardingInstructions(settings.ClassicForwardingMode));
-        var connectionProblems = await BackendAuthenticationProblemsAsync(settings, backends, cancellationToken);
+        var checks = await CheckBackendsAsync(settings, backends, cancellationToken);
+        var connectionProblems = checks.SelectMany(x => x.Problems.Select(problem => $"{x.ServerName}: {problem}")).ToList();
         warnings.AddRange(connectionProblems);
+        warnings.AddRange(checks.SelectMany(x => x.Warnings.Select(warning => $"{x.ServerName}: {warning}")));
+        warnings.AddRange(externalBackends.SelectMany(x => GateBackendCompatibilityService.External(settings, x.Id, x.Name).Warnings
+            .Select(warning => $"{x.Name}: {warning}")));
         var persisted = root.DeepClone().AsObject();
         persisted["config"]!["forwarding"]!.AsObject().Remove("velocitySecret");
         persisted["config"]!["forwarding"]!.AsObject().Remove("bungeeGuardSecret");
@@ -732,31 +737,21 @@ public sealed class GateConfigurationService(PanelPaths paths)
         return 256 + (classic.ViaEnabled ? 512 : 0) + (classic.BedrockEnabled && classic.BedrockManagedEnabled ? 768 : 0);
     }
 
+    public static int MemoryLimitMb(ServerEntity gate, GateSettingsEntity settings) =>
+        Math.Max(gate.MemoryLimitMb, MemoryLimitMb(settings));
+
     public static string StableName(Guid id) => "mc-" + id.ToString("N");
 
     public async Task<IReadOnlyList<string>> BackendAuthenticationProblemsAsync(
         GateSettingsEntity settings, IReadOnlyList<ServerEntity> backends, CancellationToken cancellationToken)
     {
-        var problems = new List<string>();
-        foreach (var backend in backends)
-        {
-            var file = Path.Combine(paths.Instance(backend.Id), "server.properties");
-            if (!File.Exists(file)) continue;
-            var properties = PropertiesDocument.Parse(await File.ReadAllTextAsync(file, cancellationToken));
-            if (settings.Mode == GateMode.Lite)
-            {
-                if (properties.Get("online-mode")?.Trim() == "false" && File.Exists(Path.Combine(paths.Instance(backend.Id), ".mcpanel-proxy", "original-network.json")))
-                    problems.Add($"{backend.Name} still has Classic backend settings. Stop Gate and the backend, then use Prepare backends for Lite to restore backend authentication.");
-                continue;
-            }
-            // Minecraft defaults to online mode when the property is absent.
-            if (!string.Equals(properties.Get("online-mode")?.Trim(), "false", StringComparison.OrdinalIgnoreCase))
-                problems.Add($"{backend.Name} requires online authentication. Classic Gate cannot complete login to an online-mode backend. Use Lite to keep backend authentication, or stop Gate and the backend and use Prepare backends for Classic. This restricts backend access to loopback and disables backend online mode. Review player UUIDs before changing an existing world.");
-            if (backend.Kind == ServerKind.Vanilla && settings.ClassicForwardingMode != GateForwardingMode.None)
-                problems.Add($"{backend.Name} is Vanilla and does not support {settings.ClassicForwardingMode} forwarding. Use Lite, or choose forwarding None with a backend configured for Classic proxy access.");
-        }
-        return problems;
+        var checks = await CheckBackendsAsync(settings, backends, cancellationToken);
+        return checks.SelectMany(x => x.Problems.Select(problem => $"{x.ServerName}: {problem}")).ToList();
     }
+
+    public Task<IReadOnlyList<GateBackendCheckDto>> CheckBackendsAsync(
+        GateSettingsEntity settings, IReadOnlyList<ServerEntity> backends, CancellationToken cancellationToken) =>
+        new GateBackendCompatibilityService(paths).CheckAsync(settings, backends, cancellationToken);
 
     public async Task ValidateBackendAuthenticationAsync(
         GateSettingsEntity settings, IReadOnlyList<ServerEntity> backends, CancellationToken cancellationToken)
@@ -773,10 +768,17 @@ public sealed class GateConfigurationService(PanelPaths paths)
         var file = Path.Combine(paths.Instance(server.Id), "server.properties");
         if (File.Exists(file))
         {
-            var properties = PropertiesDocument.Parse(await File.ReadAllTextAsync(file, cancellationToken));
-            var configured = properties.Get("server-ip")?.Trim();
-            if (!string.IsNullOrWhiteSpace(configured) && configured is not "0.0.0.0" and not "::") host = configured;
-            if (int.TryParse(properties.Get("server-port"), out var selected) && selected is >= 1 and <= 65535) port = selected;
+            try
+            {
+                var properties = PropertiesDocument.Parse(await File.ReadAllTextAsync(file, cancellationToken));
+                var configured = properties.Get("server-ip")?.Trim();
+                if (!string.IsNullOrWhiteSpace(configured) && configured is not "0.0.0.0" and not "::") host = configured;
+                if (int.TryParse(properties.Get("server-port"), out var selected) && selected is >= 1 and <= 65535) port = selected;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Keep the editor accessible. Compatibility checks report the unreadable file and block activation.
+            }
         }
         var display = IPAddress.TryParse(host, out var ip) && ip.AddressFamily == AddressFamily.InterNetworkV6 ? $"[{host}]" : host;
         return $"{display}:{port}";
@@ -831,7 +833,8 @@ public sealed class GateProxyService(
     PersistentRuntimeClient runtime,
     AsyncKeyedLock keyedLock,
     OperationQueue operations,
-    ILogger<GateProxyService> logger)
+    ILogger<GateProxyService> logger,
+    IOptions<PanelOptions> options)
 {
     public async Task<GateStatusDto> GetAsync(Guid serverId, CancellationToken cancellationToken)
     {
@@ -868,8 +871,30 @@ public sealed class GateProxyService(
                 settings.DefaultExternalBackendId,
                 externalBackends.Select(x => new GateExternalBackendDto(
                     x.Id, x.Name, GateConfigurationService.FormatAddress(x.Host, x.Port))).ToList(),
-                GateConfigurationService.Classic(settings)),
+                GateConfigurationService.Classic(settings), GateConfigurationService.MemoryLimitMb(gate, settings), GateConfigurationService.MemoryLimitMb(settings)),
             generated.Routes, warnings, generated.ConnectionProblems);
+    }
+
+    public async Task<IReadOnlyList<GateBackendCheckDto>> CheckBackendsAsync(Guid serverId, CheckGateBackendsRequest request, CancellationToken token)
+    {
+        await using var db = await stateFactory.CreateDbContextAsync(token);
+        _ = await RequireGateAsync(db, serverId, token);
+        var saved = await SettingsAsync(db, serverId, token);
+        if (!FixedRevision(saved.Revision, request.ExpectedRevision)) throw Changed();
+        if (!Enum.IsDefined(request.Mode) || !Enum.IsDefined(request.ClassicForwardingMode))
+            throw new PanelException(400, "GATE_CONFIG_INVALID", "Choose a valid Gate mode and forwarding mode.");
+        var ids = request.BackendServerIds.Distinct().ToList();
+        var backends = await db.Servers.AsNoTracking().Where(x => ids.Contains(x.Id) && x.Kind != ServerKind.Gate).ToListAsync(token);
+        if (backends.Count != ids.Count)
+            throw new PanelException(400, "GATE_CONFIG_INVALID", "One or more selected backends do not exist or are Gate servers.");
+        var proposed = new GateSettingsEntity
+        {
+            ServerId = serverId, Mode = request.Mode, ClassicForwardingMode = request.ClassicForwardingMode,
+            ClassicConfigJson = request.Classic is null ? saved.ClassicConfigJson : GateConfigurationService.SerializeClassic(request.Classic)
+        };
+        var checks = (await configuration.CheckBackendsAsync(proposed, backends, token)).ToList();
+        checks.AddRange((request.ExternalBackends ?? []).Select(x => GateBackendCompatibilityService.External(proposed, x.Id, x.Name ?? "External server")));
+        return checks;
     }
 
     public async Task<GateStatusDto> UpdateAsync(Guid serverId, UpdateGateConfigurationRequest request, CancellationToken cancellationToken)
@@ -921,7 +946,8 @@ public sealed class GateProxyService(
         }
         if (request.StartOnBoot is not null) gate.StartOnBoot = request.StartOnBoot.Value;
         if (request.CrashRecovery is not null) gate.CrashRecovery = request.CrashRecovery.Value;
-        var previousMemoryLimit = GateConfigurationService.MemoryLimitMb(settings);
+        var previousMemoryLimit = GateConfigurationService.MemoryLimitMb(gate, settings);
+        var previousMinimumMemoryLimit = GateConfigurationService.MemoryLimitMb(settings);
         gate.UpdatedAt = DateTimeOffset.UtcNow;
         settings.Mode = request.Mode;
         settings.DefaultBackendServerId = request.DefaultServerId;
@@ -929,9 +955,19 @@ public sealed class GateProxyService(
         settings.ClassicForwardingMode = request.ClassicForwardingMode;
         if (request.Classic is not null)
             settings.ClassicConfigJson = GateConfigurationService.SerializeClassic(request.Classic);
-        var memoryLimit = GateConfigurationService.MemoryLimitMb(settings);
-        if (runtime.IsRunning(serverId) && previousMemoryLimit != memoryLimit)
-            throw new PanelException(409, "GATE_RESTART_REQUIRED", "Stop Gate before changing modes or enabling components that change its memory reservation.");
+        var minimumMemoryLimit = GateConfigurationService.MemoryLimitMb(settings);
+        var memoryLimit = request.MemoryMb ?? Math.Max(gate.MemoryLimitMb, minimumMemoryLimit);
+        if (memoryLimit < minimumMemoryLimit || memoryLimit > 1_048_576 || memoryLimit % 64 != 0)
+            throw new PanelException(400, "GATE_MEMORY_INVALID", $"Gate RAM must be at least {minimumMemoryLimit} MiB for the selected components, in steps of 64 MiB, and at most 1048576 MiB.");
+        if ((memoryLimit != previousMemoryLimit || minimumMemoryLimit != previousMinimumMemoryLimit) &&
+            (runtime.IsRunning(serverId) || gate.State != ServerState.Stopped || gate.ProcessId is not null))
+            throw new PanelException(409, "GATE_RESTART_REQUIRED", "Stop Gate before changing its RAM limit or components.");
+        if (memoryLimit != previousMemoryLimit)
+        {
+            var (totalMemory, _) = HostMetricsService.ReadMemory();
+            if ((long)memoryLimit * 1024 * 1024 > totalMemory * options.Value.MemoryAllocationFraction)
+                throw new PanelException(400, "MEMORY_LIMIT_EXCEEDED", "The Gate RAM limit exceeds the host memory allocation limit.");
+        }
         gate.MemoryMb = gate.InitialMemoryMb = gate.MemoryLimitMb = memoryLimit;
         var existing = await db.GateBackends.Where(x => x.GateServerId == serverId).ToListAsync(cancellationToken);
         db.GateBackends.RemoveRange(existing);
@@ -947,6 +983,9 @@ public sealed class GateProxyService(
         }
         var panel = await db.PanelSettings.AsNoTracking().SingleAsync(x => x.Id == 1, cancellationToken);
         _ = await configuration.GenerateAsync(gate, settings, backends, panel.GlobalServerHost, cancellationToken, externalBackends);
+        // A stopped Gate can save incomplete settings while backends are configured manually.
+        if (runtime.IsRunning(serverId))
+            await configuration.ValidateBackendAuthenticationAsync(settings, backends, cancellationToken);
         MarkDirty(settings);
         await db.SaveChangesAsync(cancellationToken);
         return await GetAsync(serverId, cancellationToken);
@@ -1194,6 +1233,8 @@ public sealed class GateProxyService(
             var panel = await db.PanelSettings.AsNoTracking().SingleAsync(x => x.Id == 1, cancellationToken);
             var generated = await configuration.GenerateAsync(gate, settings, backends, panel.GlobalServerHost, cancellationToken, externalBackends);
             if (runtime.IsRunning(serverId))
+                await configuration.ValidateBackendAuthenticationAsync(settings, backends, cancellationToken);
+            if (runtime.IsRunning(serverId))
             {
                 try { ValidateStart(gate, settings, backends, externalBackends, panel.GlobalServerHost, paths); }
                 catch
@@ -1240,7 +1281,7 @@ public sealed class GateProxyService(
     { try { return await api.StatusAsync(apiPort, cancellationToken); } catch { return new GateApiStatus(0, 0); } }
 
     private RuntimeLaunchRequest Launch(ServerEntity gate, GateSettingsEntity settings, GateInstallManifest manifest) => new(
-        gate.Id, manifest.Executable, paths.Instance(gate.Id), ["--config", "config.json"], GateConfigurationService.MemoryLimitMb(settings), 15,
+        gate.Id, manifest.Executable, paths.Instance(gate.Id), ["--config", "config.json"], GateConfigurationService.MemoryLimitMb(gate, settings), 15,
         RuntimeWorkloadKind.Gate, settings.ApiPort,
         settings.Mode == GateMode.Classic && settings.ClassicForwardingMode == GateForwardingMode.Velocity ? paths.GateVelocitySecret(gate.Id) : null,
         settings.Mode == GateMode.Classic && settings.ClassicForwardingMode == GateForwardingMode.BungeeGuard ? paths.GateBungeeGuardSecret(gate.Id) : null, GamePort: gate.Port);

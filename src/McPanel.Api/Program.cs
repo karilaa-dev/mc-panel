@@ -110,7 +110,6 @@ builder.Services.AddSingleton<ValidatedDownloadClient>(); builder.Services.AddSi
 builder.Services.AddSingleton<JavaDiscoveryService>(); builder.Services.AddSingleton<ConsoleService>();
 builder.Services.AddSingleton<PersistentRuntimeClient>();
 builder.Services.AddSingleton<GateReleaseService>(); builder.Services.AddSingleton<GateConfigurationService>();
-builder.Services.AddSingleton<GateBackendConfigurationService>();
 builder.Services.AddSingleton<GateApiClient>(); builder.Services.AddSingleton<GateProxyService>();
 builder.Services.AddHostedService<GateConfigurationReconciler>();
 builder.Services.AddSingleton<ServerExportService>();

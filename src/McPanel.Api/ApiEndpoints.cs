@@ -167,11 +167,7 @@ public static partial class ApiEndpoints
         api.MapGet("/system/status", (HostMetricsService metrics) => metrics.GetStatus());
         api.MapGet("/servers/{id:guid}/gate", (Guid id, GateProxyService gate, CancellationToken token) => gate.GetAsync(id, token));
         api.MapPut("/servers/{id:guid}/gate/config", (Guid id, UpdateGateConfigurationRequest request, GateProxyService gate, CancellationToken token) => gate.UpdateAsync(id, request, token));
-        api.MapPost("/servers/{id:guid}/gate/prepare-backends", async (Guid id, PrepareGateBackendsRequest request, GateBackendConfigurationService backends, CancellationToken token) =>
-        {
-            await backends.PrepareAsync(id, request.ExpectedRevision, token);
-            return Results.NoContent();
-        });
+        api.MapPost("/servers/{id:guid}/gate/check-backends", (Guid id, CheckGateBackendsRequest request, GateProxyService gate, CancellationToken token) => gate.CheckBackendsAsync(id, request, token));
         api.MapPost("/servers/{id:guid}/gate/update", async (Guid id, GateActionRequest request, GateProxyService gate, CancellationToken token) =>
         {
             var job = await gate.QueueUpdateAsync(id, request.ConfirmDisconnectPlayers, token, request.Version);

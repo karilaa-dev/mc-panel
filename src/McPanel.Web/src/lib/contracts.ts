@@ -323,6 +323,8 @@ export const defaultGateClassicConfiguration: GateClassicConfigurationDto = {
   bedrockBackendFloodgateServerIds: [],
 }
 export interface GateConfigurationDto {
+  memoryMb?: number
+  minimumMemoryMb?: number
   mode: GateMode
   defaultServerId?: string | null
   backendServerIds: string[]
@@ -340,6 +342,23 @@ export interface GateConfigurationDto {
   classic: GateClassicConfigurationDto
 }
 export interface GateExternalBackendDto { id: string; name: string; address: string }
+export interface GateBackendCheckDto {
+  serverId: string
+  serverName: string
+  backendKind: "Managed" | "External"
+  problems: string[]
+  warnings: string[]
+  settings?: GateBackendSettingCheckDto[]
+  runtimeNote?: string | null
+}
+export interface GateBackendSettingCheckDto {
+  file: string
+  setting: string
+  currentValue: string
+  expectedValue: string
+  status: "Passed" | "Problem" | "Warning" | "Unknown" | "Info"
+  message: string
+}
 export interface GateRouteDto {
   serverId: string
   serverName: string
@@ -368,6 +387,7 @@ export interface GateStatusDto {
   warnings: string[]
 }
 export interface GateConfigurationWriteDto {
+  memoryMb?: number
   expectedRevision: string
   mode: GateMode
   defaultServerId?: string | null

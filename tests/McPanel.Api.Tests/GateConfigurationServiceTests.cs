@@ -66,13 +66,25 @@ public sealed class GateConfigurationServiceTests : IDisposable
         Assert.Equal("GATE_BACKEND_AUTHENTICATION", error.Code);
         Assert.Contains("Use Lite", error.Message);
         var broken = await service.GenerateAsync(gate, settings, [backend], "play.example.com", default);
-        Assert.Single(broken.ConnectionProblems);
+        Assert.Contains(broken.ConnectionProblems, x => x.Contains("online-mode=false"));
 
         settings.Mode = GateMode.Lite;
         await service.ValidateBackendAuthenticationAsync(settings, [backend], default);
         var working = await service.GenerateAsync(gate, settings, [backend], "play.example.com", default);
         Assert.Empty(working.ConnectionProblems);
         Assert.Equal(before, await File.ReadAllTextAsync(file));
+    }
+
+    [Fact]
+    public async Task Classic_detects_missing_Paper_Velocity_forwarding_even_when_backend_is_offline()
+    {
+        var gate = Gate(25565);
+        var backend = Backend("Lobby", 25566, null);
+        WriteProperties(backend);
+        await File.AppendAllTextAsync(Path.Combine(_paths.Instance(backend.Id), "server.properties"), "online-mode=false\nenforce-secure-profile=false\n");
+        var problems = await new GateConfigurationService(_paths).BackendAuthenticationProblemsAsync(
+            Settings(gate, GateMode.Classic, backend.Id), [backend], default);
+        Assert.Contains(problems, problem => problem.Contains("velocity", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

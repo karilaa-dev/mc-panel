@@ -8,8 +8,9 @@ import { defaultGateClassicConfiguration, type GateStatusDto, type ServerSummary
 import { GateProxyPage } from "@/pages/gate-proxy-page"
 
 vi.mock("@/lib/api", () => ({ api: {
-  prepareGateBackends: vi.fn(), gateVersions: vi.fn(), gate: vi.fn(), server: vi.fn(), updateGate: vi.fn(), saveGate: vi.fn(),
+  gateVersions: vi.fn(), gate: vi.fn(), server: vi.fn(), updateGate: vi.fn(), saveGate: vi.fn(),
   revealGateSecret: vi.fn(), generateGateSecret: vi.fn(),
+  checkGateBackends: vi.fn(),
 } }))
 const mockedApi = vi.mocked(api)
 const gateServer: ServerSummaryDto = { id: "gate-1", name: "Edge Gate", kind: "Gate", version: "0.71.1", state: "Stopped", port: 25565, memoryMb: 256, playerCount: 0, maxPlayers: 0, cpuPercent: 0, memoryUsedMb: 0, uptimeSeconds: 0, restartRequired: false, startOnBoot: false, addressRevision: "address-1" }
@@ -29,6 +30,7 @@ describe("GateProxyPage", () => {
     mockedApi.gate.mockResolvedValue(status)
     mockedApi.server.mockResolvedValue(gateServer)
     mockedApi.saveGate.mockResolvedValue(status)
+    mockedApi.checkGateBackends.mockResolvedValue([])
     mockedApi.generateGateSecret.mockResolvedValue({ secret: "generated-secret", generatedAt: "2026-08-08T00:00:00Z" })
   })
 
@@ -54,13 +56,30 @@ describe("GateProxyPage", () => {
     await waitFor(() => expect(mockedApi.updateGate).toHaveBeenCalledWith("gate-1", true, "0.72.6"))
   })
 
-  it("prepares the saved mode using the current revision after reviewing network changes", async () => {
+  it("checks proposed forwarding settings before they are saved", async () => {
     const user = userEvent.setup()
     renderPage()
-    await user.click(await screen.findByRole("button", { name: "Prepare backends for Classic" }))
-    expect(await screen.findByRole("alertdialog")).toHaveTextContent("bind only to loopback")
-    await user.click(screen.getByRole("button", { name: "Prepare network settings" }))
-    await waitFor(() => expect(mockedApi.prepareGateBackends).toHaveBeenCalledWith("gate-1", "revision-1"))
+    await user.click(await screen.findByRole("tab", { name: "Classic" }))
+    await user.click(screen.getByRole("button", { name: "Legacy" }))
+    await waitFor(() => expect(mockedApi.checkGateBackends).toHaveBeenCalledWith("gate-1", expect.objectContaining({ mode: "Classic", classicForwardingMode: "Legacy" })))
+    expect(mockedApi.saveGate).not.toHaveBeenCalled()
+  })
+
+  it("saves the selected Gate RAM and provides no backend preparation action", async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const memory = await screen.findByRole("spinbutton", { name: "RAM limit (MiB)" })
+    await user.clear(memory)
+    await user.type(memory, "1024")
+    await user.click(screen.getByRole("button", { name: "Save settings" }))
+    await waitFor(() => expect(mockedApi.saveGate).toHaveBeenCalledWith("gate-1", expect.objectContaining({ memoryMb: 1024 })))
+    expect(screen.queryByRole("button", { name: /Prepare backend/i })).not.toBeInTheDocument()
+  })
+
+  it("requires a stopped Gate and a valid RAM limit", async () => {
+    mockedApi.server.mockResolvedValue({ ...gateServer, state: "Running" })
+    renderPage()
+    expect(await screen.findByRole("spinbutton", { name: "RAM limit (MiB)" })).toBeDisabled()
   })
 
   it("shows backend connection problems and release fetch failures", async () => {

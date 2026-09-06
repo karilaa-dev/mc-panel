@@ -158,7 +158,7 @@ public sealed record GateConfigurationDto(
     int ListenerPort = 25565, bool StartOnBoot = false, bool CrashRecovery = true,
     Guid? DefaultExternalBackendId = null,
     IReadOnlyList<GateExternalBackendDto>? ExternalBackends = null,
-    GateClassicConfigurationDto? Classic = null);
+    GateClassicConfigurationDto? Classic = null, int MemoryMb = 256, int MinimumMemoryMb = 256);
 public sealed record GateExternalBackendDto(Guid Id, string Name, string Address);
 public sealed record GateExternalBackendWriteDto(Guid Id, string? Name, string Address);
 public sealed record UpdateGateConfigurationRequest(
@@ -168,7 +168,7 @@ public sealed record UpdateGateConfigurationRequest(
     bool? StartOnBoot = null, bool? CrashRecovery = null,
     Guid? DefaultExternalBackendId = null,
     IReadOnlyList<GateExternalBackendWriteDto>? ExternalBackends = null,
-    GateClassicConfigurationDto? Classic = null);
+    GateClassicConfigurationDto? Classic = null, int? MemoryMb = null);
 public sealed record GateInstallationDto(bool Installed, string? Version, string? LatestVersion, bool UpdateAvailable);
 public sealed record GateRuntimeDto(
     RuntimeProcessState State, bool DesiredRunning, int? ProcessId, DateTimeOffset? StartedAt,
@@ -179,7 +179,15 @@ public sealed record GateRouteDto(
 public sealed record GateStatusDto(
     Guid ServerId, GateInstallationDto Installation, GateRuntimeDto Runtime, GateConfigurationDto Configuration,
     IReadOnlyList<GateRouteDto> Routes, IReadOnlyList<string> Warnings, IReadOnlyList<string>? ConnectionProblems = null);
-public sealed record PrepareGateBackendsRequest(string ExpectedRevision);
+public sealed record CheckGateBackendsRequest(
+    string ExpectedRevision, GateMode Mode, GateForwardingMode ClassicForwardingMode,
+    IReadOnlyList<Guid> BackendServerIds, GateClassicConfigurationDto? Classic = null,
+    IReadOnlyList<GateExternalBackendWriteDto>? ExternalBackends = null);
+public sealed record GateBackendCheckDto(
+    Guid ServerId, string ServerName, string BackendKind, IReadOnlyList<string> Problems, IReadOnlyList<string> Warnings,
+    IReadOnlyList<GateBackendSettingCheckDto> Settings, string? RuntimeNote = null);
+public sealed record GateBackendSettingCheckDto(
+    string File, string Setting, string CurrentValue, string ExpectedValue, string Status, string Message);
 public sealed record GateActionRequest(bool ConfirmDisconnectPlayers = false, string? Version = null);
 public sealed record GateSecretDto(string Secret, DateTimeOffset GeneratedAt);
 public sealed record GenerateGateSecretRequest(bool ConfirmReplace = false);

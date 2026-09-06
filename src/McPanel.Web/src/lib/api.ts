@@ -29,6 +29,7 @@ import type {
   SystemInfoDto,
   PanelSettingsDto,
   GateConfigurationWriteDto,
+  GateBackendCheckDto,
   GateStatusDto,
   PlayerInventoryBackupDto,
   PlayerInventoryBackupPreviewDto,
@@ -214,10 +215,12 @@ export const api = {
   }),
   gateVersions: () => request<string[]>("/catalog/gate"),
   gate: (id: string) => request<GateStatusDto>(`${serverPath(id)}/gate`),
+  checkGateBackends: (id: string, body: Pick<GateConfigurationWriteDto, "expectedRevision" | "mode" | "classicForwardingMode" | "backendServerIds" | "classic" | "externalBackends">) => request<GateBackendCheckDto[]>(`${serverPath(id)}/gate/check-backends`, {
+    method: "POST", body: JSON.stringify(body),
+  }),
   saveGate: (id: string, body: GateConfigurationWriteDto) => request<GateStatusDto>(`${serverPath(id)}/gate/config`, {
     method: "PUT", body: JSON.stringify(body),
   }),
-  prepareGateBackends: (id: string, expectedRevision: string) => request<void>(`${serverPath(id)}/gate/prepare-backends`, { method: "POST", body: JSON.stringify({ expectedRevision }) }),
   updateGate: (id: string, confirmDisconnectPlayers = false, version?: string) => request<JobDto>(`${serverPath(id)}/gate/update`, {
     method: "POST", body: JSON.stringify({ confirmDisconnectPlayers, version }),
   }),

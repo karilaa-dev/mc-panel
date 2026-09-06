@@ -97,6 +97,100 @@ public sealed class ApiValidationRegressionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Gate_backend_preview_uses_proposed_mode_without_saving_and_rejects_stale_or_missing_targets()
+    {
+        var gateId = Guid.NewGuid();
+        var settings = new GateSettingsEntity { ServerId = gateId, Mode = GateMode.Lite, ApiPort = 32127 };
+        var factory = _factory!.Services.GetRequiredService<IDbContextFactory<StateDbContext>>();
+        await using (var db = await factory.CreateDbContextAsync())
+        {
+            db.Servers.Add(new ServerEntity { Id = gateId, Name = "Gate preview", Version = "1", JavaRuntimeId = "", Kind = ServerKind.Gate, Port = 32126, State = ServerState.Stopped });
+            db.GateSettings.Add(settings);
+            await db.SaveChangesAsync();
+        }
+        var file = Path.Combine(_paths!.Instance(_serverId), "server.properties");
+        await File.WriteAllTextAsync(file, "online-mode=true\nserver-port=32124\n");
+        var before = await File.ReadAllTextAsync(file);
+        var endpoint = $"/api/v1/servers/{gateId}/gate/check-backends";
+        async Task<HttpResponseMessage> Preview(string mode, string revision, Guid target) => await SendJsonAsync(HttpMethod.Post, endpoint,
+            JsonSerializer.Serialize(new { expectedRevision = revision, mode, classicForwardingMode = "None", backendServerIds = new[] { target } }));
+        using var classic = await Preview("Classic", settings.Revision, _serverId);
+        Assert.Equal(HttpStatusCode.OK, classic.StatusCode);
+        using var classicJson = JsonDocument.Parse(await classic.Content.ReadAsStringAsync());
+        Assert.Contains(classicJson.RootElement[0].GetProperty("problems").EnumerateArray(), x => x.GetString()!.Contains("online-mode=false"));
+        using var lite = await Preview("Lite", settings.Revision, _serverId);
+        Assert.Equal(HttpStatusCode.OK, lite.StatusCode);
+        using var liteJson = JsonDocument.Parse(await lite.Content.ReadAsStringAsync());
+        Assert.Empty(liteJson.RootElement[0].GetProperty("problems").EnumerateArray());
+        using var stale = await Preview("Classic", "stale-revision", _serverId);
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        using var missing = await Preview("Classic", settings.Revision, Guid.NewGuid());
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+        using var proxyTarget = await Preview("Classic", settings.Revision, gateId);
+        Assert.Equal(HttpStatusCode.BadRequest, proxyTarget.StatusCode);
+        await using var check = await factory.CreateDbContextAsync();
+        var saved = await check.GateSettings.SingleAsync(x => x.ServerId == gateId);
+        Assert.Equal(GateMode.Lite, saved.Mode);
+        Assert.Equal(settings.Revision, saved.Revision);
+        Assert.Empty(await check.GateBackends.Where(x => x.GateServerId == gateId).ToListAsync());
+        using var removed = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{gateId}/gate/prepare-backends", JsonSerializer.Serialize(new { expectedRevision = settings.Revision }));
+        Assert.Equal(HttpStatusCode.NotFound, removed.StatusCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(file));
+    }
+
+    [Fact]
+    public async Task Gate_RAM_is_validated_persisted_and_used_for_launch_without_resetting_on_other_edits()
+    {
+        var gateId = Guid.NewGuid();
+        var externalId = Guid.NewGuid();
+        var settings = new GateSettingsEntity { ServerId = gateId, Mode = GateMode.Classic, ClassicForwardingMode = GateForwardingMode.None, ApiPort = 32127 };
+        var factory = _factory!.Services.GetRequiredService<IDbContextFactory<StateDbContext>>();
+        await using (var db = await factory.CreateDbContextAsync())
+        {
+            db.Servers.Add(new ServerEntity { Id = gateId, Name = "RAM Gate", Version = "test", JavaRuntimeId = "", Kind = ServerKind.Gate, Port = 32126,
+                State = ServerState.Stopped, PublicHost = "gate.example.com", MemoryMb = 256, InitialMemoryMb = 256, MemoryLimitMb = 256 });
+            db.GateSettings.Add(settings);
+            await db.SaveChangesAsync();
+        }
+        var executable = Path.Combine(_paths!.GateVersions(gateId), "test", "gate");
+        Directory.CreateDirectory(Path.GetDirectoryName(executable)!);
+        await File.WriteAllTextAsync(executable, "test binary; never executed");
+        var manifest = new GateInstallManifest("test", executable, "test", null, DateTimeOffset.UtcNow);
+        await File.WriteAllTextAsync(_paths.GateInstallManifest(gateId), JsonSerializer.Serialize(manifest, GateReleaseService.JsonOptions));
+        var service = _factory.Services.GetRequiredService<GateProxyService>();
+        var request = new UpdateGateConfigurationRequest(settings.Revision, GateMode.Classic, null, [], GateForwardingMode.None,
+            DefaultExternalBackendId: externalId, ExternalBackends: [new(externalId, "Remote", "127.0.0.1:25566")], MemoryMb: 2048);
+        foreach (var invalid in new[] { 0, -64, 255, 257, 1_048_640 })
+        {
+            var error = await Assert.ThrowsAsync<PanelException>(() => service.UpdateAsync(gateId, request with { MemoryMb = invalid }, default));
+            Assert.Equal("GATE_MEMORY_INVALID", error.Code);
+        }
+        var components = GateConfigurationService.DefaultClassic() with { ViaEnabled = true, BedrockEnabled = true, BedrockManagedEnabled = true };
+        var insufficient = await Assert.ThrowsAsync<PanelException>(() => service.UpdateAsync(gateId, request with { MemoryMb = 256, Classic = components }, default));
+        Assert.Equal("GATE_MEMORY_INVALID", insufficient.Code);
+        var saved = await service.UpdateAsync(gateId, request, default);
+        Assert.Equal(2048, saved.Configuration.MemoryMb);
+        var launch = await service.PrepareLaunchAsync(gateId, default);
+        Assert.Equal(2048, launch.MemoryLimitMb);
+        var updated = await service.UpdateAsync(gateId, request with { ExpectedRevision = saved.Configuration.Revision, Mode = GateMode.Lite, MemoryMb = null }, default);
+        Assert.Equal(2048, updated.Configuration.MemoryMb);
+        Assert.Equal(2048, (await service.PrepareLaunchAsync(gateId, default)).MemoryLimitMb);
+        await using var check = await factory.CreateDbContextAsync();
+        var entity = await check.Servers.SingleAsync(x => x.Id == gateId);
+        Assert.Equal(2048, entity.MemoryMb);
+        Assert.Equal(2048, entity.MemoryLimitMb);
+        entity.State = ServerState.Running;
+        await check.SaveChangesAsync();
+        var busy = await Assert.ThrowsAsync<PanelException>(() => service.UpdateAsync(gateId, request with { ExpectedRevision = updated.Configuration.Revision, MemoryMb = 4096 }, default));
+        Assert.Equal("GATE_RESTART_REQUIRED", busy.Code);
+        var liveComponents = await Assert.ThrowsAsync<PanelException>(() => service.UpdateAsync(gateId,
+            request with { ExpectedRevision = updated.Configuration.Revision, MemoryMb = 2048, Classic = components }, default));
+        Assert.Equal("GATE_RESTART_REQUIRED", liveComponents.Code);
+        await check.Entry(entity).ReloadAsync();
+        Assert.Equal(2048, entity.MemoryLimitMb);
+    }
+
+    [Fact]
     public async Task Instance_export_rejects_empty_ambiguous_or_missing_selections()
     {
         foreach (var body in new[] { "{}", "{\"all\":false,\"serverIds\":[]}", JsonSerializer.Serialize(new { all = true, serverIds = new[] { _serverId } }) })

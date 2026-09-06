@@ -7,6 +7,7 @@ import { api } from "@/lib/api"
 import type { GateClassicConfigurationDto, GateConfigurationWriteDto, GateForwardingMode, GateMode, GateStatusDto, ServerSummaryDto } from "@/lib/contracts"
 import { MotdEditor } from "@/components/motd-editor"
 import { Page } from "@/components/page"
+import { GateBackendChecks } from "@/components/gate-backend-checks"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
@@ -42,6 +43,7 @@ function GateSettings({ gate, server }: { gate: GateStatusDto; server: ServerSum
   const targetVersion = versions.data?.includes(selectedVersion) ? selectedVersion : (versions.data?.[0] ?? "")
   const [form, setForm] = useState<GateConfigurationWriteDto>({
     expectedRevision: gate.configuration.revision,
+    memoryMb: gate.configuration.memoryMb ?? server.memoryMb,
     mode: gate.configuration.mode,
     defaultServerId: gate.configuration.defaultServerId ?? null,
     defaultExternalBackendId: gate.configuration.defaultExternalBackendId ?? null,
@@ -68,11 +70,6 @@ function GateSettings({ gate, server }: { gate: GateStatusDto; server: ServerSum
     onSuccess: (job) => toast("Gate version change queued", { description: `Follow job ${job.id.slice(0, 8)} in Activity.` }),
     onError: (error) => toast.error(error.message),
   })
-  const prepare = useMutation({
-    mutationFn: () => api.prepareGateBackends(server.id, gate.configuration.revision),
-    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["gate", server.id] }); toast.success("Backend network settings prepared") },
-    onError: (error) => toast.error(error.message),
-  })
   const activeConnections = Math.max(gate.runtime.activeConnections, gate.runtime.onlinePlayers)
   const setValue = <K extends keyof GateConfigurationWriteDto>(key: K, value: GateConfigurationWriteDto[K]) => setForm((current) => ({ ...current, [key]: value }))
   const setClassic = <K extends keyof GateClassicConfigurationDto>(key: K, value: GateClassicConfigurationDto[K]) => setForm((current) => ({ ...current, classic: { ...current.classic, [key]: value } }))
@@ -81,11 +78,14 @@ function GateSettings({ gate, server }: { gate: GateStatusDto; server: ServerSum
     if (mode === "Lite") setTab("general")
   }
 
+  const minimumMemoryMb = form.mode === "Lite" ? 256 : 256 + (form.classic.viaEnabled ? 512 : 0) + (form.classic.bedrockEnabled && form.classic.bedrockManagedEnabled ? 768 : 0)
+  const memoryValid = Number.isInteger(form.memoryMb) && form.memoryMb! >= minimumMemoryMb && form.memoryMb! <= 1_048_576 && form.memoryMb! % 64 === 0
+
   return <Page
     title="Gate settings"
     className="max-w-5xl"
     description={`Proxy behavior and forwarding for ${server.name}. Managed destinations and host routes stay on the Backends page.`}
-    actions={<Button disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending && <Spinner data-icon="inline-start" />}Save settings</Button>}
+    actions={<Button disabled={save.isPending || !memoryValid} onClick={() => save.mutate()}>{save.isPending && <Spinner data-icon="inline-start" />}Save settings</Button>}
   >
     {Boolean(gate.connectionProblems?.length) && <Alert variant="destructive"><AlertTitle>Backend setup prevents joining</AlertTitle><AlertDescription>{gate.connectionProblems?.map((warning) => <p key={warning}>{warning}</p>)}</AlertDescription></Alert>}
     <TooltipProvider delay={250}><Tabs value={tab} onValueChange={setTab}>
@@ -108,7 +108,7 @@ function GateSettings({ gate, server }: { gate: GateStatusDto; server: ServerSum
             {gate.configuration.configurationDirty && <CardAction><Badge variant="outline"><RefreshCwIcon data-icon="inline-start" />Applying changes</Badge></CardAction>}
           </CardHeader>
           <CardContent><FieldGroup>
-            <Field><FieldLabel>Managed backend setup</FieldLabel><FieldDescription>Stop Gate and its backends, save the desired mode, then prepare their network settings. Classic reserves additional memory for Via and managed Bedrock components.</FieldDescription><AlertDialog><AlertDialogTrigger render={<Button variant="outline" disabled={server.state !== "Stopped" || prepare.isPending || form.mode !== gate.configuration.mode} />}>Prepare backends for {gate.configuration.mode}</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Prepare backends for {gate.configuration.mode}?</AlertDialogTitle><AlertDialogDescription>{gate.configuration.mode === "Classic" ? "Backends will use offline mode behind Gate's online authentication and bind only to loopback. Secure-profile enforcement is disabled on the backends. Vanilla uses offline player UUIDs, so existing inventories and permissions may need migration. World files are preserved." : "Restore the backend network settings saved before Classic preparation. Players authenticate with the backend again. Vanilla player UUIDs can differ between modes."} All selected managed servers must be stopped. Original settings and prior property files are retained.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction disabled={prepare.isPending} onClick={() => prepare.mutate()}>Prepare network settings</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog></Field>
+            <Field data-invalid={!memoryValid}><FieldLabel htmlFor="gate-memory">RAM limit (MiB)</FieldLabel><Input id="gate-memory" type="number" min={minimumMemoryMb} max={1_048_576} step={64} value={form.memoryMb ?? ""} disabled={server.state !== "Stopped"} aria-invalid={!memoryValid} onChange={(event) => setValue("memoryMb", Number(event.target.value))} /><FieldDescription>Total RAM for Gate and its child processes. Minimum for the selected components: {minimumMemoryMb} MiB. Stop Gate to change this limit.</FieldDescription>{!memoryValid && <FieldError>Enter at least {minimumMemoryMb} MiB in steps of 64 MiB.</FieldError>}</Field>
             {gate.configuration.lastApplyError && <Field data-invalid><FieldLabel>Last apply failed</FieldLabel><FieldError>{gate.configuration.lastApplyError}</FieldError></Field>}
             <Field><FieldLabel>Proxy mode</FieldLabel><ToggleGroup value={[form.mode]} onValueChange={(values) => values[0] && setMode(values[0] as GateMode)} variant="outline" spacing={0}><ToggleGroupItem value="Lite">Lite</ToggleGroupItem><ToggleGroupItem value="Classic">Classic</ToggleGroupItem></ToggleGroup><FieldDescription>Lite forwards exact hostname routes transparently. Classic enables authentication, status handling, /server switching, forwarding, rate limits, Via, and the other settings in the Classic tab.</FieldDescription></Field>
             <Field><FieldLabel htmlFor="gate-listener-port">Real local listener port</FieldLabel><Input id="gate-listener-port" type="number" min={1024} max={65535} value={form.listenerPort} disabled={gate.runtime.state === "Running"} onChange={(event) => setValue("listenerPort", Number(event.target.value))} /><FieldDescription>Stop Gate before changing this locally bound port.</FieldDescription></Field>
@@ -122,6 +122,7 @@ function GateSettings({ gate, server }: { gate: GateStatusDto; server: ServerSum
         <ClassicSettings serverId={server.id} serverName={server.name} gate={gate} form={form} setValue={setValue} setClassic={setClassic} />
       </TabsContent>
     </Tabs></TooltipProvider>
+    <GateBackendChecks serverId={server.id} form={form} />
   </Page>
 }
 

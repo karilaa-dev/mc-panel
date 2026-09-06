@@ -79,7 +79,7 @@ or clean-host/24-hour acceptance claim was made for that revision.
   `/var/tmp/mcpanel-production-24h-gatefix-20260905`. The harness now copies the
   installed binaries into its evidence directory, so later panel updates cannot
   silently change the build being tested. No completed 24-hour result is claimed.
-- Gate version selection, mode preparation, memory admission, and live protocol
+- Gate version selection, manual backend setup, memory admission, and live protocol
   checks are documented in [Gate setup](deploy/GATE.md). The current suite has
   349 passing API tests and 141 passing frontend tests.
 - npm audit reports zero vulnerabilities after updating the affected transitive

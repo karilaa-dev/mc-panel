@@ -4,6 +4,7 @@ import { PlusIcon, RouteIcon, ServerIcon, Trash2Icon } from "lucide-react"
 import { useParams } from "react-router-dom"
 import { toast } from "sonner"
 import { Page } from "@/components/page"
+import { GateBackendChecks } from "@/components/gate-backend-checks"
 import { api } from "@/lib/api"
 import { serverKindLabel } from "@/lib/server-kind"
 import { createClientRequestId } from "@/lib/client-request-id"
@@ -134,6 +135,8 @@ function GateBackendsEditor({ gate, servers }: { gate: GateStatusDto; servers: S
         {form.externalBackends.length > 0 && <FieldSet><FieldLegend variant="label">Configured external servers</FieldLegend><FieldGroup className="gap-4">{form.externalBackends.map((backend) => <FieldSet key={backend.id} className="grid gap-3 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_auto] sm:items-end"><FieldLegend className="sr-only">{backend.name}</FieldLegend><Field><FieldLabel htmlFor={`external-name-${backend.id}`}>Display name</FieldLabel><Input id={`external-name-${backend.id}`} aria-label={`Display name for ${backend.name}`} value={backend.name} maxLength={64} onChange={(event) => updateExternal(backend.id, { name: event.target.value })} /></Field><Field><FieldLabel htmlFor={`external-address-${backend.id}`}>Backend address</FieldLabel><Input id={`external-address-${backend.id}`} aria-label={`Address for ${backend.name}`} value={backend.address} onChange={(event) => updateExternal(backend.id, { address: event.target.value })} /></Field><Button type="button" size="icon" variant="outline" onClick={() => removeExternal(backend.id)}><Trash2Icon data-icon="inline-start" /><span className="sr-only">Remove {backend.name}</span></Button></FieldSet>)}</FieldGroup></FieldSet>}
       </CardContent>
     </Card>
+
+    <GateBackendChecks serverId={gate.serverId} form={form} />
 
     <Card size="sm">
       <CardHeader><CardTitle>Default backend</CardTitle><CardDescription>The Gate server’s advertised hostname routes here. Classic mode also exposes every selected backend through /server.</CardDescription></CardHeader>
