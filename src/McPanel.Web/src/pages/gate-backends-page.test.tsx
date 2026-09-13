@@ -97,4 +97,43 @@ describe("GateBackendsPage", () => {
       externalBackends: [expect.objectContaining({ name: "Remote survival", address: "mc.remote.example:25570" })],
     })))
   })
+
+  it("saves hostnames for managed and external destinations", async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const managedRow = await screen.findByRole("group", { name: "Managed backend Lobby" })
+    await user.type(within(managedRow).getByRole("textbox", { name: "Hostname for Lobby" }), "lobby.example.com")
+    await user.type(screen.getByLabelText("Display name"), "Remote")
+    await user.type(screen.getByLabelText("Backend address"), "remote.internal:25566")
+    await user.click(screen.getByRole("button", { name: "Add server" }))
+    const externalRow = screen.getByRole("group", { name: "Remote" })
+    await user.type(within(externalRow).getByRole("textbox", { name: "Hostname for Remote" }), "remote.example.com")
+    await user.click(screen.getByRole("button", { name: "Save backends" }))
+    await waitFor(() => expect(mockedApi.saveGate).toHaveBeenCalled())
+    const request = mockedApi.saveGate.mock.calls[0][1]
+    expect(request.backendHostnames).toEqual({ "server-1": "lobby.example.com", [request.externalBackends[0].id]: "remote.example.com" })
+  })
+
+  it("loads saved hostnames and clears a destination route explicitly", async () => {
+    mockedApi.gate.mockResolvedValue({ ...status, configuration: { ...status.configuration, backendHostnames: { "server-1": "lobby.example.com" } } })
+    const user = userEvent.setup()
+    renderPage()
+    const hostname = await screen.findByRole("textbox", { name: "Hostname for Lobby" })
+    expect(hostname).toHaveValue("lobby.example.com")
+    await user.clear(hostname)
+    await user.click(screen.getByRole("button", { name: "Save backends" }))
+    await waitFor(() => expect(mockedApi.saveGate).toHaveBeenCalledWith("gate-1", expect.objectContaining({ backendHostnames: { "server-1": null } })))
+  })
+
+  it("omits removed destinations from the saved hostname assignments", async () => {
+    const second = { ...lobby, id: "server-2", name: "Survival" }
+    mockedApi.servers.mockResolvedValue([gateServer, lobby, second])
+    mockedApi.gate.mockResolvedValue({ ...status, configuration: { ...status.configuration, backendServerIds: [lobby.id, second.id], backendHostnames: { [lobby.id]: "lobby.example.com", [second.id]: "survival.example.com" } } })
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole("checkbox", { name: "Survival" }))
+    expect(screen.queryByRole("textbox", { name: "Hostname for Survival" })).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Save backends" }))
+    await waitFor(() => expect(mockedApi.saveGate).toHaveBeenCalledWith("gate-1", expect.objectContaining({ backendHostnames: { "server-1": "lobby.example.com" } })))
+  })
 })

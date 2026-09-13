@@ -191,6 +191,61 @@ public sealed class ApiValidationRegressionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Gate_destination_hostnames_persist_and_survive_other_settings_edits()
+    {
+        var gateId = Guid.NewGuid();
+        var externalId = Guid.NewGuid();
+        var settings = new GateSettingsEntity { ServerId = gateId, ApiPort = 32127 };
+        var factory = _factory!.Services.GetRequiredService<IDbContextFactory<StateDbContext>>();
+        await using (var db = await factory.CreateDbContextAsync())
+        {
+            db.Servers.Add(new ServerEntity { Id = gateId, Name = "Hostname Gate", Version = "test", JavaRuntimeId = "", Kind = ServerKind.Gate,
+                Port = 32126, State = ServerState.Stopped, PublicHost = "gate.example.com", MemoryMb = 256, InitialMemoryMb = 256, MemoryLimitMb = 256 });
+            db.GateSettings.Add(settings);
+            await db.SaveChangesAsync();
+        }
+        var service = _factory.Services.GetRequiredService<GateProxyService>();
+        var request = new UpdateGateConfigurationRequest(settings.Revision, GateMode.Lite, _serverId, [_serverId], GateForwardingMode.None,
+            ExternalBackends: [new(externalId, "Remote", "remote.internal:25566")],
+            BackendHostnames: new Dictionary<Guid, string?> { [_serverId] = " Survival.Example.COM ", [externalId] = "remote.example.com" });
+        var saved = await service.UpdateAsync(gateId, request, default);
+        Assert.Equal("survival.example.com", saved.Configuration.BackendHostnames![_serverId]);
+        Assert.Equal("remote.example.com", saved.Configuration.BackendHostnames[externalId]);
+        var refreshed = await service.GetAsync(gateId, default);
+        Assert.Equal("survival.example.com", refreshed.Routes.Single(x => x.ServerId == _serverId).PublicHost);
+
+        var invalid = await Assert.ThrowsAsync<PanelException>(() => service.UpdateAsync(gateId, request with
+        {
+            ExpectedRevision = saved.Configuration.Revision,
+            BackendHostnames = new Dictionary<Guid, string?> { [_serverId] = "same.example.com", [externalId] = "SAME.example.com" }
+        }, default));
+        Assert.Equal("GATE_CONFIG_INVALID", invalid.Code);
+        Assert.Equal(saved.Configuration.Revision, (await service.GetAsync(gateId, default)).Configuration.Revision);
+        var missing = await Assert.ThrowsAsync<PanelException>(() => service.UpdateAsync(gateId, request with
+        {
+            ExpectedRevision = saved.Configuration.Revision, BackendHostnames = new Dictionary<Guid, string?> { [Guid.NewGuid()] = "missing.example.com" }
+        }, default));
+        Assert.Equal("GATE_CONFIG_INVALID", missing.Code);
+        var nonGate = await Assert.ThrowsAsync<PanelException>(() => service.UpdateAsync(_serverId, request, default));
+        Assert.Equal("GATE_NOT_FOUND", nonGate.Code);
+
+        var edited = await service.UpdateAsync(gateId, request with { ExpectedRevision = saved.Configuration.Revision, Mode = GateMode.Classic, BackendHostnames = null }, default);
+        Assert.Equal("survival.example.com", edited.Configuration.BackendHostnames![_serverId]);
+        Assert.Equal("remote.example.com", edited.Configuration.BackendHostnames[externalId]);
+        var cleared = await service.UpdateAsync(gateId, request with
+        {
+            ExpectedRevision = edited.Configuration.Revision, ExternalBackends = [],
+            BackendHostnames = new Dictionary<Guid, string?> { [_serverId] = null }
+        }, default);
+        Assert.Null(cleared.Configuration.BackendHostnames![_serverId]);
+        await using var check = await factory.CreateDbContextAsync();
+        var persisted = GateConfigurationService.BackendHostnames(await check.GateSettings.SingleAsync(x => x.ServerId == gateId));
+        Assert.Single(persisted);
+        Assert.Null(persisted[_serverId]);
+        Assert.Null((await check.Servers.SingleAsync(x => x.Id == _serverId)).PublicHost);
+    }
+
+    [Fact]
     public async Task Instance_export_rejects_empty_ambiguous_or_missing_selections()
     {
         foreach (var body in new[] { "{}", "{\"all\":false,\"serverIds\":[]}", JsonSerializer.Serialize(new { all = true, serverIds = new[] { _serverId } }) })

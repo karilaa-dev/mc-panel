@@ -323,6 +323,7 @@ export const defaultGateClassicConfiguration: GateClassicConfigurationDto = {
   bedrockBackendFloodgateServerIds: [],
 }
 export interface GateConfigurationDto {
+  backendHostnames?: Record<string, string | null>
   memoryMb?: number
   minimumMemoryMb?: number
   mode: GateMode
@@ -387,6 +388,7 @@ export interface GateStatusDto {
   warnings: string[]
 }
 export interface GateConfigurationWriteDto {
+  backendHostnames?: Record<string, string | null>
   memoryMb?: number
   expectedRevision: string
   mode: GateMode

@@ -447,6 +447,18 @@ public sealed class GateConfigurationService(PanelPaths paths)
 
     public static string? NormalizePublicHost(string? input) => NormalizeHost(input);
 
+    // Missing entries preserve existing advertised-address routes. An explicit null removes a route.
+    public static Dictionary<Guid, string?> BackendHostnames(GateSettingsEntity settings) =>
+        settings.BackendHostnamesJson is null ? [] :
+            JsonSerializer.Deserialize<Dictionary<Guid, string?>>(settings.BackendHostnamesJson, GateReleaseService.JsonOptions) ?? [];
+
+    public static string? NormalizeBackendHostname(string? input)
+    {
+        try { return NormalizeHost(input); }
+        catch (PanelException)
+        { throw InvalidConfig("A Gate destination hostname must be a hostname or IP address without a scheme, path, or port."); }
+    }
+
     public static ParsedAdvertisedAddress? ParseAdvertisedAddress(string? input)
     {
         if (string.IsNullOrWhiteSpace(input)) return null;
@@ -513,12 +525,19 @@ public sealed class GateConfigurationService(PanelPaths paths)
         if (gate.Kind != ServerKind.Gate) throw InvalidConfig("The selected server is not a Gate proxy.");
         externalBackends ??= [];
         var gateHost = gate.PublicHost ?? NormalizeHost(globalHost);
+        var hostnames = BackendHostnames(settings);
         var targets = new List<GateBackendTarget>();
         foreach (var backend in backends)
+        {
+            var hasOverride = hostnames.TryGetValue(backend.Id, out var hostname);
             targets.Add(new GateBackendTarget(backend.Id, backend.Name,
-                await BackendAddressAsync(backend, cancellationToken), backend.PublicHost, backend.PublicPort, "Managed"));
+                await BackendAddressAsync(backend, cancellationToken),
+                NormalizeBackendHostname(hasOverride ? hostname : backend.PublicHost),
+                hasOverride ? gate.PublicPort ?? gate.Port : backend.PublicPort, "Managed"));
+        }
         targets.AddRange(externalBackends.Select(backend => new GateBackendTarget(
-            backend.Id, backend.Name, FormatBackendAddress(backend.Host, backend.Port), null, null, "External")));
+            backend.Id, backend.Name, FormatBackendAddress(backend.Host, backend.Port),
+            NormalizeBackendHostname(hostnames.GetValueOrDefault(backend.Id)), gate.PublicPort ?? gate.Port, "External")));
         if (targets.Select(x => x.Id).Distinct().Count() != targets.Count)
             throw InvalidConfig("Gate backend identifiers must be unique.");
         if (targets.GroupBy(x => x.Address, StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
@@ -534,7 +553,7 @@ public sealed class GateConfigurationService(PanelPaths paths)
         foreach (var backend in targets.Where(x => x.PublicHost is not null))
         {
             if (used.TryGetValue(backend.PublicHost!, out var existing) && existing != backend.Id)
-                throw InvalidConfig($"The advertised hostname {backend.PublicHost} routes to more than one backend in this Gate instance.");
+                throw InvalidConfig($"The hostname {backend.PublicHost} routes to more than one backend in this Gate instance.");
             used[backend.PublicHost!] = backend.Id;
         }
         var routes = targets.Select(backend =>
@@ -871,7 +890,8 @@ public sealed class GateProxyService(
                 settings.DefaultExternalBackendId,
                 externalBackends.Select(x => new GateExternalBackendDto(
                     x.Id, x.Name, GateConfigurationService.FormatAddress(x.Host, x.Port))).ToList(),
-                GateConfigurationService.Classic(settings), GateConfigurationService.MemoryLimitMb(gate, settings), GateConfigurationService.MemoryLimitMb(settings)),
+                GateConfigurationService.Classic(settings), GateConfigurationService.MemoryLimitMb(gate, settings), GateConfigurationService.MemoryLimitMb(settings),
+                generated.Routes.ToDictionary(x => x.ServerId, x => x.PublicHost)),
             generated.Routes, warnings, generated.ConnectionProblems);
     }
 
@@ -931,6 +951,12 @@ public sealed class GateProxyService(
             throw new PanelException(400, "GATE_CONFIG_INVALID", "The default external backend must be in this Gate instance's backend list.");
         if (request.DefaultServerId is not null && request.DefaultExternalBackendId is not null)
             throw new PanelException(400, "GATE_CONFIG_INVALID", "Choose only one default backend.");
+        var selectedIds = ids.Concat(externalBackends.Select(x => x.Id)).ToHashSet();
+        var hostnames = request.BackendHostnames ?? GateConfigurationService.BackendHostnames(settings);
+        if (request.BackendHostnames is not null && hostnames.Keys.Any(id => !selectedIds.Contains(id)))
+            throw new PanelException(400, "GATE_CONFIG_INVALID", "Hostnames can only be assigned to this Gate instance's selected backends.");
+        settings.BackendHostnamesJson = JsonSerializer.Serialize(hostnames.Where(x => selectedIds.Contains(x.Key))
+            .ToDictionary(x => x.Key, x => GateConfigurationService.NormalizeBackendHostname(x.Value)), GateReleaseService.JsonOptions);
         if (request.ListenerPort is { } listenerPort && listenerPort != gate.Port)
         {
             if (listenerPort is < 1024 or > 65535)

@@ -5,7 +5,7 @@ namespace McPanel.Api.Data;
 /// <summary>Explicit, additive SQLite migrations. The console schema remains compatible with runtime protocol 1.</summary>
 public static class SchemaMigration
 {
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
     public const int ConsoleVersion = 1;
 
     public static string Script(int version)

@@ -158,7 +158,8 @@ public sealed record GateConfigurationDto(
     int ListenerPort = 25565, bool StartOnBoot = false, bool CrashRecovery = true,
     Guid? DefaultExternalBackendId = null,
     IReadOnlyList<GateExternalBackendDto>? ExternalBackends = null,
-    GateClassicConfigurationDto? Classic = null, int MemoryMb = 256, int MinimumMemoryMb = 256);
+    GateClassicConfigurationDto? Classic = null, int MemoryMb = 256, int MinimumMemoryMb = 256,
+    IReadOnlyDictionary<Guid, string?>? BackendHostnames = null);
 public sealed record GateExternalBackendDto(Guid Id, string Name, string Address);
 public sealed record GateExternalBackendWriteDto(Guid Id, string? Name, string Address);
 public sealed record UpdateGateConfigurationRequest(
@@ -168,7 +169,8 @@ public sealed record UpdateGateConfigurationRequest(
     bool? StartOnBoot = null, bool? CrashRecovery = null,
     Guid? DefaultExternalBackendId = null,
     IReadOnlyList<GateExternalBackendWriteDto>? ExternalBackends = null,
-    GateClassicConfigurationDto? Classic = null, int? MemoryMb = null);
+    GateClassicConfigurationDto? Classic = null, int? MemoryMb = null,
+    IReadOnlyDictionary<Guid, string?>? BackendHostnames = null);
 public sealed record GateInstallationDto(bool Installed, string? Version, string? LatestVersion, bool UpdateAvailable);
 public sealed record GateRuntimeDto(
     RuntimeProcessState State, bool DesiredRunning, int? ProcessId, DateTimeOffset? StartedAt,

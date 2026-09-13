@@ -131,6 +131,84 @@ public sealed class GateConfigurationServiceTests : IDisposable
         Assert.StartsWith(_paths.Instance(gate.Id), _paths.GateVelocitySecret(gate.Id), StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(GateMode.Lite)]
+    [InlineData(GateMode.Classic)]
+    public async Task Destination_hostnames_route_managed_and_external_servers_only_on_the_selected_Gate(GateMode mode)
+    {
+        var gate = Gate(25570);
+        var backend = Backend("Survival", 25566, "old.example.com");
+        WriteProperties(backend);
+        var external = new GateExternalBackendEntity { Id = Guid.NewGuid(), GateServerId = gate.Id, Name = "Remote", Host = "remote.internal", Port = 25567 };
+        var settings = Settings(gate, mode, backend.Id);
+        settings.BackendHostnamesJson = JsonSerializer.Serialize(new Dictionary<Guid, string?>
+        {
+            [backend.Id] = " SURVIVAL.Example.COM ", [external.Id] = "bücher.example"
+        });
+        var service = new GateConfigurationService(_paths);
+        var generated = await service.GenerateAsync(gate, settings, [backend], "play.example.com", default, [external]);
+        using var json = JsonDocument.Parse(generated.Json);
+        var config = json.RootElement.GetProperty("config");
+        if (mode == GateMode.Lite)
+        {
+            var routes = config.GetProperty("lite").GetProperty("routes").EnumerateArray().ToList();
+            Assert.Equal(3, routes.Count);
+            Assert.Contains(routes, route => route.GetProperty("host").GetString() == "survival.example.com" && route.GetProperty("backend").GetString() == "127.0.0.1:25566");
+            Assert.Contains(routes, route => route.GetProperty("host").GetString() == "xn--bcher-kva.example" && route.GetProperty("backend").GetString() == "remote.internal:25567");
+        }
+        else
+        {
+            var forced = config.GetProperty("forcedHosts");
+            Assert.Equal(3, forced.EnumerateObject().Count());
+            Assert.Equal(GateConfigurationService.StableName(backend.Id), forced.GetProperty("survival.example.com")[0].GetString());
+            Assert.Equal(GateConfigurationService.StableName(external.Id), forced.GetProperty("xn--bcher-kva.example")[0].GetString());
+        }
+        Assert.Equal("survival.example.com:25570", generated.Routes.Single(x => x.ServerId == backend.Id).ConnectionAddress);
+        Assert.Equal("GateHost", generated.Routes.Single(x => x.ServerId == external.Id).RouteKind);
+        Assert.DoesNotContain("old.example.com", generated.Json);
+
+        var other = Gate(25571);
+        var otherRoutes = await service.GenerateAsync(other, Settings(other, mode, backend.Id), [backend], "other.example.com", default);
+        Assert.Equal("old.example.com", Assert.Single(otherRoutes.Routes).PublicHost);
+        Assert.Equal("old.example.com", backend.PublicHost);
+
+        settings.BackendHostnamesJson = JsonSerializer.Serialize(new Dictionary<Guid, string?> { [backend.Id] = null, [external.Id] = " " });
+        var cleared = await service.GenerateAsync(gate, settings, [backend], "play.example.com", default, [external]);
+        Assert.All(cleared.Routes, route => Assert.Null(route.PublicHost));
+        Assert.DoesNotContain("old.example.com", cleared.Json);
+        Assert.Contains("play.example.com", cleared.Json);
+    }
+
+    [Theory]
+    [InlineData(GateMode.Lite, "SURVIVAL.EXAMPLE.COM")]
+    [InlineData(GateMode.Classic, "SURVIVAL.EXAMPLE.COM")]
+    [InlineData(GateMode.Lite, "PLAY.EXAMPLE.COM")]
+    [InlineData(GateMode.Classic, "PLAY.EXAMPLE.COM")]
+    public async Task Destination_hostnames_cannot_conflict_with_another_destination_or_the_default(GateMode mode, string hostname)
+    {
+        var gate = Gate(25565);
+        var backend = Backend("Survival", 25566, "survival.example.com");
+        WriteProperties(backend);
+        var external = new GateExternalBackendEntity { Id = Guid.NewGuid(), GateServerId = gate.Id, Name = "Remote", Host = "remote.internal" };
+        var settings = Settings(gate, mode, backend.Id);
+        settings.BackendHostnamesJson = JsonSerializer.Serialize(new Dictionary<Guid, string?> { [external.Id] = hostname });
+        var error = await Assert.ThrowsAsync<PanelException>(() => new GateConfigurationService(_paths)
+            .GenerateAsync(gate, settings, [backend], "play.example.com", default, [external]));
+        Assert.Equal("GATE_CONFIG_INVALID", error.Code);
+        Assert.Contains("more than one backend", error.Message);
+    }
+
+    [Theory]
+    [InlineData("https://survival.example.com")]
+    [InlineData("survival.example.com:25565")]
+    [InlineData("survival.example.com/path")]
+    [InlineData("*.example.com")]
+    public void Destination_hostnames_reject_addresses_and_wildcards(string hostname)
+    {
+        var error = Assert.Throws<PanelException>(() => GateConfigurationService.NormalizeBackendHostname(hostname));
+        Assert.Equal("GATE_CONFIG_INVALID", error.Code);
+    }
+
     [Fact]
     public async Task Classic_configuration_emits_the_complete_managed_feature_surface()
     {

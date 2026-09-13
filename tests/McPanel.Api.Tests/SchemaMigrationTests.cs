@@ -78,6 +78,31 @@ public sealed class SchemaMigrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Gate_hostname_migration_preserves_existing_settings_and_a_version_two_backup()
+    {
+        var gateId = Guid.NewGuid();
+        await using (var connection = new SqliteConnection($"Data Source={FileName};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await ExecuteAsync(connection, SchemaMigration.Script(1));
+            await ExecuteAsync(connection, SchemaMigration.Script(2));
+            await ExecuteAsync(connection, $"""
+                INSERT INTO GateSettings (ServerId, Mode, ClassicForwardingMode, ApiPort, Revision, ConfigurationDirty, UpdatedAt)
+                VALUES ('{gateId.ToString().ToUpperInvariant()}', 'Lite', 'None', 18080, 'preserved', 0, 1234);
+                """);
+        }
+        await SchemaMigration.MigrateAsync(FileName);
+        await using var db = new StateDbContext(new DbContextOptionsBuilder<StateDbContext>().UseSqlite($"Data Source={FileName};Pooling=False").Options);
+        var settings = await db.GateSettings.SingleAsync();
+        Assert.Equal(gateId, settings.ServerId);
+        Assert.Equal("preserved", settings.Revision);
+        Assert.Null(settings.BackendHostnamesJson);
+        Assert.False(settings.ConfigurationDirty);
+        var backup = Assert.Single(Directory.GetFiles(Path.Combine(_root, "schema-backups"), "*.db"));
+        Assert.Equal(2, await SchemaMigration.CheckAsync(backup));
+    }
+
+    [Fact]
     public async Task Fresh_schema_and_ef_created_current_schema_are_both_supported()
     {
         await SchemaMigration.MigrateAsync(FileName);

@@ -39,6 +39,20 @@ Lite leaves authentication to each backend. Normally use `online-mode=true` and
 disable backend requirements for Velocity, BungeeCord, and PROXY protocol.
 Saved Classic forwarding options are inactive in Lite.
 
+## Destination hostnames
+
+On a Gate instance's **Backends** page, set **Hostname** in the server's row
+to send players directly to that managed or external Minecraft server. For example, `survival.example.com` can route to Survival
+while `creative.example.com` routes to Creative through the same Gate port.
+Point these domains to Gate's public IP and use its public listener port, or
+configure DNS SRV records for a different public port.
+
+Enter only a hostname, without a scheme, path, or port. Each hostname must select
+one destination per Gate instance. These settings apply only to that Gate and
+work in both Lite and Classic modes. Clear a field to remove its dedicated route;
+the Gate address still routes to the selected default backend. Existing routes
+from managed servers' advertised addresses remain available until edited here.
+
 ## Compatibility results
 
 The compact comparison shows only settings that need changes or manual
