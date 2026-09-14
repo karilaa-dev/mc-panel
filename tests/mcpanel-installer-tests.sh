@@ -233,6 +233,13 @@ test_import_option_parsing() {
       "sudo|-n -- $script_path __import-server $source /srv/mcpanel /srv/mcpanel-config /srv/mcpanel-data panel-test --name Imported world --kind paper --version 1.21.8 --launch-target paper.jar --java-runtime /usr/bin/java --memory-mb 4096 --port 25570 --jvm-args -Dfixture=true --accept-eula --non-interactive --json" \
       "$output" \
       "import handoff"
+    local progress_log="$test_root/import-progress.log"
+    sudo() {
+      [[ -s "$progress_log" ]] || fail "import preparation was silent before the privileged handoff"
+      printf 'sudo|%s\n' "$*"
+    }
+    command_import_server "$source" > /dev/null 2> "$progress_log"
+    [[ "$(< "$progress_log")" == *"staged before any details are requested"* ]] || fail "import preparation did not explain the wait"
     assert_fails "unknown import option" command_import_server "$source" --unknown
     assert_fails "multiple import sources" command_import_server "$source" "$test_root"
   )

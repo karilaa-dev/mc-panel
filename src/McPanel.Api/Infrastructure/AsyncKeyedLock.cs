@@ -13,6 +13,12 @@ public sealed class AsyncKeyedLock
         return new Releaser(semaphore);
     }
 
+    public IDisposable? TryAcquire(Guid key)
+    {
+        var semaphore = _locks.GetOrAdd(key, static _ => new SemaphoreSlim(1, 1));
+        return semaphore.Wait(0) ? new Releaser(semaphore) : null;
+    }
+
     private sealed class Releaser(SemaphoreSlim semaphore) : IDisposable
     {
         private int _released;

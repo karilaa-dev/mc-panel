@@ -1,5 +1,6 @@
+import userEvent from "@testing-library/user-event"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen } from "@testing-library/react"
+import { act, render, screen, waitFor } from "@testing-library/react"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { api } from "@/lib/api"
@@ -39,7 +40,7 @@ function server(state: ServerState): ServerSummaryDto {
 function renderPage(state: ServerState) {
   mockedApi.server.mockResolvedValue(server(state))
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
+  const view = render(
     <MemoryRouter initialEntries={["/servers/server-1"]}>
       <QueryClientProvider client={client}>
         <Routes>
@@ -48,6 +49,7 @@ function renderPage(state: ServerState) {
       </QueryClientProvider>
     </MemoryRouter>,
   )
+  return { ...view, client }
 }
 
 describe("ServerOverviewPage lifecycle controls", () => {
@@ -81,9 +83,24 @@ describe("ServerOverviewPage lifecycle controls", () => {
     expect(screen.getByRole("button", { name: "Update" })).toHaveProperty("disabled", !update)
     expect(screen.getByRole("button", { name: "Restart" })).toHaveProperty("disabled", !restart)
     expect(screen.getByRole("button", { name: primary })).toHaveProperty("disabled", !["Start", "Stop"].includes(primary))
-    expect(screen.queryByRole("button", { name: "Force-kill process" }) !== null).toBe(kill)
+    expect(screen.queryByRole("button", { name: "Stop immediately" }) !== null).toBe(kill)
     expect(screen.queryByRole("button", { name: "Delete server" }) !== null).toBe(remove)
     if (!["Start"].includes(primary)) expect(screen.queryByRole("button", { name: "Start" })).not.toBeInTheDocument()
+  })
+
+  it("stops during startup even while the start request is pending", async () => {
+    const user = userEvent.setup()
+    mockedApi.lifecycle.mockReturnValue(new Promise(() => {}))
+    const { client } = renderPage("Stopped")
+    await user.click(await screen.findByRole("button", { name: "Start" }))
+    mockedApi.server.mockResolvedValue(server("Starting"))
+    act(() => client.setQueryData(["server", "server-1"], server("Starting")))
+
+    const immediateStop = await screen.findByRole("button", { name: "Stop immediately" })
+    expect(immediateStop).toBeEnabled()
+    await user.click(immediateStop)
+    await waitFor(() => expect(mockedApi.kill).toHaveBeenCalledWith("server-1"))
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
   })
 
   it("shows the compact advertised-address editor on Overview", async () => {

@@ -15,6 +15,46 @@ public sealed class OperationQueueTests : IDisposable
     private readonly string _database = Path.Combine(Path.GetTempPath(), $"mcpanel-operation-queue-{Guid.NewGuid():N}.db");
 
     [Fact]
+    public async Task Immediate_operation_runs_while_all_workers_are_busy()
+    {
+        var factory = new TestStateDbContextFactory(new DbContextOptionsBuilder<StateDbContext>()
+            .UseSqlite($"Data Source={_database};Cache=Shared").Options);
+        await using (var db = await factory.CreateDbContextAsync()) await db.Database.EnsureCreatedAsync();
+        var services = new ServiceCollection(); services.AddLogging(); services.AddSignalR();
+        await using var provider = services.BuildServiceProvider();
+        using var queue = new OperationQueue(provider, factory, provider.GetRequiredService<IHubContext<PanelHub>>(),
+            new SessionAudience(), new TestApplicationLifetime(), NullLogger<OperationQueue>.Instance);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workers = 0;
+        for (var index = 0; index < 4; index++)
+            await queue.EnqueueAsync("Blocked", null, async (_, _, token) =>
+            {
+                if (Interlocked.Increment(ref workers) == 4) entered.TrySetResult();
+                await release.Task.WaitAsync(token);
+            }, default);
+        await queue.StartAsync(default);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var executed = false;
+            var job = await queue.RunImmediatelyAsync("Kill", Guid.NewGuid(), _ =>
+            {
+                executed = true;
+                return Task.CompletedTask;
+            }, default).WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.True(executed);
+            Assert.Equal(JobState.Completed, job.State);
+            Assert.Equal(JobState.Completed, (await queue.GetAsync(job.Id, default))!.State);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await queue.StopAsync(default);
+        }
+    }
+
+    [Fact]
     public async Task Four_stalled_downloads_time_out_and_release_workers_for_later_work()
     {
         var factory = new TestStateDbContextFactory(new DbContextOptionsBuilder<StateDbContext>().UseSqlite($"Data Source={_database};Cache=Shared").Options);

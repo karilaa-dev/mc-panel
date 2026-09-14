@@ -13,6 +13,7 @@ vi.mock("@/lib/api", () => ({
     servers: vi.fn(),
     logout: vi.fn(),
     lifecycle: vi.fn(),
+    kill: vi.fn(),
   },
 }))
 
@@ -29,6 +30,7 @@ function renderShell(initialEntry = "/") {
               <Route index element={<Page title="Dashboard destination"><p>Dashboard content</p></Page>} />
               <Route path="create" element={<h1>Create destination</h1>} />
               <Route path="servers/:serverId" element={<h1>Server destination</h1>} />
+              <Route path="servers/:serverId/console" element={<h1>Console destination</h1>} />
             </Route>
           </Routes>
         </ThemeProvider>
@@ -97,6 +99,19 @@ describe("AppShell", () => {
     await user.click(await screen.findByRole("button", { name: "Start" }))
 
     await waitFor(() => expect(mockedApi.lifecycle).toHaveBeenCalledWith("server-1", "start"))
+  })
+
+  it("keeps immediate stop available in the console header while starting", async () => {
+    mockedApi.servers.mockResolvedValue([{
+      id: "server-1", name: "Test server", kind: "Paper", version: "1.21.8", state: "Starting", port: 25565,
+      memoryMb: 2048, playerCount: 0, maxPlayers: 20, cpuPercent: 0, memoryUsedMb: 0, uptimeSeconds: 0,
+      restartRequired: false, startOnBoot: false,
+    }])
+    mockedApi.kill.mockResolvedValue({ id: "kill-job", type: "Kill", state: "Completed", progress: 100 })
+    const user = userEvent.setup()
+    renderShell("/servers/server-1/console")
+    await user.click(await screen.findByRole("button", { name: "Stop immediately" }))
+    await waitFor(() => expect(mockedApi.kill).toHaveBeenCalledWith("server-1"))
   })
 
   it("orders dashboard, active server, expandable servers, and system navigation", async () => {

@@ -557,6 +557,9 @@ internal sealed partial class RuntimeEngine(
             await StopAsync(launch.ServerId, false, CancellationToken.None);
             throw new InvalidOperationException("Minecraft did not become ready before its startup deadline. Inspect the console before retrying.");
         }
+        using var readyLock = await _lifecycleLocks.AcquireAsync(launch.ServerId, cancellationToken);
+        if (managed.StopRequested || !_active.TryGetValue(launch.ServerId, out var current) || !ReferenceEquals(current, managed))
+            throw new InvalidOperationException("The server stopped while becoming ready.");
         snapshot = Measure(managed) with { ServerId = launch.ServerId, State = RuntimeProcessState.Running };
         _status[launch.ServerId] = snapshot; await TryPersistAsync(snapshot, cancellationToken);
         Changed();
@@ -574,6 +577,8 @@ internal sealed partial class RuntimeEngine(
         var stopping = Measure(managed) with { ServerId = id, State = RuntimeProcessState.Stopping };
         _status[id] = stopping; await TryPersistAsync(stopping, cancellationToken);
         Changed();
+        // A second stop may force-kill while graceful shutdown is waiting.
+        lifecycle.Dispose();
         if (kill)
         {
             try { managed.Process.Kill(true); } catch { }

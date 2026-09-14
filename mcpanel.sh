@@ -1511,6 +1511,7 @@ root_import_server() {
   source="$(realpath -e -- "$raw_source" 2>/dev/null)" || \
     die_import "$json" 3 IMPORT_SOURCE_NOT_FOUND "import source no longer exists"
   [[ -d "$source" || -f "$source" ]] || die "import source must be a directory or regular archive"
+  if (( ! json )); then info "Checking import source for unsupported files..." >&2; fi
   if [[ -d "$source" ]] && find -P "$source" \( -type l -o \! -type d \! -type f \) -print -quit | grep -q .; then
     die_import "$json" 3 IMPORT_SPECIAL_FILE "import source contains a symbolic link or special file"
   fi
@@ -1562,6 +1563,7 @@ root_import_server() {
     set -e
     return "$final_rc"
   fi
+  if (( ! json )); then info "Preparing staged file permissions..." >&2; fi
   chown -R "$PANEL_USER:$PANEL_GROUP" "$stage_dir"
 
   set +e
@@ -1602,6 +1604,7 @@ root_import_server() {
       if systemctl is-active --quiet "$service_name.service"; then
         panel_was_active=1
         panel_stopped=1
+        if (( ! json )); then info "Validation passed. Stopping the web panel to register the server..." >&2; fi
         if ! systemctl stop "$service_name.service"; then
           import_rc=5
           if ((json)); then
@@ -1635,12 +1638,14 @@ root_import_server() {
   if ((json)) && [[ -s "$result_file" ]]; then json_result="$(cat -- "$result_file")"; fi
 
   if ((panel_stopped && panel_was_active)); then
+    if (( ! json )); then info "Starting the web panel and waiting for HTTP readiness..." >&2; fi
     if ! systemctl start "$service_name.service" ||
        ! wait_for_active "$service_name.service" ||
        ! wait_for_http "$config_dir"; then
       restart_rc=5
     else
       panel_stopped=0
+      if (( ! json )); then info "The web panel is ready." >&2; fi
     fi
   fi
 
@@ -1929,6 +1934,7 @@ command_import_server() {
     esac
   done
   [[ -n "$source" ]] || die_import "$json" 2 IMPORT_USAGE "import-server requires a source directory or archive"
+  if (( ! json )); then info "Preparing server import. Server files are staged before any details are requested; large servers may take a while." >&2; fi
   require_sudo_access
   require_commands realpath
   [[ ! -L "$source" ]] || die_import "$json" 3 IMPORT_SYMBOLIC_LINK "import source must not be a symbolic link"
