@@ -16,6 +16,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging;
 
 namespace McPanel.Api.Tests;
 
@@ -28,7 +29,7 @@ public sealed class ApiIntegrationCollection
 [Collection(ApiIntegrationCollection.Name)]
 public sealed class ApiValidationRegressionTests : IAsyncLifetime
 {
-    private const string SetupToken = "validation-regression-setup-token";
+    private readonly SetupTokenLog _setupTokens = new();
     private const string JavaId = "validation-test-java";
     private const int MaxUploadBytes = 1_024;
     private readonly string _root = Path.Combine(OperatingSystem.IsLinux() ? "/var/tmp" : Path.GetTempPath(), "mcpanel-validation-api-" + Guid.NewGuid().ToString("N"));
@@ -437,7 +438,7 @@ public sealed class ApiValidationRegressionTests : IAsyncLifetime
             builder.UseEnvironment("Testing");
             builder.UseSetting("Panel:DataDirectory", data);
             builder.UseSetting("Panel:ConfigDirectory", config);
-            builder.UseSetting("Panel:SetupToken", SetupToken);
+            builder.ConfigureLogging(logging => logging.AddProvider(_setupTokens));
             builder.UseSetting("Panel:MaxUploadBytes", MaxUploadBytes.ToString());
         });
         _client = _factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
@@ -475,7 +476,7 @@ done
 
         using (var setup = await SendJsonAsync(HttpMethod.Post, "/api/v1/auth/setup", JsonSerializer.Serialize(new
                {
-                   token = SetupToken,
+                   token = _setupTokens.Latest,
                    username = "validation_admin",
                    password = "validation-test-password"
                })))

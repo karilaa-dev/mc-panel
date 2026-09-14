@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace McPanel.Api.Tests;
 
@@ -11,13 +12,13 @@ public sealed class ApiSmokeTests : IAsyncLifetime
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "mcpanel-api-tests-" + Guid.NewGuid().ToString("N"));
     private WebApplicationFactory<Program>? _factory;
+    private readonly SetupTokenLog _setupTokens = new();
 
     public Task InitializeAsync()
     {
         Environment.SetEnvironmentVariable("MCPANEL_DATA_DIR", _root);
         Environment.SetEnvironmentVariable("MCPANEL_CONFIG_DIR", Path.Combine(_root, "config"));
-        Environment.SetEnvironmentVariable("MCPANEL_SETUP_TOKEN", "test-setup-token-which-is-long");
-        _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => builder.UseEnvironment("Testing"));
+        _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => { builder.UseEnvironment("Testing"); builder.ConfigureLogging(logging => logging.AddProvider(_setupTokens)); });
         return Task.CompletedTask;
     }
 
@@ -57,7 +58,7 @@ public sealed class ApiSmokeTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/v1/servers")).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync($"/api/v1/servers/{Guid.NewGuid()}/mods")).StatusCode);
         using var setup = new HttpRequestMessage(HttpMethod.Post, "/api/v1/auth/setup")
-        { Content = JsonContent.Create(new { token = "test-setup-token-which-is-long", username = "admin", password = "a-long-test-password" }) };
+        { Content = JsonContent.Create(new { token = _setupTokens.Latest, username = "admin", password = "a-long-test-password" }) };
         setup.Headers.Add("X-XSRF-TOKEN", csrf);
         Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(setup)).StatusCode);
         var authenticatedAntiforgery = await client.GetFromJsonAsync<JsonElement>("/api/v1/auth/antiforgery");
@@ -75,7 +76,7 @@ public sealed class ApiSmokeTests : IAsyncLifetime
         var client = _factory!.CreateClient(options);
         var csrf = await AntiforgeryAsync(client);
         using var setup = new HttpRequestMessage(HttpMethod.Post, "/api/v1/auth/setup")
-        { Content = JsonContent.Create(new { token = "test-setup-token-which-is-long", username = "admin", password = "a-long-test-password" }) };
+        { Content = JsonContent.Create(new { token = _setupTokens.Latest, username = "admin", password = "a-long-test-password" }) };
         setup.Headers.Add("X-XSRF-TOKEN", csrf);
         using var setupResponse = await client.SendAsync(setup);
         Assert.Equal(HttpStatusCode.OK, setupResponse.StatusCode);
@@ -117,7 +118,7 @@ public sealed class ApiSmokeTests : IAsyncLifetime
 
         client.Dispose();
         await _factory.DisposeAsync();
-        _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => builder.UseEnvironment("Testing"));
+        _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => { builder.UseEnvironment("Testing"); builder.ConfigureLogging(logging => logging.AddProvider(_setupTokens)); });
         using var restartedClient = _factory.CreateClient(options);
         Assert.Equal(HttpStatusCode.OK, (await GetWithCookieAsync(restartedClient, "/api/v1/servers", loginAuthCookie)).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await PostWithCookieAsync(restartedClient, "/hubs/panel/negotiate?negotiateVersion=1", loginAuthCookie)).StatusCode);
@@ -151,7 +152,7 @@ public sealed class ApiSmokeTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         if (_factory is not null) await _factory.DisposeAsync();
-        Environment.SetEnvironmentVariable("MCPANEL_DATA_DIR", null); Environment.SetEnvironmentVariable("MCPANEL_CONFIG_DIR", null); Environment.SetEnvironmentVariable("MCPANEL_SETUP_TOKEN", null);
+        Environment.SetEnvironmentVariable("MCPANEL_DATA_DIR", null); Environment.SetEnvironmentVariable("MCPANEL_CONFIG_DIR", null);
         if (Directory.Exists(_root)) Directory.Delete(_root, true);
     }
 }

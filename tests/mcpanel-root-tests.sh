@@ -17,7 +17,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 # Exercise a root-only host with no sudo command in PATH.
 mkdir -p "$test_root/bin"
-for test_command in awk basename bash cat chmod cp curl dirname find getent grep gzip id mkdir mktemp realpath rm sha256sum systemctl tar tr uname; do
+for test_command in awk basename bash cat chmod cp curl dirname dpkg find getent grep gzip id mkdir mktemp realpath rm sha256sum systemctl tar tr uname; do
   ln -s "$(command -v "$test_command")" "$test_root/bin/$test_command"
 done
 export PATH="$test_root/bin"

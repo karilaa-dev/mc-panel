@@ -132,6 +132,7 @@ var app = builder.Build();
 using var panelInstanceLock = new FileStream(paths.StateDatabase + ".panel-lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
 using var releasePanelLock = app.Lifetime.ApplicationStopped.Register(panelInstanceLock.Dispose);
 await InitializeAsync(app.Services);
+await app.Services.GetRequiredService<AdminAuthService>().InitializeSetupTokenAsync();
 if (panelOptions.TrustedProxies.Length > 0) app.UseForwardedHeaders();
 app.Use(async (context, next) =>
 {

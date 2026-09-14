@@ -54,7 +54,7 @@ export function AuthScreen({ status }: { status: AuthStatusDto }) {
                 <Field data-invalid={Boolean(errors.token)}>
                   <FieldLabel htmlFor="setup-token">One-time setup token</FieldLabel>
                   <Input id="setup-token" autoComplete="one-time-code" aria-invalid={Boolean(errors.token)} {...register("token")} />
-                  <FieldDescription>Read this from the installer output or protected configuration file.</FieldDescription>
+                  <FieldDescription>Read this from the installer output or latest service startup log. Restarting the panel generates a new token until setup is complete.</FieldDescription>
                   <FieldError errors={[errors.token]} />
                 </Field>
               )}

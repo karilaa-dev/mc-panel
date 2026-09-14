@@ -336,8 +336,9 @@ test_service_security_contract() {
   local panel_unit runtime_unit instances_mode_count
   panel_unit="$(render_panel_unit /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel)"
   runtime_unit="$(render_runtime_unit /opt/mcpanel /etc/mcpanel /var/lib/mcpanel)"
-  [[ "$panel_unit" == *"LoadCredential=mcpanel.setup-token"* ]] || fail "panel unit does not load the setup credential"
-  [[ "$panel_unit" == *'Environment=MCPANEL_SETUP_TOKEN_FILE=%d/mcpanel.setup-token'* ]] || fail "panel unit does not expose the credential file"
+  [[ "$panel_unit" != *'LoadCredential='* ]] || fail "panel setup must not depend on systemd credentials"
+  [[ "$panel_unit" != *'MCPANEL_SETUP_TOKEN'* ]] || fail "panel unit must not configure a persisted token"
+  [[ "$panel_unit" == *'StandardOutput=journal'* ]] || fail "startup token must reach the journal"
   [[ "$panel_unit" == *"UMask=0077"* ]] || fail "panel private umask changed"
   [[ "$panel_unit" != *"RestrictSUIDSGID=yes"* ]] || fail "panel unit blocks regular-instance setgid permission normalization"
   [[ "$runtime_unit" == *"UMask=0007"* ]] || fail "runtime group-writable umask is missing"
@@ -353,6 +354,23 @@ test_service_security_contract() {
   if grep -q 'setup_token_file=' "$test_repo_root/mcpanel.sh"; then
     fail "installer still accepts the retired setup-token file"
   fi
+}
+
+test_distribution_minimum() {
+  local version
+  for version in 12 12.12 13; do
+    validate_distribution_version debian "$version"
+  done
+  for version in 22.04 22.10 24.04 26.04; do
+    validate_distribution_version ubuntu "$version"
+  done
+  for version in 10 11 11.11 '' sid; do
+    assert_fails "unsupported Debian version: $version" validate_distribution_version debian "$version"
+  done
+  for version in 20.04 21.10 22.03 '' unknown; do
+    assert_fails "unsupported Ubuntu version: $version" validate_distribution_version ubuntu "$version"
+  done
+  assert_fails "unsupported distribution" validate_distribution_version alpine 3.23
 }
 
 test_systemd_minimum() {
@@ -558,8 +576,6 @@ test_global_command_scope() {
 test_recovery_configuration_access() (
   local fixture="$test_root/recovery-access"
   local config_dir="$fixture/config" data_dir="$fixture/data"
-  credential_file_for() { printf '%s/credentials/%s.setup-token\n' "$fixture" "$1"; }
-  mktemp() { command mktemp "${1/\/etc\/credstore/$fixture/credentials}"; }
   mkdir -p "$config_dir"
   printf 'ASPNETCORE_URLS=http://0.0.0.0:6050\n' > "$config_dir/mcpanel.env"
   chmod 0600 "$config_dir/mcpanel.env"
@@ -581,21 +597,96 @@ test_recovery_configuration_access() (
     done
     command install "${args[@]}"
   }
-  configure_access_layout "$config_dir" "$data_dir" mcpanel fixture-user
+  configure_access_layout "$config_dir" "$data_dir" fixture-user
   assert_equal "-a -G $PANEL_GROUP fixture-user" "$(cat "$fixture/group-membership")" "regular user gains panel group access"
   assert_equal "640" "$(stat -c %a "$config_dir/mcpanel.env")" "recovery configuration readable by panel group"
   grep -Fxq "root:$PANEL_GROUP $config_dir/mcpanel.env" "$fixture/ownership" || fail "recovery config does not belong to panel group"
   assert_equal 'ASPNETCORE_URLS=http://0.0.0.0:6050' "$(cat "$config_dir/mcpanel.env")" "existing environment preserved"
-  assert_equal "600" "$(stat -c %a "$fixture/credentials/mcpanel.setup-token")" "setup credential remains private"
-  local prior_token group_changes
-  prior_token="$(cat "$fixture/credentials/mcpanel.setup-token")"
+  [[ ! -e "$fixture/credentials" && ! -e "$data_dir/keys/setup-token" ]] || fail "access layout wrote a setup token"
+  local group_changes
   group_changes="$(cat "$fixture/group-membership")"
-  configure_access_layout "$config_dir" "$data_dir" mcpanel root
+  configure_access_layout "$config_dir" "$data_dir" root
   assert_equal "$group_changes" "$(cat "$fixture/group-membership")" "root requires no group membership change"
-  assert_equal "$prior_token" "$(cat "$fixture/credentials/mcpanel.setup-token")" "root update preserves setup credential"
   assert_equal "" "$(report_access_user root)" "root requires no sign-out instruction"
 )
 
+test_runtime_dependencies() (
+  local fixture="$test_root/runtime-dependencies" fixture_architecture="amd64" apt_failure="" before
+  mkdir -p "$fixture"
+  require_root() { :; }
+  dpkg() { [[ "$*" == --print-architecture ]] || fail "unexpected dpkg invocation"; printf '%s\n' "$fixture_architecture"; }
+  dpkg-query() { cat "$fixture/installed"; }
+  apt-cache() {
+    [[ "$*" == pkgnames ]] || fail "unexpected apt-cache invocation"
+    printf '%s\n' libicu-dev libicu72 libicu78 libicu78:i386 libssl3 libssl3t64
+  }
+  apt-get() {
+    printf '%s\n' "$*" >> "$fixture/apt.log"
+    [[ "$1" != "$apt_failure" ]] || return 1
+    if [[ "$1" == install ]]; then
+      [[ "${DEBIAN_FRONTEND:-}" == noninteractive ]] || fail "dependency installation may prompt"
+      [[ "$*" == 'install --yes --no-install-recommends libicu78 libssl3t64' ]] || fail "wrong runtime packages: $*"
+      if [[ "$apt_failure" != no-change ]]; then
+        printf 'libicu78:%s\t%s\tinstalled\nlibssl3t64:%s\t%s\tinstalled\n' \
+          "$fixture_architecture" "$fixture_architecture" "$fixture_architecture" "$fixture_architecture" >> "$fixture/installed"
+      fi
+    fi
+  }
+
+  for fixture_architecture in amd64 arm64; do
+    printf 'ca-certificates\tall\tinstalled\ntzdata\tall\tinstalled\n' > "$fixture/installed"
+    for package in libc6 libgcc-s1 libgssapi-krb5-2 libstdc++6 zlib1g; do
+      printf '%s\t%s\tinstalled\n' "$package" "$fixture_architecture" >> "$fixture/installed"
+    done
+    # Foreign-architecture ICU, dev packages, and unpacked libraries do not count.
+    printf 'libicu78:i386\ti386\tinstalled\nlibicu-dev\t%s\tinstalled\nlibssl3t64\t%s\tunpacked\n' \
+      "$fixture_architecture" "$fixture_architecture" >> "$fixture/installed"
+    assert_equal $'libicu[0-9]+\nlibssl3(t64)?' "$(missing_runtime_dependencies)" "missing native libraries"
+    for apt_failure in update install no-change; do
+      assert_fails "dependency setup failure: $apt_failure" ensure_runtime_dependencies
+    done
+    apt_failure=""
+    ensure_runtime_dependencies >/dev/null
+    assert_equal "" "$(missing_runtime_dependencies)" "native dependencies installed for $fixture_architecture"
+    before="$(cat "$fixture/apt.log")"
+    ensure_runtime_dependencies
+    assert_equal "$before" "$(cat "$fixture/apt.log")" "complete host does not contact APT"
+  done
+)
+
+test_startup_token_report() (
+  local fixture="$test_root/startup-token" output mode=normal
+  local fixture_invocation=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa replacement=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  local fixture_token=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  mkdir -p "$fixture"
+  systemctl() {
+    assert_equal 'show --property InvocationID --value custom-panel.service' "$*" 'startup invocation query'
+    if [[ "$mode" == restart && -e "$fixture/journal-read" ]]; then printf '%s\n' "$replacement";
+    else printf '%s\n' "$fixture_invocation"; fi
+  }
+  journalctl() {
+    [[ "$*" == *"_SYSTEMD_INVOCATION_ID=$fixture_invocation" || "$*" == *"_SYSTEMD_INVOCATION_ID=$replacement" ]] || fail 'journal query was not scoped to the current invocation'
+    if [[ "$mode" == missing ]]; then return 1; fi
+    if [[ "$mode" == restart && "$*" == *"_SYSTEMD_INVOCATION_ID=$fixture_invocation" ]]; then
+      touch "$fixture/journal-read"
+      printf 'First-run setup token: %064d\n' 0
+    else
+      printf 'unrelated startup message\n      First-run setup token: %s\n' "$fixture_token"
+    fi
+  }
+  sleep() { :; }
+  output="$(report_setup_token custom-panel)"
+  [[ "$output" == *"First-run setup token: $fixture_token"* ]] || fail 'installer did not display the startup token'
+  mode=restart
+  output="$(report_setup_token custom-panel)"
+  [[ "$output" == *"First-run setup token: $fixture_token"* && "$output" != *'0000000000000000'* ]] || fail 'installer displayed a token from an old process'
+  mode=missing
+  output="$(report_setup_token custom-panel)"
+  [[ "$output" == *'sudo journalctl -u custom-panel.service'* && "$output" != *"$fixture_token"* ]] || fail 'missing journal should show retrieval instructions'
+)
+
+test_startup_token_report
+test_runtime_dependencies
 test_recovery_configuration_access
 test_option_parsing
 test_rid_detection
@@ -609,6 +700,7 @@ test_import_restart_json
 test_import_stops_panel_after_validation
 test_runtime_generation_wait
 test_service_security_contract
+test_distribution_minimum
 test_systemd_minimum
 test_setup_wizard
 test_sudo_access
