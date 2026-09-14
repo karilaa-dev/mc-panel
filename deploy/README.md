@@ -7,8 +7,10 @@ system files change. Automation works as root or with cached or passwordless sud
 
 ## Host setup
 
-MC Panel supports x86-64 and ARM64 Debian or Ubuntu hosts with systemd 247 or newer and
-cgroup v2. Release installs need `curl`, GNU `tar`, and `sha256sum`. Source
+MC Panel supports x86-64 and ARM64 Debian 12+ or Ubuntu 22.04+ hosts with
+systemd 247 or newer and cgroup v2. Older releases are rejected before dependency
+installation or service changes because their glibc cannot load the bundled SQLite
+library. Release installs need `curl`, GNU `tar`, and `sha256sum`. Source
 builds also need the .NET 10 SDK and Node.js 22 or newer.
 The installer checks the native .NET runtime dependencies and installs missing
 packages through APT before changing the application or its services. This

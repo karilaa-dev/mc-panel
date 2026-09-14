@@ -419,15 +419,25 @@ systemd_service_unit() {
   printf '/etc/systemd/system/%s.service\n' "$1"
 }
 
+validate_distribution_version() {
+  local distribution="$1" version="$2" minimum
+  case "$distribution" in
+    debian) minimum=12 ;;
+    ubuntu) minimum=22.04 ;;
+    *) die "only Debian and Ubuntu systemd hosts are supported (detected ${distribution:-unknown})" ;;
+  esac
+  # The bundled SQLite native library needs newer glibc than Debian 11/Ubuntu 20.04.
+  if [[ ! "$version" =~ ^[0-9]+([.][0-9]+)*$ ]] || ! dpkg --compare-versions "$version" ge "$minimum"; then
+    die "$distribution $minimum or newer is required by the bundled runtime (detected ${version:-unknown})"
+  fi
+}
+
 validate_host() {
   local systemd_version
   [[ -r /etc/os-release ]] || die "cannot identify this operating system"
   # shellcheck disable=SC1091
   source /etc/os-release
-  case "${ID:-}" in
-    debian|ubuntu) ;;
-    *) die "only Debian and Ubuntu systemd hosts are supported (detected ${ID:-unknown})" ;;
-  esac
+  validate_distribution_version "${ID:-}" "${VERSION_ID:-}"
   systemd_version="$(systemctl --version | awk 'NR == 1 { print $2; exit }')"
   [[ "$systemd_version" =~ ^[0-9]+$ ]] || die "could not determine the systemd version"
   ((systemd_version >= 247)) || die "systemd 247 or newer is required (detected $systemd_version)"

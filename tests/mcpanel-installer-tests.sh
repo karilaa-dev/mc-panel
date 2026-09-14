@@ -356,6 +356,23 @@ test_service_security_contract() {
   fi
 }
 
+test_distribution_minimum() {
+  local version
+  for version in 12 12.12 13; do
+    validate_distribution_version debian "$version"
+  done
+  for version in 22.04 22.10 24.04 26.04; do
+    validate_distribution_version ubuntu "$version"
+  done
+  for version in 10 11 11.11 '' sid; do
+    assert_fails "unsupported Debian version: $version" validate_distribution_version debian "$version"
+  done
+  for version in 20.04 21.10 22.03 '' unknown; do
+    assert_fails "unsupported Ubuntu version: $version" validate_distribution_version ubuntu "$version"
+  done
+  assert_fails "unsupported distribution" validate_distribution_version alpine 3.23
+}
+
 test_systemd_minimum() {
   (
     # validate_host invokes this test stub indirectly.
@@ -683,6 +700,7 @@ test_import_restart_json
 test_import_stops_panel_after_validation
 test_runtime_generation_wait
 test_service_security_contract
+test_distribution_minimum
 test_systemd_minimum
 test_setup_wizard
 test_sudo_access

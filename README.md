@@ -17,7 +17,7 @@ Java itself.
 
 ## Requirements
 
-- Debian or Ubuntu with systemd 247 or newer and cgroup v2
+- Debian 12+ or Ubuntu 22.04+ with systemd 247 or newer and cgroup v2
 - An x86-64 or ARM64 processor
 - `curl`, GNU `tar`, and `sha256sum`
 - Root access, or a regular account with `sudo` access
