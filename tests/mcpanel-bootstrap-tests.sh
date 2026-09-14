@@ -31,6 +31,10 @@ create_release() {
 #!/usr/bin/env bash
 printf '%s\n' "$0" > "$BOOTSTRAP_MANAGER_PATH_LOG"
 printf '%s\n' "$*" > "$BOOTSTRAP_HANDOFF_LOG"
+if [[ -n "${BOOTSTRAP_MANAGER_EXIT_CODE:-}" ]]; then
+  printf 'error: fixture manager failed\n' >&2
+  exit "$BOOTSTRAP_MANAGER_EXIT_CODE"
+fi
 EOF
   chmod 0755 "$manager"
   manager_checksum="$(sha256sum --binary -- "$manager" | awk '{print $1}')"
@@ -41,6 +45,23 @@ EOF
     printf 'linux_x64_sha256=%064d\n' 0
     printf 'linux_arm64_sha256=%064d\n' 0
   } > "$release_dir/release-manifest.txt"
+}
+
+test_failed_manager_cleanup() {
+  local handoff_log="$test_root/failed-handoff.log" manager_path_log="$test_root/failed-manager-path.log"
+  local stderr_log="$test_root/failed-stderr.log" manager_path rc=0
+  create_release main dddddddddddddddddddddddddddddddddddddddd
+  MCPANEL_RELEASE_BASE_URL="file://$test_root/releases" \
+    BOOTSTRAP_HANDOFF_LOG="$handoff_log" \
+    BOOTSTRAP_MANAGER_PATH_LOG="$manager_path_log" \
+    BOOTSTRAP_MANAGER_EXIT_CODE=42 \
+    bash < "$test_repo_root/install" >/dev/null 2>"$stderr_log" || rc=$?
+  cat "$stderr_log"
+  [[ "$rc" -eq 42 ]] || fail "bootstrap did not preserve the manager's failure status: $rc"
+  [[ "$(< "$stderr_log")" == "error: fixture manager failed" ]] || \
+    fail "bootstrap cleanup obscured the manager failure"
+  manager_path="$(< "$manager_path_log")"
+  [[ ! -d "${manager_path%/*/*}" ]] || fail "failed bootstrap left its temporary directory behind"
 }
 
 test_verified_handoff_and_cleanup() {
@@ -133,6 +154,7 @@ test_invalid_release_rejected_before_download() {
     "$test_repo_root/install" --release feature/main
 }
 
+test_failed_manager_cleanup
 test_default_piped_install
 test_stable_release_selection
 test_verified_handoff_and_cleanup

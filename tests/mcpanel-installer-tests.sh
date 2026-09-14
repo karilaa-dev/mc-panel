@@ -213,7 +213,6 @@ test_import_option_parsing() {
   local source="$test_root/import-source" output
   mkdir -p -- "$source"
   (
-    require_regular_user() { :; }
     require_sudo_access() { :; }
     require_commands() { :; }
     sudo() { printf 'sudo|%s\n' "$*"; }
@@ -372,7 +371,6 @@ test_setup_wizard() {
   mkdir -p -- "$fixture"
 
   output="$({
-    require_regular_user() { :; }
     require_commands() { :; }
     validate_host() { :; }
     wizard_open_tty() { :; }
@@ -387,7 +385,6 @@ test_setup_wizard() {
     fail "setup wizard did not pass its default install values"
 
   output="$({
-    require_regular_user() { :; }
     require_commands() { :; }
     validate_host() { :; }
     wizard_open_tty() { :; }
@@ -405,7 +402,6 @@ test_setup_wizard() {
   mkdir -p -- "$install_dir"
   printf '#!/usr/bin/env bash\n' > "$install_dir/McPanel.Api"
   output="$({
-    require_regular_user() { :; }
     require_commands() { :; }
     validate_host() { :; }
     wizard_open_tty() { :; }
@@ -420,7 +416,6 @@ test_setup_wizard() {
     fail "setup wizard did not select update for an existing installation"
 
   output="$({
-    require_regular_user() { :; }
     require_commands() { :; }
     validate_host() { :; }
     wizard_open_tty() { :; }
@@ -563,7 +558,7 @@ test_recovery_configuration_access() (
   printf 'ASPNETCORE_URLS=http://0.0.0.0:6050\n' > "$config_dir/mcpanel.env"
   chmod 0600 "$config_dir/mcpanel.env"
   validate_access_user() { :; }
-  usermod() { :; }
+  usermod() { printf '%s\n' "$*" >> "$fixture/group-membership"; }
   find() { :; }
   chown() { printf '%s\n' "$*" >> "$fixture/ownership"; }
   install() {
@@ -573,11 +568,18 @@ test_recovery_configuration_access() (
     done
     command install "${args[@]}"
   }
-  configure_access_layout "$config_dir" "$data_dir" mcpanel agent
+  configure_access_layout "$config_dir" "$data_dir" mcpanel "$(id -un)"
   assert_equal "640" "$(stat -c %a "$config_dir/mcpanel.env")" "recovery configuration readable by panel group"
   grep -Fxq "root:$PANEL_GROUP $config_dir/mcpanel.env" "$fixture/ownership" || fail "recovery config does not belong to panel group"
   assert_equal 'ASPNETCORE_URLS=http://0.0.0.0:6050' "$(cat "$config_dir/mcpanel.env")" "existing environment preserved"
   assert_equal "600" "$(stat -c %a "$fixture/credentials/mcpanel.setup-token")" "setup credential remains private"
+  local prior_token group_changes
+  prior_token="$(cat "$fixture/credentials/mcpanel.setup-token")"
+  group_changes="$(cat "$fixture/group-membership")"
+  configure_access_layout "$config_dir" "$data_dir" mcpanel root
+  assert_equal "$group_changes" "$(cat "$fixture/group-membership")" "root requires no group membership change"
+  assert_equal "$prior_token" "$(cat "$fixture/credentials/mcpanel.setup-token")" "root update preserves setup credential"
+  assert_equal "" "$(report_access_user root)" "root requires no sign-out instruction"
 )
 
 test_recovery_configuration_access
