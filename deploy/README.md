@@ -1,9 +1,9 @@
 # Debian and Ubuntu operations
 
 The global `mcpanel` command downloads MC Panel and manages its two systemd
-services. Run it as a regular user. It asks sudo for access only when it
-changes protected system files. Automation still works with cached or
-passwordless sudo.
+services. Run it as root or as a regular user with sudo access. Root does not
+need sudo installed. Other users are prompted for sudo access when protected
+system files change. Automation works as root or with cached or passwordless sudo.
 
 ## Host setup
 
@@ -107,7 +107,8 @@ the file owned by root with mode `0644`. Its installed values set the HTTP URL,
 data directory, configuration directory, and environment; it contains no
 secrets. `/etc/mcpanel` is root-owned mode `0755`.
 
-Install and update add the invoking account to the `mcpanel` group. Sign out
+Install and update add a regular invoking account to the `mcpanel` group.
+Root needs no group change. For regular users, sign out
 and back in before using the new membership. Regular instance directories are
 setgid and group-readable and writable, so that account can work in
 `/var/lib/mcpanel/instances/<id>` without root. Gate instance trees remain
@@ -123,9 +124,9 @@ untrusted owners on one installation.
 
 ## Import an existing Minecraft server
 
-Run imports as the same regular user used for installation. The wrapper asks
-sudo for access before it copies the source into protected staging and pauses
-the web service during the final commit.
+Run imports as root or as a regular user with sudo access. The wrapper obtains
+root access before it copies the source into protected staging and pauses the
+web service during the final commit.
 
 ```bash
 mcpanel import-server /srv/minecraft/old-server

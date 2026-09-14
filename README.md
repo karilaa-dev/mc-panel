@@ -20,7 +20,7 @@ Java itself.
 - Debian or Ubuntu with systemd 247 or newer and cgroup v2
 - An x86-64 or ARM64 processor
 - `curl`, GNU `tar`, and `sha256sum`
-- `sudo` access for system installation
+- Root access, or a regular account with `sudo` access
 - A 64-bit Java runtime supported by each Minecraft version you plan to run
 
 The default installer downloads a self-contained application from GitHub. The
@@ -28,14 +28,15 @@ The default installer downloads a self-contained application from GitHub. The
 
 ## Install
 
-Run the setup wizard as your regular user:
+Run the setup wizard as root or as a regular user with sudo access:
 
 ```bash
 curl -fsSL https://github.com/karilaa-dev/mc-panel/releases/download/main/install | bash
 ```
 
 The wizard checks the host, asks for the listen address and port, and shows a
-summary before it asks for sudo access. It downloads the newest successful
+summary before making system changes. Root does not need `sudo` installed;
+other users are prompted for sudo access. It downloads the newest successful
 build from `main`, verifies the manager and application against the release
 manifest, and installs the global `mcpanel` command. Running the one-line
 installer again offers to update an existing default installation.
@@ -63,10 +64,12 @@ The token is stored as a protected systemd credential rather than in the
 environment file. The panel has one administrator account. The setup token stops working after
 that account exists.
 
-The installer adds the invoking account to the `mcpanel` group. Sign out and
+For a regular user, the installer adds the account to the `mcpanel` group. Sign out and
 back in once after install or update. That group membership lets the regular
 account read and edit regular server instance files without opening panel
 databases, backups, Gate instances, keys, or runtime state.
+Root already has access and needs no group change. The panel and Minecraft
+processes run as the dedicated `mcpanel` account regardless of who installs them.
 
 When creating a server, choose `Regular server` or `Proxy`. Regular servers can
 use verified official software, a Modrinth pack, or an uploaded executable

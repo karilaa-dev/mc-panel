@@ -103,12 +103,14 @@ main() {
   set -- "$@" --release "$release"
   work_root="$(mktemp -d /tmp/mcpanel-bootstrap.XXXXXX)"
   cleanup() {
-    local rc=$?
-    rm -rf -- "$work_root"
+    local rc="$1" cleanup_root="$2"
     trap - EXIT
+    rm -rf -- "$cleanup_root"
     exit "$rc"
   }
-  trap cleanup EXIT
+  # Capture the path before main's local variables leave scope on failure.
+  # shellcheck disable=SC2064
+  trap "cleanup \$? $(printf '%q' "$work_root")" EXIT
 
   printf 'Downloading the verified MC Panel %s manager.\n' "$release"
   for attempt in 1 2 3; do

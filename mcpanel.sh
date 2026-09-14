@@ -122,8 +122,8 @@ The archive contents must be the server root, not a containing directory.
 The source is preserved. A real import briefly pauses the web panel while
 existing managed servers remain online in the persistent runtime.
 
-Run setup, install, update, and import-server as a regular user. GitHub artifacts are used by default.
-The manager asks sudo for access only when a command changes protected system files.
+Run as root or as a regular user with sudo access. GitHub artifacts are used by default.
+Root does not need sudo. Other users are prompted when protected system files change.
 EOF
   if source_checkout_available; then
     cat <<'EOF'
@@ -168,12 +168,12 @@ require_commands() {
   done
 }
 
-require_regular_user() {
-  [[ "${EUID:-$(id -u)}" -ne 0 ]] || die "run this command as a regular user; the script invokes sudo for system changes"
+is_root() {
+  [[ "${EUID:-$(id -u)}" -eq 0 ]]
 }
 
 require_root() {
-  [[ "${EUID:-$(id -u)}" -eq 0 ]] || die "internal system operation requires root"
+  is_root || die "internal system operation requires root"
 }
 
 terminal_path() {
@@ -193,6 +193,7 @@ sudo_validate_interactively() {
 }
 
 require_sudo_access() {
+  if is_root; then return 0; fi
   require_commands sudo
   if [[ "$sudo_mode" == "interactive" ]]; then
     interactive_terminal_available || die "sudo authentication requires a terminal"
@@ -216,7 +217,9 @@ require_sudo_access() {
 }
 
 sudo_system() {
-  if [[ "$sudo_mode" == "interactive" ]]; then
+  if is_root; then
+    "$@"
+  elif [[ "$sudo_mode" == "interactive" ]]; then
     sudo -- "$@"
   else
     sudo -n -- "$@"
@@ -436,7 +439,14 @@ validate_access_user() {
   [[ "$access_user" =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ ]] || die "invalid invoking user"
   passwd_entry="$(getent passwd "$access_user")" || die "invoking user does not exist: $access_user"
   IFS=: read -r _ _ uid _ _ _ _ <<< "$passwd_entry"
-  [[ "$uid" =~ ^[0-9]+$ && "$uid" -ne 0 ]] || die "the invoking account must be a regular user"
+  [[ "$uid" =~ ^[0-9]+$ ]] || die "the invoking account has an invalid UID"
+}
+
+report_access_user() {
+  local access_user="$1"
+  if [[ "$(id -u "$access_user")" -ne 0 ]]; then
+    info "$access_user was added to the $PANEL_GROUP group; sign out and back in before accessing regular server files."
+  fi
 }
 
 credential_file_for() {
@@ -480,7 +490,9 @@ configure_access_layout() {
   mv -- "$credential_tmp" "$credential_file"
 
   chown root:root "$config_dir"; chmod 0755 "$config_dir"
-  usermod -a -G "$PANEL_GROUP" "$access_user"
+  if [[ "$(id -u "$access_user")" -ne 0 ]]; then
+    usermod -a -G "$PANEL_GROUP" "$access_user"
+  fi
   SETUP_TOKEN="$token"
 }
 
@@ -681,7 +693,6 @@ publish_artifact() {
   local web_project="$repo_root/src/McPanel.Web"
   local api_project="$repo_root/src/McPanel.Api/McPanel.Api.csproj"
 
-  require_regular_user
   require_commands chmod dotnet mktemp mkdir mv npm realpath uname
   case "$rid" in
     linux-x64|linux-arm64) ;;
@@ -1083,7 +1094,7 @@ root_install() {
   else
     info "Existing configuration and setup state were retained."
   fi
-  info "$access_user was added to the $PANEL_GROUP group; sign out and back in before accessing regular server files."
+  report_access_user "$access_user"
 }
 
 root_update() {
@@ -1220,7 +1231,7 @@ root_update() {
     done
     trap - EXIT
     info "MC Panel is already at $metadata_release commit $metadata_commit for $metadata_rid; access and service files were refreshed."
-    info "$access_user was added to the $PANEL_GROUP group; sign out and back in before accessing regular server files."
+    report_access_user "$access_user"
     return 0
   fi
 
@@ -1300,7 +1311,7 @@ root_update() {
   if ((was_active)); then info "The panel service is active."; else info "The panel service was left stopped."; fi
   info "Previous binaries were retained at $rollback_dir."
   info "Configuration, data, and the setup credential were preserved."
-  info "$access_user was added to the $PANEL_GROUP group; sign out and back in before accessing regular server files."
+  report_access_user "$access_user"
 }
 
 root_uninstall() {
@@ -1602,7 +1613,6 @@ build_for_system_command() {
   local action="$1" install_dir="$2" config_dir="$3" data_dir="$4" service_name="$5"
   local listen_address="${6:-}" port="${7:-}"
   local build_root artifact rid access_user
-  require_regular_user
   require_sudo_access
   access_user="$(id -un)"
   rid="$(detect_rid)"
@@ -1634,7 +1644,6 @@ run_remote_system_command() {
   local listen_address="${7:-}" port="${8:-}"
   local work_root prepared_dir rid commit installer artifact access_user
 
-  require_regular_user
   require_sudo_access
   access_user="$(id -un)"
   require_commands basename chmod curl find grep mkdir mktemp realpath sha256sum tar tr uname
@@ -1643,12 +1652,14 @@ run_remote_system_command() {
   rid="$(detect_rid)"
   work_root="$(mktemp -d /tmp/mcpanel-release.XXXXXX)"
   cleanup_remote_system_command() {
-    local rc=$?
-    rm -rf -- "$work_root"
+    local rc="$1" cleanup_root="$2"
     trap - EXIT
+    rm -rf -- "$cleanup_root"
     exit "$rc"
   }
-  trap cleanup_remote_system_command EXIT
+  # Capture the path before this function's local variables leave scope on failure.
+  # shellcheck disable=SC2064
+  trap "cleanup_remote_system_command \$? $(printf '%q' "$work_root")" EXIT
 
   info "Downloading MC Panel release $release for $rid."
   prepared_dir="$(prepare_remote_release "$release" "$rid" "$work_root")" || \
@@ -1667,7 +1678,6 @@ apply_prepared_system_command() {
   local install_dir="$6" config_dir="$7" data_dir="$8" service_name="$9"
   local listen_address="${10}" port="${11}" access_user="${12:-$(id -un)}"
 
-  require_regular_user
   require_sudo_access
   validate_release_ref "$release"
   [[ "$commit" =~ ^[a-f0-9]{40}$ ]] || die "invalid prepared release commit"
@@ -1706,8 +1716,8 @@ command_setup() {
     esac
   done
 
-  require_regular_user
-  require_commands awk basename chmod curl find grep mkdir mktemp realpath sha256sum sudo systemctl tar tr uname
+  require_commands awk basename chmod curl find grep mkdir mktemp realpath sha256sum systemctl tar tr uname
+  if ! is_root; then require_commands sudo; fi
   validate_host
   validate_release_ref "$release"
   validate_service_name "$service_name"
@@ -1871,7 +1881,6 @@ command_import_server() {
     esac
   done
   [[ -n "$source" ]] || die_import "$json" 2 IMPORT_USAGE "import-server requires a source directory or archive"
-  require_regular_user
   require_sudo_access
   require_commands realpath
   [[ ! -L "$source" ]] || die_import "$json" 3 IMPORT_SYMBOLIC_LINK "import source must not be a symbolic link"

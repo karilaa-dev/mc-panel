@@ -10,6 +10,10 @@ export MCPANEL_SOURCE_ONLY=1
 # shellcheck disable=SC1091
 source "$test_repo_root/mcpanel.sh"
 
+# This suite exercises the sudo path with intercepted system operations.
+# Direct root execution is covered separately by mcpanel-root-tests.sh.
+is_root() { return 1; }
+
 test_command_path="$test_root/global-bin/mcpanel"
 system_manager_command_path() { printf '%s\n' "$test_command_path"; }
 
@@ -178,7 +182,9 @@ test_retry_and_handoff() {
 
   create_fixture_release "$actual_release" "$actual_commit"
   actual_dir="$test_root/releases/$actual_release"
-  cp -- "$test_repo_root/mcpanel.sh" "$actual_dir/mcpanel-$actual_commit.sh"
+  # Keep the child on the mocked sudo path even when the test runner is root.
+  sed '/^is_root() {$/,/^}$/c\is_root() { return 1; }' \
+    "$test_repo_root/mcpanel.sh" > "$actual_dir/mcpanel-$actual_commit.sh"
   chmod 0755 "$actual_dir/mcpanel-$actual_commit.sh"
   sed -i "s/^script_sha256=.*/script_sha256=$(sha256sum --binary -- "$actual_dir/mcpanel-$actual_commit.sh" | awk '{print $1}')/" \
     "$actual_dir/$RELEASE_MANIFEST_NAME"
@@ -213,7 +219,6 @@ test_import_option_parsing() {
   local source="$test_root/import-source" output
   mkdir -p -- "$source"
   (
-    require_regular_user() { :; }
     require_sudo_access() { :; }
     require_commands() { :; }
     sudo() { printf 'sudo|%s\n' "$*"; }
@@ -372,7 +377,6 @@ test_setup_wizard() {
   mkdir -p -- "$fixture"
 
   output="$({
-    require_regular_user() { :; }
     require_commands() { :; }
     validate_host() { :; }
     wizard_open_tty() { :; }
@@ -387,7 +391,6 @@ test_setup_wizard() {
     fail "setup wizard did not pass its default install values"
 
   output="$({
-    require_regular_user() { :; }
     require_commands() { :; }
     validate_host() { :; }
     wizard_open_tty() { :; }
@@ -405,7 +408,6 @@ test_setup_wizard() {
   mkdir -p -- "$install_dir"
   printf '#!/usr/bin/env bash\n' > "$install_dir/McPanel.Api"
   output="$({
-    require_regular_user() { :; }
     require_commands() { :; }
     validate_host() { :; }
     wizard_open_tty() { :; }
@@ -420,7 +422,6 @@ test_setup_wizard() {
     fail "setup wizard did not select update for an existing installation"
 
   output="$({
-    require_regular_user() { :; }
     require_commands() { :; }
     validate_host() { :; }
     wizard_open_tty() { :; }
@@ -563,7 +564,14 @@ test_recovery_configuration_access() (
   printf 'ASPNETCORE_URLS=http://0.0.0.0:6050\n' > "$config_dir/mcpanel.env"
   chmod 0600 "$config_dir/mcpanel.env"
   validate_access_user() { :; }
-  usermod() { :; }
+  id() {
+    case "$*" in
+      '-u fixture-user') printf '1000\n' ;;
+      '-u root') printf '0\n' ;;
+      *) fail "unexpected identity lookup in recovery fixture: $*" ;;
+    esac
+  }
+  usermod() { printf '%s\n' "$*" >> "$fixture/group-membership"; }
   find() { :; }
   chown() { printf '%s\n' "$*" >> "$fixture/ownership"; }
   install() {
@@ -573,11 +581,19 @@ test_recovery_configuration_access() (
     done
     command install "${args[@]}"
   }
-  configure_access_layout "$config_dir" "$data_dir" mcpanel agent
+  configure_access_layout "$config_dir" "$data_dir" mcpanel fixture-user
+  assert_equal "-a -G $PANEL_GROUP fixture-user" "$(cat "$fixture/group-membership")" "regular user gains panel group access"
   assert_equal "640" "$(stat -c %a "$config_dir/mcpanel.env")" "recovery configuration readable by panel group"
   grep -Fxq "root:$PANEL_GROUP $config_dir/mcpanel.env" "$fixture/ownership" || fail "recovery config does not belong to panel group"
   assert_equal 'ASPNETCORE_URLS=http://0.0.0.0:6050' "$(cat "$config_dir/mcpanel.env")" "existing environment preserved"
   assert_equal "600" "$(stat -c %a "$fixture/credentials/mcpanel.setup-token")" "setup credential remains private"
+  local prior_token group_changes
+  prior_token="$(cat "$fixture/credentials/mcpanel.setup-token")"
+  group_changes="$(cat "$fixture/group-membership")"
+  configure_access_layout "$config_dir" "$data_dir" mcpanel root
+  assert_equal "$group_changes" "$(cat "$fixture/group-membership")" "root requires no group membership change"
+  assert_equal "$prior_token" "$(cat "$fixture/credentials/mcpanel.setup-token")" "root update preserves setup credential"
+  assert_equal "" "$(report_access_user root)" "root requires no sign-out instruction"
 )
 
 test_recovery_configuration_access
