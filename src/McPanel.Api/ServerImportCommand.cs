@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using McPanel.Api.Configuration;
 using McPanel.Api.Data;
@@ -26,6 +27,9 @@ internal static class ServerImportCommand
         {
             if (args.Length is < 3 or > 4 || args[0] != StageSwitch || args.Length == 4 && args[3] != "--json")
                 throw new ServerImportException(ServerImportFailureKind.Usage, "IMPORT_USAGE", "The internal staging invocation is invalid.");
+            using var progress = new ImportProgress(json, Directory.Exists(args[1])
+                ? "Copying server files to staging"
+                : "Extracting server archive to staging");
             await ServerImportSource.StageAsync(args[1], args[2], CancellationToken.None);
             return 0;
         }
@@ -58,6 +62,7 @@ internal static class ServerImportCommand
                 .UseSqlite($"Data Source={paths.StateDatabase};Cache=Shared")
                 .Options;
             var factory = new ImportDbContextFactory(dbOptions);
+            using (new ImportProgress(parsed.Json, "Preparing panel database"))
             await using (var db = factory.CreateDbContext())
             {
                 await SchemaMigration.MigrateAsync(paths.StateDatabase);
@@ -102,7 +107,8 @@ internal static class ServerImportCommand
         ServerImportService service,
         CancellationToken cancellationToken)
     {
-        var inspection = await service.InspectAsync(options.Root, cancellationToken);
+        var inspection = await WithProgressAsync(options.Json, "Inspecting server files and launch targets",
+            () => service.InspectAsync(options.Root, cancellationToken));
         var interactive = !options.NonInteractive && !Console.IsInputRedirected;
         if (!interactive) options.NonInteractive = true;
 
@@ -112,12 +118,15 @@ internal static class ServerImportCommand
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            CompleteOptions(options, inspection, await service.JavaRuntimesAsync(cancellationToken), interactive);
+            var runtimes = await WithProgressAsync(options.Json, "Discovering Java runtimes",
+                () => service.JavaRuntimesAsync(cancellationToken));
+            CompleteOptions(options, inspection, runtimes, interactive);
             EnsureComplete(options, inspection);
             var request = options.ToRequest(inspection);
             try
             {
-                var validated = await service.ValidateAsync(options.Root, request, cancellationToken);
+                var validated = await WithProgressAsync(options.Json, "Validating server settings",
+                    () => service.ValidateAsync(options.Root, request, cancellationToken));
                 if (interactive)
                 {
                     PrintSummary(validated, options.DryRun);
@@ -137,8 +146,10 @@ internal static class ServerImportCommand
                     return 0;
                 }
 
-                await WaitForCommitWindowAsync(cancellationToken);
-                var result = await service.ImportAsync(options.Root, request, cancellationToken);
+                using (new ImportProgress(options.Json, "Preparing to register the server"))
+                    await WaitForCommitWindowAsync(cancellationToken);
+                var result = await WithProgressAsync(options.Json, "Importing server files and registering the server",
+                    () => service.ImportAsync(options.Root, request, cancellationToken));
                 WriteSuccess(options, new
                 {
                     ok = true,
@@ -157,6 +168,46 @@ internal static class ServerImportCommand
             {
                 Console.Error.WriteLine($"error: {exception.Message}");
                 ClearOption(options, exception.Field);
+            }
+        }
+    }
+
+    private static async Task<T> WithProgressAsync<T>(bool json, string status, Func<Task<T>> operation)
+    {
+        using var progress = new ImportProgress(json, status);
+        return await operation();
+    }
+
+    // A timer also reports progress while synchronous file scans are running.
+    // Dispose waits for any active write so updates cannot interrupt the next prompt.
+    private sealed class ImportProgress : IDisposable
+    {
+        private readonly object _gate = new();
+        private readonly Timer? _timer;
+        private bool _disposed;
+
+        public ImportProgress(bool json, string status)
+        {
+            if (json) return;
+            var writer = Console.Error;
+            var elapsed = Stopwatch.StartNew();
+            writer.WriteLine($"{status}...");
+            _timer = new Timer(_ =>
+            {
+                lock (_gate)
+                {
+                    if (!_disposed)
+                        writer.WriteLine($"{status}... {elapsed.Elapsed.TotalSeconds:F0}s elapsed.");
+                }
+            }, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+        }
+
+        public void Dispose()
+        {
+            lock (_gate)
+            {
+                _disposed = true;
+                _timer?.Dispose();
             }
         }
     }

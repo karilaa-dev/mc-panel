@@ -11,6 +11,7 @@ public sealed class ServerImportCommandTests : IAsyncLifetime
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "mcpanel-import-command-" + Guid.NewGuid().ToString("N"));
     private TextWriter _originalOut = null!;
+    private TextWriter _originalError = null!;
 
     public Task InitializeAsync()
     {
@@ -20,18 +21,62 @@ public sealed class ServerImportCommandTests : IAsyncLifetime
         Environment.SetEnvironmentVariable("MCPANEL_IMPORT_READY_FILE", null);
         Environment.SetEnvironmentVariable("MCPANEL_IMPORT_CONTINUE_FILE", null);
         _originalOut = Console.Out;
+        _originalError = Console.Error;
         return Task.CompletedTask;
     }
 
     public Task DisposeAsync()
     {
         Console.SetOut(_originalOut);
+        Console.SetError(_originalError);
         Environment.SetEnvironmentVariable("MCPANEL_DATA_DIR", null);
         Environment.SetEnvironmentVariable("MCPANEL_CONFIG_DIR", null);
         Environment.SetEnvironmentVariable("MCPANEL_IMPORT_READY_FILE", null);
         Environment.SetEnvironmentVariable("MCPANEL_IMPORT_CONTINUE_FILE", null);
         if (Directory.Exists(_root)) Directory.Delete(_root, true);
         return Task.CompletedTask;
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Staging_reports_status_before_copying_and_keeps_json_mode_quiet(bool json, bool archiveSource)
+    {
+        var source = CreateSource();
+        if (archiveSource)
+        {
+            var archive = Path.Combine(_root, "server.zip");
+            ZipFile.CreateFromDirectory(source, archive);
+            source = archive;
+        }
+        var destination = Path.Combine(_root, "staging");
+        var output = new StringWriter();
+        var progress = new StageProgressWriter(destination);
+        Console.SetOut(output);
+        Console.SetError(progress);
+        string[] args = json
+            ? ["--mcpanel-import-stage", source, destination, "--json"]
+            : ["--mcpanel-import-stage", source, destination];
+
+        Assert.Equal(0, await ServerImportCommand.RunStageAsync(args));
+        Assert.True(File.Exists(Path.Combine(destination, "server.jar")));
+        Assert.Empty(output.ToString());
+        if (json) Assert.Empty(progress.ToString());
+        else Assert.True(progress.ReportedBeforeCopy, "No status was shown before staging the server files.");
+    }
+
+    private sealed class StageProgressWriter(string destination) : StringWriter
+    {
+        public bool ReportedBeforeCopy { get; private set; }
+
+        public override void WriteLine(string? value)
+        {
+            if (!Directory.Exists(destination) && !string.IsNullOrWhiteSpace(value))
+                ReportedBeforeCopy = true;
+            base.WriteLine(value);
+        }
     }
 
     [Fact]
@@ -106,8 +151,10 @@ public sealed class ServerImportCommandTests : IAsyncLifetime
         Assert.Equal("IMPORT_KIND_INVALID", document.RootElement.GetProperty("code").GetString());
     }
 
-    [Fact]
-    public async Task Coordinated_import_waits_for_the_privileged_commit_window()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Coordinated_import_waits_for_the_privileged_commit_window(bool json)
     {
         var source = CreateSource();
         var ready = Path.Combine(_root, "import-ready");
@@ -117,16 +164,19 @@ public sealed class ServerImportCommandTests : IAsyncLifetime
         var output = new StringWriter();
         Console.SetOut(output);
 
+        var progress = new StringWriter();
+        Console.SetError(progress);
         var import = ServerImportCommand.RunImportAsync([
             "--mcpanel-import-server", source,
             "--name", "Coordinated world",
+            "--non-interactive",
             "--kind", "vanilla",
             "--version", "1.20.4",
             "--launch-target", "server.jar",
             "--java-runtime", "/usr/bin/java",
             "--memory-mb", "2048",
             "--accept-eula",
-            "--json"
+            ..(json ? new[] { "--json" } : Array.Empty<string>())
         ]);
         await WaitForFileAsync(ready);
 
@@ -135,8 +185,30 @@ public sealed class ServerImportCommandTests : IAsyncLifetime
         await using (var beforeCommit = new StateDbContext(options))
             Assert.Empty(await beforeCommit.Servers.AsNoTracking().ToListAsync());
 
+        string? waitingStatus = null;
+        if (!json)
+        {
+            // Hold the real commit handoff open long enough to observe a heartbeat.
+            await Task.Delay(TimeSpan.FromSeconds(6));
+            waitingStatus = progress.ToString();
+        }
         await File.WriteAllTextAsync(proceed, "continue");
         Assert.Equal(0, await import);
+        if (json)
+        {
+            Assert.Empty(progress.ToString());
+            using var result = JsonDocument.Parse(output.ToString());
+            Assert.True(result.RootElement.GetProperty("ok").GetBoolean());
+        }
+        else
+        {
+            Assert.Contains("Preparing to register the server...", waitingStatus);
+            Assert.Contains("s elapsed.", waitingStatus);
+            Assert.Contains("Inspecting server files", progress.ToString());
+            Assert.Contains("Discovering Java runtimes", progress.ToString());
+            Assert.Contains("Validating server settings", progress.ToString());
+            Assert.Contains("Imported Coordinated world", output.ToString());
+        }
         await using var afterCommit = new StateDbContext(options);
         Assert.Single(await afterCommit.Servers.AsNoTracking().ToListAsync());
     }

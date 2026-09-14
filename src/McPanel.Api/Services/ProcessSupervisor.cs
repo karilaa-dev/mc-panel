@@ -39,6 +39,8 @@ public sealed class ProcessSupervisor(
     IHostApplicationLifetime lifetime,
     ILogger<ProcessSupervisor> logger) : BackgroundService, IServerProcessStatus
 {
+    private readonly AsyncKeyedLock _immediateStopLocks = new();
+
     public static IReadOnlyList<string> AikarFlags { get; } = new[]
     {
         "-XX:+UseG1GC",
@@ -103,6 +105,17 @@ public sealed class ProcessSupervisor(
         var normalized = action.ToLowerInvariant();
         if (normalized == "kill" && !confirmKill) throw PanelProblems.Validation("Emergency kill requires confirm=true.");
         if (normalized is not ("start" or "stop" or "restart" or "kill")) throw PanelProblems.Validation("Unknown server action.");
+        if (normalized == "kill")
+        {
+            using var emergencyLock = await _immediateStopLocks.AcquireAsync(id, cancellationToken);
+            await using var lookup = await stateFactory.CreateDbContextAsync(cancellationToken);
+            if (!await lookup.Servers.AnyAsync(x => x.Id == id, cancellationToken)) throw PanelProblems.NotFound("Server");
+            return await operations.RunImmediatelyAsync("Kill", id, async token =>
+            {
+                await operations.CancelPendingLifecycleAsync(id, token);
+                await KillAsync(id, token);
+            }, cancellationToken);
+        }
         using (await keyedLock.AcquireAsync(id, cancellationToken))
         {
             await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
@@ -120,7 +133,6 @@ public sealed class ProcessSupervisor(
                     case "start": await StartAsync(id, false, token); break;
                     case "stop": await StopAsync(id, token); break;
                     case "restart": await RestartAsync(id, token); break;
-                    case "kill": await KillAsync(id, token); break;
                     default: throw PanelProblems.Validation("Unknown server action.");
                 }
             }, cancellationToken, inputJson: System.Text.Json.JsonSerializer.Serialize(new { action = normalized }));
@@ -264,11 +276,14 @@ public sealed class ProcessSupervisor(
 
     private async Task KillPersistentAsync(Guid id, CancellationToken cancellationToken)
     {
+        // Startup and graceful shutdown hold the panel lock while awaiting the runtime.
+        // Terminate there first, then acquire the lock to persist the final state.
+        await using (var lookup = await stateFactory.CreateDbContextAsync(cancellationToken))
+            if (!await lookup.Servers.AnyAsync(x => x.Id == id, cancellationToken)) throw PanelProblems.NotFound("Server");
+        var snapshot = await persistentRuntime.KillAsync(id, cancellationToken);
         using var serverLock = await keyedLock.AcquireAsync(id, cancellationToken);
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var server = await db.Servers.FindAsync([id], cancellationToken) ?? throw PanelProblems.NotFound("Server");
-        if (!persistentRuntime.IsRunning(id)) throw PanelProblems.Conflict("SERVER_NOT_RUNNING", "The server is not running.");
-        var snapshot = await persistentRuntime.KillAsync(id, cancellationToken);
         ApplySnapshot(server, snapshot); server.CrashAttempts = 0;
         await db.SaveChangesAsync(cancellationToken); await PublishStateAsync(server, cancellationToken);
         _runtimeStates[id] = snapshot.State;

@@ -87,6 +87,48 @@ public sealed class OperationQueue(
         return await HandoffCommittedAsync(job, action, cancellationToken);
     }
 
+    public async Task<JobDto> RunImmediatelyAsync(string type, Guid serverId,
+        Func<CancellationToken, Task> action, CancellationToken cancellationToken)
+    {
+        var job = CreatePending(type, serverId);
+        job.State = JobState.Running;
+        job.Message = "Running";
+        await using (var db = await stateFactory.CreateDbContextAsync(cancellationToken))
+        {
+            db.Jobs.Add(job);
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        // Once committed, emergency work must finish even if the browser disconnects.
+        try
+        {
+            await action(lifetime.ApplicationStopping);
+            await SetStateAsync(job.Id, JobState.Completed, 100, "Completed", null, CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            await TrySetTerminalAsync(job.Id, JobState.Failed, "Failed", exception.Message);
+            throw;
+        }
+        return (await GetAsync(job.Id, CancellationToken.None))!;
+    }
+
+    public async Task CancelPendingLifecycleAsync(Guid serverId, CancellationToken token)
+    {
+        await using var db = await stateFactory.CreateDbContextAsync(token);
+        var pending = db.Jobs.Where(x => x.ServerId == serverId &&
+            (x.State == JobState.Queued && (x.Type == "Start" || x.Type == "Stop" || x.Type == "Restart") ||
+             x.State == JobState.Running && x.Type == "Restart"));
+        var ids = await pending.Select(x => x.Id).ToListAsync(token);
+        await pending.ExecuteUpdateAsync(setters => setters
+            .SetProperty(x => x.CancellationRequested, true)
+            .SetProperty(x => x.State, x => x.State == JobState.Queued ? JobState.Canceled : x.State)
+            .SetProperty(x => x.Message, "Canceled by immediate stop")
+            .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), token);
+        foreach (var id in ids)
+            if (_activeCancellation.TryGetValue(id, out var execution))
+            { try { await execution.CancelAsync(); } catch (ObjectDisposedException) { } }
+    }
+
     public async Task ProgressAsync(Guid jobId, int progress, string message, CancellationToken cancellationToken)
     {
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);

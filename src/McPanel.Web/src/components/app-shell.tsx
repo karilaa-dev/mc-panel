@@ -1,3 +1,4 @@
+import { ImmediateStopButton } from "@/components/immediate-stop-button"
 import { useEffect } from "react"
 import { Link, Outlet, useLocation } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -202,6 +203,7 @@ export function AppShell() {
           {currentServer && <div className="hidden sm:block"><StatusBadge state={currentServer.state} /></div>}
           {currentServer && currentServer.state === "Running" && <Button size="sm" variant="outline" disabled={lifecycle.isPending} onClick={() => lifecycle.mutate({ id: currentServer.id, action: "restart" })}>{lifecycle.isPending ? "Restarting…" : "Restart"}</Button>}
           {currentServer && currentServer.state === "Stopped" && <Button size="sm" disabled={lifecycle.isPending} onClick={() => lifecycle.mutate({ id: currentServer.id, action: "start" })}>{lifecycle.isPending ? "Starting…" : "Start"}</Button>}
+          {currentServer && <ImmediateStopButton server={currentServer} size="sm" />}
         </header>
         <Outlet />
       </SidebarInset>

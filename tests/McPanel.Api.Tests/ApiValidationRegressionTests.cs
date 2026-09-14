@@ -40,6 +40,92 @@ public sealed class ApiValidationRegressionTests : IAsyncLifetime
     private string _fakeJavaPath = null!;
 
     [Theory]
+    [InlineData("start")]
+    [InlineData("stop")]
+    [InlineData("restart")]
+    public async Task Immediate_stop_interrupts_persistent_lifecycle_operations(string action)
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var services = _factory!.Services;
+        await using var engine = ActivatorUtilities.CreateInstance<RuntimeEngine>(services);
+        using var socket = ActivatorUtilities.CreateInstance<RuntimeSocketService>(services, engine);
+        await socket.StartAsync(default);
+        var runtime = new PersistentRuntimeClient(_paths!, new ProductionRuntimeEnvironment(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<PersistentRuntimeClient>.Instance);
+        using var supervisor = ActivatorUtilities.CreateInstance<ProcessSupervisor>(services, runtime);
+        var script = await File.ReadAllTextAsync(_fakeJavaPath);
+        script = action == "start"
+            ? script.Replace("printf '%s\\n' 'Done (0.01s)! For help, type \"help\"'", "# No startup confirmation.")
+            : script.Replace("stop) printf '%s\\n' 'Stopping server'; exit 0 ;;", "stop) : ;;");
+        await File.WriteAllTextAsync(_fakeJavaPath, script);
+        try
+        {
+            for (var attempt = 0; attempt < 100 && !File.Exists(_paths!.RuntimeSocket); attempt++) await Task.Delay(20);
+            var start = await supervisor.QueueActionAsync(_serverId, "start", false, default);
+            Guid interruptedJob = start.Id;
+            if (action != "start")
+            {
+                Assert.Equal("Completed", (await WaitForJobAsync(start.Id)).GetProperty("state").GetString());
+                interruptedJob = (await supervisor.QueueActionAsync(_serverId, action, false, default)).Id;
+            }
+            var expected = action == "start" ? RuntimeProcessState.Starting : RuntimeProcessState.Stopping;
+            for (var attempt = 0; attempt < 100 && engine.Snapshot().All(x => x.State != expected); attempt++) await Task.Delay(20);
+            Assert.Equal(expected, Assert.Single(engine.Snapshot()).State);
+
+            var stopped = await supervisor.QueueActionAsync(_serverId, "kill", true, default).WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.Equal(JobState.Completed, stopped.State);
+            Assert.Equal(RuntimeProcessState.Stopped, Assert.Single(engine.Snapshot()).State);
+            Assert.Null(Assert.Single(engine.Snapshot()).ProcessId);
+            await WaitForServerAsync(server => server.State == ServerState.Stopped && server.ProcessId == null);
+            var queue = services.GetRequiredService<OperationQueue>();
+            for (var attempt = 0; attempt < 100 && !OperationQueue.IsTerminal((await queue.GetAsync(interruptedJob, default))!.State); attempt++) await Task.Delay(20);
+            Assert.True(OperationQueue.IsTerminal((await queue.GetAsync(interruptedJob, default))!.State));
+            Assert.Null(Assert.Single(engine.Snapshot()).ProcessId);
+        }
+        finally
+        {
+            await engine.StopAllAsync(default);
+            await socket.StopAsync(default);
+        }
+    }
+
+    private sealed class ProductionRuntimeEnvironment : Microsoft.Extensions.Hosting.IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = "Production";
+        public string ApplicationName { get; set; } = "McPanel.Api.Tests";
+        public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
+        public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider { get; set; }
+            = new Microsoft.Extensions.FileProviders.NullFileProvider();
+    }
+
+    [Fact]
+    public async Task Immediate_stop_interrupts_a_running_start_job()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var script = await File.ReadAllTextAsync(_fakeJavaPath);
+        await File.WriteAllTextAsync(_fakeJavaPath, script.Replace(
+            "printf '%s\\n' 'Done (0.01s)! For help, type \"help\"'", "# Deliberately never reports readiness."));
+        using var start = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/actions/start", "{}");
+        Assert.Equal(HttpStatusCode.Accepted, start.StatusCode);
+        await WaitForServerAsync(server => server.State == ServerState.Starting && server.ProcessId != null);
+        try
+        {
+            using var stopped = await SendJsonAsync(HttpMethod.Post, $"/api/v1/servers/{_serverId}/actions/kill", "{\"confirm\":true}")
+                .WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.Equal(HttpStatusCode.Accepted, stopped.StatusCode);
+            using var job = JsonDocument.Parse(await stopped.Content.ReadAsStringAsync());
+            var completed = await WaitForJobAsync(job.RootElement.GetProperty("id").GetGuid());
+            Assert.Equal("Completed", completed.GetProperty("state").GetString());
+            await WaitForServerAsync(server => server.State == ServerState.Stopped && server.ProcessId == null);
+        }
+        finally
+        {
+            var supervisor = _factory!.Services.GetRequiredService<ProcessSupervisor>();
+            if (supervisor.IsRunning(_serverId)) await supervisor.KillAsync(_serverId, default);
+        }
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Instance_exports_include_only_selected_files_and_restore_after_panel_backup(bool all)
