@@ -27,7 +27,7 @@ public sealed class ApiIntegrationCollection
 }
 
 [Collection(ApiIntegrationCollection.Name)]
-public sealed class ApiValidationRegressionTests : IAsyncLifetime
+public sealed partial class ApiValidationRegressionTests : IAsyncLifetime
 {
     private readonly SetupTokenLog _setupTokens = new();
     private const string JavaId = "validation-test-java";

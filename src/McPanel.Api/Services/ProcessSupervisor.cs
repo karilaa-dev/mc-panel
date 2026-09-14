@@ -40,6 +40,8 @@ public sealed class ProcessSupervisor(
     ILogger<ProcessSupervisor> logger) : BackgroundService, IServerProcessStatus
 {
     private readonly AsyncKeyedLock _immediateStopLocks = new();
+    private readonly AsyncKeyedLock _lifecycleAdmissionLocks = new();
+    private readonly ConcurrentDictionary<Guid, long> _stopGenerations = new();
 
     public static IReadOnlyList<string> AikarFlags { get; } = new[]
     {
@@ -105,19 +107,28 @@ public sealed class ProcessSupervisor(
         var normalized = action.ToLowerInvariant();
         if (normalized == "kill" && !confirmKill) throw PanelProblems.Validation("Emergency kill requires confirm=true.");
         if (normalized is not ("start" or "stop" or "restart" or "kill")) throw PanelProblems.Validation("Unknown server action.");
+        var stopGeneration = _stopGenerations.GetValueOrDefault(id);
         if (normalized == "kill")
         {
             using var emergencyLock = await _immediateStopLocks.AcquireAsync(id, cancellationToken);
+            using var admission = await _lifecycleAdmissionLocks.AcquireAsync(id, cancellationToken);
             await using var lookup = await stateFactory.CreateDbContextAsync(cancellationToken);
             if (!await lookup.Servers.AnyAsync(x => x.Id == id, cancellationToken)) throw PanelProblems.NotFound("Server");
+            _stopGenerations.AddOrUpdate(id, 1, (_, generation) => generation + 1);
             return await operations.RunImmediatelyAsync("Kill", id, async token =>
             {
                 await operations.CancelPendingLifecycleAsync(id, token);
+                // Never hold admission while waiting for a process operation's server lock.
+                admission.Dispose();
                 await KillAsync(id, token);
             }, cancellationToken);
         }
+        JobEntity job;
         using (await keyedLock.AcquireAsync(id, cancellationToken))
+        using (await _lifecycleAdmissionLocks.AcquireAsync(id, cancellationToken))
         {
+            if (_stopGenerations.GetValueOrDefault(id) != stopGeneration)
+                throw PanelProblems.Conflict("SERVER_BUSY", "An immediate stop superseded this lifecycle request.");
             await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
             var server = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, cancellationToken)
                 ?? throw PanelProblems.NotFound("Server");
@@ -126,17 +137,22 @@ public sealed class ProcessSupervisor(
             if (server.Kind == ServerKind.Gate && normalized is "start" or "restart")
                 await gate.ValidateStartConfigurationAsync(id, cancellationToken);
             if (normalized == "start") EnsurePortAvailable(server.Port);
-            return await operations.EnqueueAsync(char.ToUpperInvariant(normalized[0]) + normalized[1..], id, async (_, _, token) =>
-            {
-                switch (normalized)
-                {
-                    case "start": await StartAsync(id, false, token); break;
-                    case "stop": await StopAsync(id, token); break;
-                    case "restart": await RestartAsync(id, token); break;
-                    default: throw PanelProblems.Validation("Unknown server action.");
-                }
-            }, cancellationToken, inputJson: System.Text.Json.JsonSerializer.Serialize(new { action = normalized }));
+            job = OperationQueue.CreatePending(char.ToUpperInvariant(normalized[0]) + normalized[1..], id);
+            job.InputJson = System.Text.Json.JsonSerializer.Serialize(new { action = normalized });
+            db.Jobs.Add(job);
+            await db.SaveChangesAsync(cancellationToken);
         }
+        // Queue backpressure must not prevent an emergency stop from canceling this committed job.
+        return await operations.HandoffCommittedAsync(job, async (_, _, token) =>
+        {
+            switch (normalized)
+            {
+                case "start": await StartAsync(id, false, token); break;
+                case "stop": await StopAsync(id, token); break;
+                case "restart": await RestartAsync(id, token); break;
+                default: throw PanelProblems.Validation("Unknown server action.");
+            }
+        }, cancellationToken);
     }
 
     public async Task StartAsync(Guid id, bool recovery, CancellationToken cancellationToken)
@@ -190,7 +206,10 @@ public sealed class ProcessSupervisor(
             RuntimeServerSnapshot snapshot;
             try
             {
-                snapshot = await persistentRuntime.StartAsync(new RuntimeLaunchRequest(id, java.Path, paths.Instance(id), startInfo.ArgumentList.ToList(), server.MemoryLimitMb, options.Value.GracefulStopSeconds, CrashRecovery: server.CrashRecovery, GamePort: server.Port), cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                // A dispatched launch continues in the runtime even if its caller cancels.
+                // Keep the server lock until its reply so an immediate stop can drain it.
+                snapshot = await persistentRuntime.StartAsync(new RuntimeLaunchRequest(id, java.Path, paths.Instance(id), startInfo.ArgumentList.ToList(), server.MemoryLimitMb, options.Value.GracefulStopSeconds, CrashRecovery: server.CrashRecovery, GamePort: server.Port), lifetime.ApplicationStopping);
             }
             catch
             {
@@ -229,7 +248,11 @@ public sealed class ProcessSupervisor(
             await db.SaveChangesAsync(cancellationToken);
             await PublishStateAsync(server, cancellationToken);
             RuntimeServerSnapshot snapshot;
-            try { snapshot = await persistentRuntime.StartAsync(launch, cancellationToken); }
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                snapshot = await persistentRuntime.StartAsync(launch, lifetime.ApplicationStopping);
+            }
             catch
             {
                 server.State = ServerState.Crashed;
@@ -276,17 +299,45 @@ public sealed class ProcessSupervisor(
 
     private async Task KillPersistentAsync(Guid id, CancellationToken cancellationToken)
     {
-        // Startup and graceful shutdown hold the panel lock while awaiting the runtime.
-        // Terminate there first, then acquire the lock to persist the final state.
         await using (var lookup = await stateFactory.CreateDbContextAsync(cancellationToken))
             if (!await lookup.Servers.AnyAsync(x => x.Id == id, cancellationToken)) throw PanelProblems.NotFound("Server");
-        var snapshot = await persistentRuntime.KillAsync(id, cancellationToken);
-        using var serverLock = await keyedLock.AcquireAsync(id, cancellationToken);
-        await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
-        var server = await db.Servers.FindAsync([id], cancellationToken) ?? throw PanelProblems.NotFound("Server");
-        ApplySnapshot(server, snapshot); server.CrashAttempts = 0;
-        await db.SaveChangesAsync(cancellationToken); await PublishStateAsync(server, cancellationToken);
-        _runtimeStates[id] = snapshot.State;
+        while (true)
+        {
+            // A published Starting state can precede the runtime launch. Keep interrupting
+            // until startup releases the server lock, then obtain a fresh kill result.
+            try { await persistentRuntime.KillAsync(id, cancellationToken); }
+            catch (PanelException exception) when (exception.Code == "RUNTIME_OPERATION_FAILED")
+            {
+                // A first launch may not have a runtime record yet. The locked check below
+                // distinguishes that gap from an operation that really cannot be stopped.
+            }
+            using var serverLock = keyedLock.TryAcquire(id);
+            if (serverLock is null)
+            {
+                await Task.Delay(100, cancellationToken);
+                continue;
+            }
+            await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+            var server = await db.Servers.FindAsync([id], cancellationToken) ?? throw PanelProblems.NotFound("Server");
+            RuntimeServerSnapshot? snapshot;
+            try { snapshot = await persistentRuntime.KillAsync(id, cancellationToken); }
+            catch (PanelException exception) when (exception.Code == "RUNTIME_OPERATION_FAILED")
+            {
+                snapshot = (await persistentRuntime.RefreshAsync(cancellationToken)).SingleOrDefault(x => x.ServerId == id);
+                if (snapshot is not null && PersistentRuntimeClient.IsActive(snapshot.State)) throw;
+            }
+            if (snapshot is not null) ApplySnapshot(server, snapshot);
+            else
+            {
+                // Cancellation before dispatch can leave a server with no runtime record.
+                server.State = server.RecoveryRequired ? ServerState.Error : ServerState.Stopped;
+                server.ProcessId = null; server.StartedAt = null; server.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+            server.CrashAttempts = 0;
+            await db.SaveChangesAsync(cancellationToken); await PublishStateAsync(server, cancellationToken);
+            _runtimeStates[id] = snapshot?.State ?? RuntimeProcessState.Stopped;
+            return;
+        }
     }
 
     private async Task ExecutePersistentAsync(CancellationToken stoppingToken)
