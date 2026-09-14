@@ -37,7 +37,7 @@ describe("GateProxyPage", () => {
   it("keeps backend management off the settings page and removes acknowledgement checkboxes", async () => {
     renderPage()
 
-    expect(await screen.findByText("Proxy behavior")).toBeVisible()
+    expect(await screen.findByText("Proxy mode and listener")).toBeVisible()
     expect(screen.queryByText("Selected backends")).not.toBeInTheDocument()
     expect(screen.queryByText(/I configured every selected backend/i)).not.toBeInTheDocument()
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
@@ -48,7 +48,8 @@ describe("GateProxyPage", () => {
     mockedApi.updateGate.mockResolvedValue({ id: "version-job", type: "GateUpdate", state: "Queued", progress: 0 })
     const user = userEvent.setup()
     renderPage()
-    await user.click(await screen.findByRole("combobox", { name: "Gate release" }))
+    await user.click(await screen.findByRole("tab", { name: "Maintenance" }))
+    await user.click(screen.getByRole("combobox", { name: "Gate release" }))
     await user.click(screen.getByRole("option", { name: "0.72.6" }))
     await user.click(screen.getByRole("button", { name: "Change Gate version" }))
     expect(await screen.findByRole("alertdialog")).toHaveTextContent("Install Gate 0.72.6?")
@@ -59,7 +60,7 @@ describe("GateProxyPage", () => {
   it("checks proposed forwarding settings before they are saved", async () => {
     const user = userEvent.setup()
     renderPage()
-    await user.click(await screen.findByRole("tab", { name: "Classic" }))
+    await user.click(await screen.findByRole("tab", { name: "Players" }))
     await user.click(screen.getByRole("button", { name: "Legacy" }))
     await waitFor(() => expect(mockedApi.checkGateBackends).toHaveBeenCalledWith("gate-1", expect.objectContaining({ mode: "Classic", classicForwardingMode: "Legacy" })))
     expect(mockedApi.saveGate).not.toHaveBeenCalled()
@@ -88,6 +89,7 @@ describe("GateProxyPage", () => {
     renderPage()
     expect(await screen.findByText("Backend setup prevents joining")).toBeVisible()
     expect(screen.getByText("Vanilla world requires online authentication. Use Lite.")).toBeVisible()
+    await userEvent.setup().click(screen.getByRole("tab", { name: "Maintenance" }))
     expect(await screen.findByText("Release service unavailable")).toBeVisible()
     expect(screen.getByRole("button", { name: "Change Gate version" })).toBeDisabled()
   })
@@ -96,7 +98,7 @@ describe("GateProxyPage", () => {
     const user = userEvent.setup()
     renderPage()
 
-    await user.click(await screen.findByRole("tab", { name: "Classic" }))
+    await user.click(await screen.findByRole("tab", { name: "Players" }))
     await user.click(await screen.findByRole("button", { name: "Generate secret" }))
 
     await waitFor(() => expect(mockedApi.generateGateSecret).toHaveBeenCalledWith("gate-1", "velocity", false))
@@ -108,7 +110,7 @@ describe("GateProxyPage", () => {
     const user = userEvent.setup()
     renderPage()
 
-    await user.click(await screen.findByRole("tab", { name: "Classic" }))
+    await user.click(await screen.findByRole("tab", { name: "Players" }))
     await user.click(await screen.findByRole("button", { name: "Generate new secret" }))
     expect(await screen.findByRole("alertdialog")).toHaveTextContent("Replace the existing Velocity secret?")
     await user.click(screen.getByRole("button", { name: "Generate new secret" }))
@@ -123,39 +125,45 @@ describe("GateProxyPage", () => {
     await waitFor(() => expect(mockedApi.saveGate).toHaveBeenCalledWith("gate-1", expect.objectContaining({ backendServerIds: ["server-1"], externalBackends: [], classic: defaultGateClassicConfiguration })))
   })
 
-  it("disables the Classic configuration tab while Lite mode is enabled", async () => {
+  it("keeps player features disabled in Lite while maintenance stays available", async () => {
     mockedApi.gate.mockResolvedValue({ ...status, configuration: { ...status.configuration, mode: "Lite" } })
     renderPage()
 
-    expect(await screen.findByRole("tab", { name: "Classic" })).toHaveAttribute("aria-disabled", "true")
-    expect(screen.getByText("Classic features are inactive in Lite mode")).toBeVisible()
+    expect(await screen.findByRole("tab", { name: "Players" })).toHaveAttribute("aria-disabled", "true")
+    expect(screen.getByText("Player features require Classic mode")).toBeVisible()
+    for (const name of ["Server list", "Compatibility", "Network"]) expect(screen.getByRole("tab", { name })).toHaveAttribute("aria-disabled", "true")
+    expect(screen.getByRole("tab", { name: "Maintenance" })).not.toHaveAttribute("aria-disabled", "true")
   })
 
-  it("keeps advanced Classic settings collapsed until requested", async () => {
+  it("keeps advanced controls with their feature and preserves edits across categories", async () => {
     const user = userEvent.setup()
     renderPage()
 
-    await user.click(await screen.findByRole("tab", { name: "Classic" }))
-    expect(screen.queryByText("Authentication details")).not.toBeInTheDocument()
-    await user.click(screen.getByRole("button", { name: "Show advanced settings" }))
-    expect(screen.getByText("Authentication details")).toBeVisible()
+    await user.click(await screen.findByRole("tab", { name: "Players" }))
+    expect(screen.queryByRole("textbox", { name: "Session server URL" })).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Show authentication details" }))
+    await user.type(screen.getByRole("textbox", { name: "Session server URL" }), "https://session.example/hasJoined")
+    await user.click(screen.getByRole("tab", { name: "Network" }))
 
     const connectionTimeout = screen.getByRole("textbox", { name: "Connection timeout" })
     await user.clear(connectionTimeout)
     await user.type(connectionTimeout, "12s")
     await user.click(screen.getByRole("button", { name: "Save settings" }))
 
-    await waitFor(() => expect(mockedApi.saveGate).toHaveBeenCalledWith("gate-1", expect.objectContaining({ classic: expect.objectContaining({ connectionTimeout: "12s" }) })))
+    await waitFor(() => expect(mockedApi.saveGate).toHaveBeenCalledWith("gate-1", expect.objectContaining({ classic: expect.objectContaining({ connectionTimeout: "12s", sessionServerUrl: "https://session.example/hasJoined" }) })))
   })
 
-  it("keeps status, query, and key authentication in the primary Classic view", async () => {
+  it("groups player identity separately from server list appearance and query", async () => {
     const user = userEvent.setup()
     renderPage()
 
-    await user.click(await screen.findByRole("tab", { name: "Classic" }))
+    await user.click(await screen.findByRole("tab", { name: "Players" }))
 
-    expect(screen.getByText("Status and query")).toBeVisible()
     expect(screen.getByRole("switch", { name: "Force key authentication" })).toBeVisible()
+    expect(screen.queryByRole("button", { name: "Edit MOTD" })).not.toBeInTheDocument()
+    await user.click(screen.getByRole("tab", { name: "Server list" }))
+    expect(screen.getByText("Server list appearance")).toBeVisible()
+    expect(screen.getByRole("switch", { name: "Enable GameSpy query" })).toBeVisible()
     expect(screen.getByRole("button", { name: "Edit MOTD" })).toBeVisible()
     expect(screen.queryByRole("textbox", { name: "MOTD message" })).not.toBeInTheDocument()
     expect(screen.queryByText("Authentication details")).not.toBeInTheDocument()
@@ -165,7 +173,7 @@ describe("GateProxyPage", () => {
     const user = userEvent.setup()
     renderPage()
 
-    await user.click(await screen.findByRole("tab", { name: "Classic" }))
+    await user.click(await screen.findByRole("tab", { name: "Server list" }))
     await user.click(screen.getByRole("button", { name: "Edit MOTD" }))
     const message = screen.getByRole("textbox", { name: "MOTD message" })
     await user.clear(message)
@@ -180,7 +188,7 @@ describe("GateProxyPage", () => {
     const user = userEvent.setup()
     renderPage()
 
-    await user.click(await screen.findByRole("tab", { name: "Classic" }))
+    await user.click(await screen.findByRole("tab", { name: "Players" }))
     await user.hover(screen.getByRole("button", { name: "About Online mode" }))
 
     expect(await screen.findByText(/Authenticate Java players with Mojang/)).toBeVisible()
@@ -201,9 +209,36 @@ describe("GateProxyPage", () => {
     const user = userEvent.setup()
     renderPage()
 
-    await user.click(await screen.findByRole("tab", { name: "Classic" }))
+    await user.click(await screen.findByRole("tab", { name: "Compatibility" }))
 
     expect(screen.getByRole("combobox", { name: "Managed engine" })).toHaveTextContent("Geyserlite")
     expect(screen.getByRole("combobox", { name: "Geyserlite mode" })).toHaveTextContent("Subprocess")
   })
+  it("keeps the current category after saving a new revision", async () => {
+    mockedApi.saveGate.mockResolvedValue({ ...status, configuration: { ...status.configuration, revision: "revision-2" } })
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole("tab", { name: "Network" }))
+    await user.click(screen.getByRole("button", { name: "Save settings" }))
+    await waitFor(() => expect(mockedApi.saveGate).toHaveBeenCalled())
+    expect(screen.getByRole("tab", { name: "Network" })).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByRole("textbox", { name: "Connection timeout" })).toBeVisible()
+  })
+
+  it("links compatibility memory requirements to the RAM control without losing feature edits", async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole("tab", { name: "Compatibility" }))
+    await user.click(screen.getByRole("switch", { name: "Via protocol translation" }))
+    expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled()
+    await user.click(screen.getByRole("button", { name: "Review RAM limit" }))
+    const memory = screen.getByRole("spinbutton", { name: "RAM limit (MiB)" })
+    await user.clear(memory)
+    await user.type(memory, "768")
+    await user.click(screen.getByRole("tab", { name: "Compatibility" }))
+    expect(screen.getByRole("switch", { name: "Via protocol translation" })).toBeChecked()
+    await user.click(screen.getByRole("button", { name: "Save settings" }))
+    await waitFor(() => expect(mockedApi.saveGate).toHaveBeenCalledWith("gate-1", expect.objectContaining({ memoryMb: 768, classic: expect.objectContaining({ viaEnabled: true }) })))
+  })
+
 })
