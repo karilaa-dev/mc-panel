@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly DEFAULT_RELEASE="stable"
+readonly DEFAULT_RELEASE="main"
 readonly GITHUB_REPOSITORY="karilaa-dev/mc-panel"
 readonly RELEASE_MANIFEST_NAME="release-manifest.txt"
 readonly RELEASE_BASE_URL="${MCPANEL_RELEASE_BASE_URL:-https://github.com/$GITHUB_REPOSITORY/releases/download}"
@@ -99,7 +99,8 @@ main() {
   local release work_root="" attempt attempt_dir manager=""
   require_commands chmod curl mkdir mktemp rm sha256sum
   release="$(selected_release "$@")"
-  if [[ "$release" == "stable" ]]; then release="$(resolve_stable_release)"; set -- "$@" --release "$release"; fi
+  if [[ "$release" == "stable" ]]; then release="$(resolve_stable_release)"; fi
+  set -- "$@" --release "$release"
   work_root="$(mktemp -d /tmp/mcpanel-bootstrap.XXXXXX)"
   cleanup() {
     local rc=$?

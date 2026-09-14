@@ -122,8 +122,9 @@ mcpanel status
 mcpanel uninstall
 ```
 
-`update` downloads the newest build from the selected release and replaces the
-installed application and the global manager command. When that commit is
+`update` defaults to the rolling `main` release. Use `--release v1.2.3` to select
+a versioned release. It downloads the newest build from the selected release
+and replaces the installed application and the global manager command. When that commit is
 already installed, it refreshes the manager, credentials, group membership,
 permissions, and systemd units. Running Minecraft servers stay online during
 a normal panel update.

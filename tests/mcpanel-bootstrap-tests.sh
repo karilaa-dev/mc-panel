@@ -52,11 +52,62 @@ test_verified_handoff_and_cleanup() {
     BOOTSTRAP_MANAGER_PATH_LOG="$manager_path_log" \
     "$test_repo_root/install" --release "$release" --listen-address 127.0.0.1 --port 6060 >/dev/null
 
-  [[ "$(< "$handoff_log")" == "setup --release $release --listen-address 127.0.0.1 --port 6060" ]] || \
+  [[ "$(< "$handoff_log")" == "setup --release $release --listen-address 127.0.0.1 --port 6060 --release $release" ]] || \
     fail "bootstrap did not forward setup arguments"
   manager_path="$(< "$manager_path_log")"
   [[ "$manager_path" == /tmp/mcpanel-bootstrap.*/*/mcpanel-*.sh ]] || fail "bootstrap used an unexpected manager path"
   [[ ! -e "$manager_path" ]] || fail "bootstrap temporary manager was not removed"
+}
+
+test_default_piped_install() {
+  local handoff_log="$test_root/default-handoff.log" manager_path_log="$test_root/default-manager-path.log"
+  create_release main aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  # Reproduce GitHub's /latest redirect when only the main prerelease exists.
+  (
+    # Invoked by the bootstrap's child shell through export -f.
+    # shellcheck disable=SC2329
+    curl() {
+      if [[ " $* " == *" --head "* ]]; then
+        printf '%s\n' 'https://github.com/karilaa-dev/mc-panel/releases'
+      else
+        command curl "$@"
+      fi
+    }
+    export -f curl
+    MCPANEL_RELEASE_BASE_URL="file://$test_root/releases" \
+      BOOTSTRAP_HANDOFF_LOG="$handoff_log" \
+      BOOTSTRAP_MANAGER_PATH_LOG="$manager_path_log" \
+      bash < "$test_repo_root/install"
+  ) || fail "default piped installer failed with only a main prerelease"
+  [[ "$(< "$handoff_log")" == "setup --release main" ]] || \
+    fail "default bootstrap did not explicitly select main for the downloaded manager"
+}
+
+test_stable_release_selection() {
+  local handoff_log="$test_root/stable-handoff.log" manager_path_log="$test_root/stable-manager-path.log"
+  create_release v1.2.3 cccccccccccccccccccccccccccccccccccccccc
+  (
+    # Invoked by the bootstrap's child shell through export -f.
+    # shellcheck disable=SC2329
+    curl() {
+      if [[ " $* " == *" --head "* ]]; then
+        printf '%s\n' "$BOOTSTRAP_LATEST_URL"
+      else
+        command curl "$@"
+      fi
+    }
+    export -f curl
+    export MCPANEL_RELEASE_BASE_URL="file://$test_root/releases"
+    export BOOTSTRAP_HANDOFF_LOG="$handoff_log" BOOTSTRAP_MANAGER_PATH_LOG="$manager_path_log"
+    export BOOTSTRAP_LATEST_URL="https://github.com/karilaa-dev/mc-panel/releases/tag/v1.2.3"
+    "$test_repo_root/install" --release stable >/dev/null
+    [[ "$(< "$handoff_log")" == "setup --release stable --release v1.2.3" ]] || \
+      fail "stable bootstrap did not pin the resolved version"
+    export BOOTSTRAP_LATEST_URL="https://github.com/karilaa-dev/mc-panel/releases"
+    assert_fails "stable without a versioned release" "$test_repo_root/install" --release stable
+    export BOOTSTRAP_LATEST_URL="https://github.com/karilaa-dev/mc-panel/releases/tag/main"
+    assert_fails "stable redirect to main" "$test_repo_root/install" --release stable
+  )
 }
 
 test_manifest_and_checksum_failures() {
@@ -82,6 +133,8 @@ test_invalid_release_rejected_before_download() {
     "$test_repo_root/install" --release feature/main
 }
 
+test_default_piped_install
+test_stable_release_selection
 test_verified_handoff_and_cleanup
 test_manifest_and_checksum_failures
 test_invalid_release_rejected_before_download

@@ -77,9 +77,13 @@ test_option_parsing() {
   build_for_system_command() { printf 'local|%s\n' "$*"; }
 
   assert_equal \
-    "remote|install stable /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel 0.0.0.0 6050" \
+    "remote|install main /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel 0.0.0.0 6050" \
     "$(command_install)" \
     "install defaults"
+  assert_equal \
+    "remote|update main /opt/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel" \
+    "$(command_update)" \
+    "update defaults"
   assert_equal \
     "remote|update v1.2.3 /srv/mcpanel /etc/mcpanel /var/lib/mcpanel mcpanel" \
     "$(command_update --release v1.2.3 --install-dir /srv/mcpanel)" \
@@ -379,7 +383,7 @@ test_setup_wizard() {
     command_update() { fail "fresh setup selected update"; }
     command_setup --install-dir "$install_dir" --config-dir "$config_dir" --data-dir "$data_dir"
   })"
-  [[ "$output" == *"install|--source github --release stable --listen-address 0.0.0.0 --port 6050 --install-dir $install_dir --config-dir $config_dir --data-dir $data_dir --service-name mcpanel"* ]] || \
+  [[ "$output" == *"install|--source github --release main --listen-address 0.0.0.0 --port 6050 --install-dir $install_dir --config-dir $config_dir --data-dir $data_dir --service-name mcpanel"* ]] || \
     fail "setup wizard did not pass its default install values"
 
   output="$({
@@ -412,7 +416,7 @@ test_setup_wizard() {
     command_update() { printf 'update|%s\n' "$*"; }
     command_setup --install-dir "$install_dir" --config-dir "$config_dir" --data-dir "$data_dir"
   })"
-  [[ "$output" == *"update|--source github --release stable --install-dir $install_dir --config-dir $config_dir --data-dir $data_dir --service-name mcpanel"* ]] || \
+  [[ "$output" == *"update|--source github --release main --install-dir $install_dir --config-dir $config_dir --data-dir $data_dir --service-name mcpanel"* ]] || \
     fail "setup wizard did not select update for an existing installation"
 
   output="$({
