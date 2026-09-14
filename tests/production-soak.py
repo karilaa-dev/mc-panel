@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import shutil
 import signal
 import socket
@@ -110,12 +111,6 @@ def main():
     environment = [f'MCPANEL_DATA_DIR={data}', f'MCPANEL_CONFIG_DIR={config}', 'ASPNETCORE_ENVIRONMENT=Production',
                    f'ASPNETCORE_URLS=http://0.0.0.0:{panel_port}', 'Panel__ConsoleLinesPerServer=1000',
                    'Panel__BackupRetentionCount=3', 'Panel__BackupRetentionBytes=2147483648', 'Panel__BackupLeaseSeconds=10']
-    setup_token = uuid.uuid4().hex + uuid.uuid4().hex
-    token_file = config / 'setup-token'
-    token_file.write_text(setup_token)
-    token_file.chmod(0o600)
-    os.chown(token_file, account.pw_uid, account.pw_gid)
-
     def start_unit(name, runtime):
         command = ['systemd-run', '--unit', name, '--property=Type=exec', '--property=Delegate=yes',
                    '--property=KillMode=mixed', '--property=TimeoutStopSec=90', '--property=NoNewPrivileges=yes',
@@ -148,6 +143,9 @@ def main():
         start_unit(runtime_unit, True)
         start_unit(panel_unit, False)
         wait(lambda: api('/health/ready')['status'] == 'ready')
+        invocation = run('systemctl', 'show', panel_unit, '--property=InvocationID', '--value')
+        startup = run('journalctl', '--no-pager', '--output=cat', '_SYSTEMD_INVOCATION_ID=' + invocation)
+        setup_token = re.search(r'First-run setup token: ([a-f0-9]{64})', startup).group(1)
         api('/api/v1/auth/setup', dict(token=setup_token, username='soak-admin', password=uuid.uuid4().hex + uuid.uuid4().hex))
         with sqlite3.connect('file:' + str(Path(args.source_data) / 'state.db') + '?mode=ro', uri=True) as source:
             source.row_factory = sqlite3.Row

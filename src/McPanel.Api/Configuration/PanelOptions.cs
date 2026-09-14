@@ -9,8 +9,6 @@ public sealed class PanelOptions
     public string DataDirectory { get; set; } = Environment.GetEnvironmentVariable("MCPANEL_DATA_DIR") ?? "/var/lib/mcpanel";
     public string ConfigDirectory { get; set; } = Environment.GetEnvironmentVariable("MCPANEL_CONFIG_DIR") ?? "/etc/mcpanel";
     public string? WebRoot { get; set; } = Environment.GetEnvironmentVariable("MCPANEL_WEB_ROOT");
-    public string? SetupToken { get; set; } = Environment.GetEnvironmentVariable("MCPANEL_SETUP_TOKEN");
-    public string? SetupTokenFile { get; set; } = Environment.GetEnvironmentVariable("MCPANEL_SETUP_TOKEN_FILE");
     public int GracefulStopSeconds { get; set; } = 60;
     public long MaxUploadBytes { get; set; } = 1L * 1024 * 1024 * 1024;
     public long MaxTextFileBytes { get; set; } = 2L * 1024 * 1024;
@@ -57,9 +55,6 @@ public sealed class PanelPaths
         CustomJarImports = Path.Combine(Data, "custom-jar-imports");
         StateDatabase = Path.Combine(Data, "state.db");
         ConsoleDatabase = Path.Combine(Data, "console.db");
-        SetupTokenFile = options.SetupTokenFile is { Length: > 0 }
-            ? Path.GetFullPath(options.SetupTokenFile)
-            : Path.Combine(Config, "setup-token");
     }
 
     public string Data { get; }
@@ -78,7 +73,6 @@ public sealed class PanelPaths
     public string CustomJarImports { get; }
     public string StateDatabase { get; }
     public string ConsoleDatabase { get; }
-    public string SetupTokenFile { get; }
 
     public void EnsureCreated()
     {

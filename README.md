@@ -25,6 +25,9 @@ Java itself.
 
 The default installer downloads a self-contained application from GitHub. The
 .NET 10 SDK and Node.js 22 or newer are needed only for source builds.
+Install and update use APT to install missing native runtime dependencies,
+including ICU and OpenSSL, before changing the application or starting services.
+No package download is needed when those dependencies are already installed.
 
 ## Install
 
@@ -52,17 +55,21 @@ curl -fsSL https://github.com/karilaa-dev/mc-panel/releases/download/main/instal
 The default address is `http://0.0.0.0:6050`, which listens on every network
 interface. Keep that port on a trusted private network.
 
-The installer prints a setup token. Open the panel from another device on the
-same network and use that token to create the administrator account. Root can
-read the token again before setup:
+Before the administrator account exists, MC Panel generates a random setup token
+in memory at each startup and writes it to the service log. The installer displays
+that running instance's token. Open the panel from another device on the same
+network and use it to create the administrator account.
+
+If the panel restarts before setup is complete, the previous token becomes invalid.
+Read the newest startup token with:
 
 ```bash
-sudo cat /etc/credstore/mcpanel.setup-token
+sudo journalctl -u mcpanel -b --no-pager --grep='First-run setup token:' -n 1
 ```
 
-The token is stored as a protected systemd credential rather than in the
-environment file. The panel has one administrator account. The setup token stops working after
-that account exists.
+No separate setup-token file or systemd credential is created. After the administrator
+account exists, the panel generates no setup token and rejects further setup attempts.
+Old token files and settings are ignored and can remain in place for rollback.
 
 For a regular user, the installer adds the account to the `mcpanel` group. Sign out and
 back in once after install or update. That group membership lets the regular
@@ -128,7 +135,7 @@ mcpanel uninstall
 `update` defaults to the rolling `main` release. Use `--release v1.2.3` to select
 a versioned release. It downloads the newest build from the selected release
 and replaces the installed application and the global manager command. When that commit is
-already installed, it refreshes the manager, credentials, group membership,
+already installed, it refreshes the manager, group membership,
 permissions, and systemd units. Running Minecraft servers stay online during
 a normal panel update.
 
@@ -149,7 +156,6 @@ The default installation paths are:
 | `/usr/local/bin/mcpanel` | Global system-management command |
 | `/opt/mcpanel` | Application files |
 | `/etc/mcpanel` | Root-owned, generally readable service configuration (no secrets) |
-| `/etc/credstore/mcpanel.setup-token` | Root-only systemd setup credential |
 | `/var/lib/mcpanel` | Databases, server instances, logs, and backups |
 
 See [deploy/README.md](deploy/README.md) for Java discovery, service commands,
@@ -163,7 +169,7 @@ Start a repo-local instance on port 8080:
 ./start-local.sh
 ```
 
-The script prints the local-network URL and setup token. It stores its data in
+The script prints the local-network URL; the application logs a setup token if needed. It stores its data in
 `.mcpanel-local`. To erase only that development data and start again, run:
 
 ```bash

@@ -10,6 +10,12 @@ system files change. Automation works as root or with cached or passwordless sud
 MC Panel supports x86-64 and ARM64 Debian or Ubuntu hosts with systemd 247 or newer and
 cgroup v2. Release installs need `curl`, GNU `tar`, and `sha256sum`. Source
 builds also need the .NET 10 SDK and Node.js 22 or newer.
+The installer checks the native .NET runtime dependencies and installs missing
+packages through APT before changing the application or its services. This
+includes ICU, OpenSSL, C/C++ runtimes, Kerberos, time-zone data, CA certificates,
+and zlib. Package names come from the host's repositories; for example,
+Ubuntu 26.04 uses `libicu78`. Existing installations with all dependencies
+present do not need APT network access during updates.
 
 Install each 64-bit Java major needed by your Minecraft servers. MC Panel
 checks Mojang metadata before launch and rejects an incompatible runtime. It
@@ -99,8 +105,21 @@ The default paths are:
 | `/usr/local/bin/mcpanel` | root | Global system-management command |
 | `/opt/mcpanel` | root | Read-only application files |
 | `/etc/mcpanel` | root | Readable, non-secret environment configuration |
-| `/etc/credstore/mcpanel.setup-token` | root | Root-only setup credential loaded by systemd |
 | `/var/lib/mcpanel` | `mcpanel` | Private panel state and managed servers |
+
+Before administrator setup, the panel generates a new token in memory on every
+startup and logs `First-run setup token: ...`. The installer displays the token
+from the running service's journal invocation. A restart invalidates the previous
+token. Once an administrator exists, no token is generated or logged.
+
+Setup does not depend on token files or `LoadCredential`, including on LXC hosts
+whose global service overrides disable systemd credentials. Old setup-token files
+and environment overrides are ignored; updates leave them in place for rollback.
+To retrieve the newest token before setup, run:
+
+```bash
+sudo journalctl -u mcpanel -b --no-pager --grep='First-run setup token:' -n 1
+```
 
 Edit `/etc/mcpanel/mcpanel.env` with `sudoedit`, then restart the panel. Keep
 the file owned by root with mode `0644`. Its installed values set the HTTP URL,
@@ -162,10 +181,9 @@ stopped and creates a safety backup first.
 Panel backups normally live on the same disk as the worlds. Copy important
 backups elsewhere and test them.
 
-For a full offline backup, stop both services and copy `/etc/mcpanel`,
-`/etc/credstore/mcpanel.setup-token`, and `/var/lib/mcpanel` while preserving
-permissions. The first directory contains non-secret configuration, the
-credential file contains the setup secret, and the data directory contains databases, keys, instances,
+For a full offline backup, stop both services and copy `/etc/mcpanel` and
+`/var/lib/mcpanel` while preserving permissions. The first directory contains
+non-secret configuration, and the data directory contains databases, keys, instances,
 worlds, Gate files, logs, and panel backups.
 
 To recover on another host, install the same or a newer trusted revision, stop
@@ -179,11 +197,11 @@ mcpanel update
 ```
 
 An update downloads the newest commit from the selected release. A same-version
-run refreshes the credential, unit files, group membership, and access
+run refreshes the unit files, group membership, and access
 permissions. Otherwise, it replaces the web application while the runtime keeps active servers online.
 The updater retains the previous application beside `/opt/mcpanel` in a dated
 rollback directory. It restores that copy if the new panel does not stay
-active. Updates preserve application configuration, credentials, and data.
+active. Updates preserve application configuration and data.
 
 The normal uninstall removes the global command, application, and services. It
 keeps all state and the service account:
@@ -192,8 +210,8 @@ keeps all state and the service account:
 mcpanel uninstall
 ```
 
-It also preserves the setup credential. Purge removes the credential together
-with configuration and data.
+Old setup credentials from earlier versions are preserved for rollback. Purge
+removes them together with configuration and data.
 
 Permanent removal requires an explicit confirmation flag:
 

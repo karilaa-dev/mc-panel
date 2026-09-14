@@ -2,7 +2,6 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
-using McPanel.Api.Configuration;
 using McPanel.Api.Contracts;
 using McPanel.Api.Data;
 using McPanel.Api.Hubs;
@@ -12,20 +11,27 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 
 namespace McPanel.Api.Services;
 
 public sealed partial class AdminAuthService(
     IDbContextFactory<StateDbContext> stateFactory,
     IPasswordHasher<AdminEntity> hasher,
-    PanelPaths paths,
-    IOptions<PanelOptions> options,
     SessionAudience audience,
     IHubContext<PanelHub> hub,
     ILogger<AdminAuthService> logger)
 {
     public const string SessionStampClaim = "mcpanel:session_stamp";
+    private string? _setupToken;
+
+    public async Task InitializeSetupTokenAsync()
+    {
+        await using var db = await stateFactory.CreateDbContextAsync();
+        if (await db.Admins.AnyAsync()) return;
+        _setupToken = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+        logger.LogWarning("First-run setup token: {SetupToken}", _setupToken);
+        logger.LogWarning("This setup token changes when MC Panel restarts and stops working after administrator setup.");
+    }
 
     public async Task<AuthStatusDto> StatusAsync(ClaimsPrincipal user, CancellationToken cancellationToken)
     {
@@ -42,7 +48,7 @@ public sealed partial class AdminAuthService(
         if (request is null || string.IsNullOrWhiteSpace(request.Token) || string.IsNullOrWhiteSpace(request.Username) || request.Password is null)
             throw PanelProblems.Validation("Setup token, username, and password are required.");
         ValidateCredentials(request.Username, request.Password);
-        var expected = ReadSetupToken();
+        var expected = _setupToken;
         if (string.IsNullOrWhiteSpace(expected) || !FixedEquals(expected.Trim(), request.Token.Trim()))
             throw new PanelException(401, "SETUP_TOKEN_INVALID", "The one-time setup token is invalid.");
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
@@ -52,7 +58,7 @@ public sealed partial class AdminAuthService(
         db.Admins.Add(admin); await db.SaveChangesAsync(cancellationToken); await transaction.CommitAsync(cancellationToken);
         var revokedGroup = await audience.SetCurrentAsync(admin.SessionStamp, CancellationToken.None);
         await NotifyRevokedAsync(revokedGroup);
-        TryRemoveSetupTokenFile();
+        _setupToken = null;
         await SignInAsync(context, admin);
         return new AdminDto(admin.Username);
     }
@@ -132,19 +138,6 @@ public sealed partial class AdminAuthService(
         var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
         await context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity), new AuthenticationProperties
         { IsPersistent = true, AllowRefresh = true, ExpiresUtc = DateTimeOffset.UtcNow.AddHours(12) });
-    }
-
-    private string? ReadSetupToken()
-    {
-        if (!string.IsNullOrWhiteSpace(options.Value.SetupToken)) return options.Value.SetupToken;
-        try { return File.Exists(paths.SetupTokenFile) ? File.ReadAllText(paths.SetupTokenFile) : null; }
-        catch { return null; }
-    }
-
-    private void TryRemoveSetupTokenFile()
-    {
-        if (!string.IsNullOrWhiteSpace(options.Value.SetupToken)) return;
-        try { if (File.Exists(paths.SetupTokenFile)) File.Delete(paths.SetupTokenFile); } catch { }
     }
 
     private static bool FixedEquals(string left, string right)
