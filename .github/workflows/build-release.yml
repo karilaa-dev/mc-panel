@@ -48,6 +48,7 @@ jobs:
           shellcheck install mcpanel.sh start-local.sh reset-and-start-local.sh tests/mcpanel-installer-tests.sh tests/mcpanel-bootstrap-tests.sh tests/mcpanel-root-tests.sh
           tests/mcpanel-bootstrap-tests.sh
           tests/mcpanel-installer-tests.sh
+          sudo -- bash tests/mcpanel-installer-tests.sh
           sudo -- bash tests/mcpanel-root-tests.sh
 
       - name: Type-check the frontend
