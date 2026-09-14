@@ -65,7 +65,7 @@ test_default_piped_install() {
   # Reproduce GitHub's /latest redirect when only the main prerelease exists.
   (
     # Invoked by the bootstrap's child shell through export -f.
-    # shellcheck disable=SC2329
+    # shellcheck disable=SC2317,SC2329
     curl() {
       if [[ " $* " == *" --head "* ]]; then
         printf '%s\n' 'https://github.com/karilaa-dev/mc-panel/releases'
@@ -88,7 +88,7 @@ test_stable_release_selection() {
   create_release v1.2.3 cccccccccccccccccccccccccccccccccccccccc
   (
     # Invoked by the bootstrap's child shell through export -f.
-    # shellcheck disable=SC2329
+    # shellcheck disable=SC2317,SC2329
     curl() {
       if [[ " $* " == *" --head "* ]]; then
         printf '%s\n' "$BOOTSTRAP_LATEST_URL"
