@@ -155,19 +155,16 @@ describe("PlayersPage", () => {
     expect(screen.getByRole("button", { name: "Add operator" })).toBeDisabled()
   })
 
-  it.each([
-    ["minecraft:diamond_sword", "Diamond Sword", "04ad0514c91883a4.png"],
-    ["minecraft:poplar_planks", "Poplar Planks", "b57969dd25e7355f.png"],
-  ])("opens a structured read-only inventory sheet with a texture for %s", async (id, displayName, texture) => {
+  it("opens a structured read-only inventory sheet with Minecraft item textures", async () => {
     mockedApi.server.mockResolvedValue(server("Stopped"))
     mockedApi.players.mockResolvedValue([{ name: "Alex", uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5", online: false, whitelisted: false, operator: false, banned: false, inventoryAvailable: true }])
-    mockedApi.playerInventory.mockResolvedValue({ playerName: "Alex", uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5", revision: "a".repeat(64), savedAt: "2026-08-07T00:00:00Z", online: false, snapshotMayBeStale: false, dataVersion: 3953, slots: [{ section: "hotbar", index: 0, nbtSlot: 0, item: { id, count: 1, displayName, metadata: ["components: compound (1)"] } }] })
+    mockedApi.playerInventory.mockResolvedValue({ playerName: "Alex", uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5", revision: "a".repeat(64), savedAt: "2026-08-07T00:00:00Z", online: false, snapshotMayBeStale: false, dataVersion: 3953, slots: [{ section: "hotbar", index: 0, nbtSlot: 0, item: { id: "minecraft:diamond_sword", count: 1, displayName: "Diamond Sword", metadata: ["components: compound (1)"] } }] })
     const user = userEvent.setup(); renderPage()
     await user.click(await screen.findByRole("button", { name: "Inventory" }))
     expect(await screen.findByRole("heading", { name: "Alex inventory" })).toBeVisible()
     expect(screen.getByText("Ender Chest")).toBeVisible()
-    const slot = screen.getByTitle(new RegExp(displayName))
-    expect(slot.querySelector("img")).toHaveAttribute("src", `/minecraft-textures/${texture}`)
+    const swordSlot = screen.getByTitle(/Diamond Sword/)
+    expect(swordSlot.querySelector("img")).toHaveAttribute("src", "/minecraft-textures/04ad0514c91883a4.png")
     expect(screen.queryByRole("button", { name: /save inventory/i })).not.toBeInTheDocument()
     expect(screen.queryByRole("dialog", { name: /edit or move item/i })).not.toBeInTheDocument()
   })

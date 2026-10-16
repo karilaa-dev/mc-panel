@@ -1,6 +1,6 @@
 import { useState, type CSSProperties } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import itemTextureManifest from "minecraft-textures/manifest/26.3.id.json"
+import itemTextureManifest from "minecraft-textures/manifest/26.2.id.json"
 import { Badge, Banner, Button } from "@cloudflare/kumo"
 import { ArchiveIcon, ClockCounterClockwiseIcon, EyeIcon, InfoIcon } from "@phosphor-icons/react"
 import { api } from "@/lib/api"

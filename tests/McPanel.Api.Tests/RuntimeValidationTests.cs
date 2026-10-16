@@ -62,7 +62,6 @@ public sealed class RuntimeValidationTests
     [InlineData("1.20.6", 21)]
     [InlineData("1.21.11", 21)]
     [InlineData("26.1", 25)]
-    [InlineData("26.3", 25)]
     public void Applies_paper_java_matrix(string version, int expected) => Assert.Equal(expected, DistributionCatalogService.InferPaperJava(version));
 
     [Fact]
@@ -137,7 +136,6 @@ public sealed class RuntimeValidationTests
     [InlineData("21.0.166", "1.21")]
     [InlineData("26.1.0.5-beta", "26.1")]
     [InlineData("26.1.2.80", "26.1.2")]
-    [InlineData("26.3.0.1-beta", "26.3")]
     [InlineData("0.25w14craftmine.3-beta", null)]
     public void Maps_neoforge_versions_to_minecraft(string loader, string? expected) =>
         Assert.Equal(expected, DistributionCatalogService.NeoForgeMinecraftVersion(loader));

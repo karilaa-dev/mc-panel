@@ -436,7 +436,7 @@ public sealed class DistributionCatalogService(ValidatedDownloadClient http, ILo
         if (!document.RootElement.TryGetProperty("downloads", out var downloads) || !downloads.TryGetProperty("server", out var server))
             throw PanelProblems.Validation("That Minecraft version has no dedicated server artifact.");
         var requiredJava = document.RootElement.TryGetProperty("javaVersion", out var java) && java.TryGetProperty("majorVersion", out var major)
-            ? major.GetInt32() : MinecraftJavaVersion.Required(version);
+            ? major.GetInt32() : InferJava(version);
         return new MojangVersionMetadata(new Uri(server.GetProperty("url").GetString()!), server.GetProperty("sha1").GetString()!, server.GetProperty("size").GetInt64(), requiredJava, item.Type);
     }
 
@@ -615,6 +615,15 @@ public sealed class DistributionCatalogService(ValidatedDownloadClient http, ILo
     {
         var value = element.GetProperty(property);
         return value.ValueKind == JsonValueKind.String ? value.GetString()! : value.GetRawText();
+    }
+
+    private static int InferJava(string version)
+    {
+        var clean = version.Split('-', '+')[0];
+        var pieces = clean.Split('.');
+        if (pieces.Length < 2 || !int.TryParse(pieces[1], out var minor)) return 21;
+        var patch = pieces.Length > 2 && int.TryParse(pieces[2], out var p) ? p : 0;
+        return minor > 20 || minor == 20 && patch >= 5 ? 21 : minor >= 18 ? 17 : minor == 17 ? 16 : 8;
     }
 
     public static int InferPaperJava(string version)

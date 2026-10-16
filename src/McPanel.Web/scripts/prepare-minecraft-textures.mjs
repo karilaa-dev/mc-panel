@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url"
 
 const require = createRequire(import.meta.url)
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
-const manifestPath = require.resolve("minecraft-textures/manifest/26.3.id.json")
+const manifestPath = require.resolve("minecraft-textures/manifest/26.2.id.json")
 const packagePath = require.resolve("minecraft-textures/package.json")
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"))
 const sourceDirectory = path.resolve(path.dirname(manifestPath), "..", "assets")

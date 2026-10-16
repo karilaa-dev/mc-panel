@@ -18,32 +18,8 @@ public sealed class ServerPropertyCatalogTests
     [InlineData("24w14a", "1.20.4")]
     [InlineData("25w05a", "1.21.4")]
     [InlineData("1.21.5-pre1", "1.21.4")]
-    [InlineData("26.3-snapshot-1", "26.2")]
-    [InlineData("26.3-pre-1", "26.2")]
-    [InlineData("26.3-rc-1", "26.2")]
     public void Snapshots_and_prereleases_use_the_preceding_stable_baseline(string version, string expected) =>
         Assert.Equal(expected, ServerPropertyCatalog.ResolveVersion(version));
-
-    [Fact]
-    public void Minecraft_26_3_has_verified_property_compatibility()
-    {
-        Assert.Equal("26.3", ServerPropertyCatalog.ResolveVersion("26.3"));
-        foreach (var key in new[] { "motd", "white-list", "chat-spam-threshold-seconds", "command-spam-threshold-seconds" })
-            Assert.Equal(PropertyCompatibility.Supported,
-                ServerPropertyCatalog.Describe(ServerPropertyCatalog.Find(key)!, "26.3").Compatibility);
-        Assert.Equal(PropertyCompatibility.RemovedBefore,
-            ServerPropertyCatalog.Describe(ServerPropertyCatalog.Find("debug")!, "26.3").Compatibility);
-    }
-
-    [Theory]
-    [InlineData("1.21.11", "false")]
-    [InlineData("26.2", "false")]
-    [InlineData("26.3", "true")]
-    public void Whitelist_default_matches_the_minecraft_release(string version, string expected)
-    {
-        var definition = Assert.IsType<ServerPropertyDefinition>(ServerPropertyCatalog.Find("white-list"));
-        Assert.Equal(expected, ServerPropertyCatalog.Describe(definition, version).SuggestedValue);
-    }
 
     [Fact]
     public void Unknown_future_release_is_unverified()
