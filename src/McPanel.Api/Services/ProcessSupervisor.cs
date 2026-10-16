@@ -164,11 +164,15 @@ public sealed class ProcessSupervisor(
         await CompleteStartAsync(id, attempt, cancellationToken);
     }
 
-    private async Task StartPersistentAsync(Guid id, bool recovery, CancellationToken cancellationToken)
+    private async Task StartPersistentAsync(Guid id, bool recovery, CancellationToken cancellationToken, int? expectedRecoveryAttempt = null)
     {
         using var serverLock = await keyedLock.AcquireAsync(id, cancellationToken);
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var server = await db.Servers.FindAsync([id], cancellationToken) ?? throw PanelProblems.NotFound("Server");
+        // A stop can complete while scheduled recovery waits for the server lock.
+        if (expectedRecoveryAttempt is { } attempt &&
+            (server.State != ServerState.Crashed || !server.CrashRecovery || server.RecoveryRequired || server.CrashAttempts != attempt))
+            return;
         if (persistentRuntime.IsRunning(id) || server.State is ServerState.Running or ServerState.Starting or ServerState.Stopping)
             throw PanelProblems.Conflict("SERVER_BUSY", "The server already has a managed process.");
         if (server.RecoveryRequired || server.State is ServerState.Installing or ServerState.Updating or ServerState.BackingUp or ServerState.Error)
@@ -444,7 +448,7 @@ public sealed class ProcessSupervisor(
                 await using var db = await stateFactory.CreateDbContextAsync(lifetime.ApplicationStopping);
                 var server = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, lifetime.ApplicationStopping);
                 if (server is null || !server.CrashRecovery || server.RecoveryRequired || server.CrashAttempts != attempt || server.State != ServerState.Crashed) return;
-                await StartPersistentAsync(id, true, lifetime.ApplicationStopping);
+                await StartPersistentAsync(id, true, lifetime.ApplicationStopping, attempt);
             }
             catch (OperationCanceledException) when (lifetime.ApplicationStopping.IsCancellationRequested) { }
             catch (Exception exception) { logger.LogError(exception, "Persistent crash recovery failed for {ServerId}", id); }
