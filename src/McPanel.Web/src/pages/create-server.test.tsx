@@ -316,6 +316,8 @@ describe("recommendedJavaMajor", () => {
     ["1.20.5", 21],
     ["1.21.8", 21],
     ["26.2", 25],
+    ["26.3", 25],
+    ["26.3-rc-1", 25],
   ])("maps Minecraft %s to Java %s", (version, expected) => {
     expect(recommendedJavaMajor(version)).toBe(expected)
   })
@@ -324,6 +326,7 @@ describe("recommendedJavaMajor", () => {
     ["1.16.5", 16],
     ["1.17.1", 17],
     ["1.20.1", 21],
+    ["26.3", 25],
   ])("applies Paper's Java matrix for %s", (version, expected) => {
     expect(recommendedJavaMajor(version, "Paper")).toBe(expected)
   })

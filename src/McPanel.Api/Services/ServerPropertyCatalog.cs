@@ -46,7 +46,7 @@ public static class ServerPropertyCatalog
         "1.17.1", "1.18", "1.18.1", "1.18.2", "1.19", "1.19.1", "1.19.2", "1.19.3",
         "1.19.4", "1.20", "1.20.1", "1.20.2", "1.20.3", "1.20.4", "1.20.5", "1.20.6",
         "1.21", "1.21.1", "1.21.2", "1.21.3", "1.21.4", "1.21.5", "1.21.6", "1.21.7",
-        "1.21.8", "1.21.9", "1.21.10", "1.21.11", "26.1", "26.1.1", "26.1.2", "26.2"
+        "1.21.8", "1.21.9", "1.21.10", "1.21.11", "26.1", "26.1.1", "26.1.2", "26.2", "26.3"
     ];
 
     private static readonly HashSet<string> StableVersionSet = new(StableVersions, StringComparer.OrdinalIgnoreCase);
@@ -94,7 +94,10 @@ public static class ServerPropertyCatalog
         P("spawn-protection", "integer", "Gameplay", "16"),
         P("max-players", "integer", "Players & permissions", "20"),
         P("player-idle-timeout", "integer", "Players & permissions", "0", "1.8"),
-        P("white-list", "boolean", "Players & permissions", "false"),
+        P("white-list", "boolean", "Players & permissions", "true", defaults:
+        [
+            new("1.2.5", "26.2", "false"), new("26.3", null, "true")
+        ]),
         P("enforce-whitelist", "boolean", "Players & permissions", "false", "1.13"),
         P("op-permission-level", "integer", "Players & permissions", "4", "1.7.2"),
         P("function-permission-level", "integer", "Players & permissions", "2", "1.12"),

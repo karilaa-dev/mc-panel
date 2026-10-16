@@ -226,10 +226,12 @@ public sealed class PropertiesService(
         var document = File.Exists(file) ? PropertiesDocument.Parse(await File.ReadAllTextAsync(file, cancellationToken)) : PropertiesDocument.Empty();
         var settings = await db.PanelSettings.AsNoTracking().SingleOrDefaultAsync(x => x.Id == 1, cancellationToken) ?? new PanelSettingsEntity();
         var connection = GateConfigurationService.ResolveAddress(server, settings.GlobalServerHost);
+        var whitelist = ServerPropertyCatalog.Definitions.Single(definition => definition.Key == "white-list");
+        var whitelistDefault = ServerPropertyCatalog.Describe(whitelist, server.Version).SuggestedValue == "true";
         return new(
             document.Get("motd") ?? "A Minecraft Server",
             Integer(document, "max-players", 20), document.Get("gamemode") ?? "survival", document.Get("difficulty") ?? "easy",
-            Boolean(document, "white-list", false), Boolean(document, "online-mode", true), Boolean(document, "pvp", true),
+            Boolean(document, "white-list", whitelistDefault), Boolean(document, "online-mode", true), Boolean(document, "pvp", true),
             Boolean(document, "enable-command-block", false), Boolean(document, "allow-flight", false),
             Integer(document, "spawn-protection", 16), Integer(document, "view-distance", 10), Integer(document, "simulation-distance", 10),
             document.Get("level-name") ?? "world", Integer(document, "server-port", server.Port), server.MemoryMb,

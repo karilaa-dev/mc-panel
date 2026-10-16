@@ -124,7 +124,9 @@ public sealed partial class ConsoleService(
         {
             var text = MinecraftLogText.SanitizeForParsing(line.Text);
             var joined = JoinedRegex().Match(text);
+            if (!joined.Success) joined = LoggedInRegex().Match(text);
             var left = LeftRegex().Match(text);
+            if (!left.Success) left = DisconnectedRegex().Match(text);
             var uuid = UuidRegex().Match(text);
             if (!joined.Success && !left.Success && !uuid.Success) return;
             var name = (joined.Success ? joined : left.Success ? left : uuid).Groups["name"].Value;
@@ -188,6 +190,10 @@ public sealed partial class ConsoleService(
     private static partial Regex JoinedRegex();
     [GeneratedRegex(@"(?<![A-Za-z0-9_])(?<name>[A-Za-z0-9_]{1,16})(?![A-Za-z0-9_]) left the game")]
     private static partial Regex LeftRegex();
+    [GeneratedRegex(@"(?:^|\]: )(?<name>[A-Za-z0-9_]{1,16})\[[^\r\n]+\] logged in with entity id -?\d+ at \(")]
+    private static partial Regex LoggedInRegex();
+    [GeneratedRegex(@"(?:^|\]: )(?<name>[A-Za-z0-9_]{1,16}) lost connection: ")]
+    private static partial Regex DisconnectedRegex();
     [GeneratedRegex(@"UUID of player (?<name>[A-Za-z0-9_]{1,16})(?![A-Za-z0-9_]) is (?<uuid>[0-9a-fA-F-]{32,36})")]
     private static partial Regex UuidRegex();
 }
