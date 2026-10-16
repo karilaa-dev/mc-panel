@@ -227,7 +227,8 @@ public sealed class PropertiesService(
         var settings = await db.PanelSettings.AsNoTracking().SingleOrDefaultAsync(x => x.Id == 1, cancellationToken) ?? new PanelSettingsEntity();
         var connection = GateConfigurationService.ResolveAddress(server, settings.GlobalServerHost);
         var whitelist = ServerPropertyCatalog.Definitions.Single(definition => definition.Key == "white-list");
-        var whitelistDefault = ServerPropertyCatalog.Describe(whitelist, server.Version).SuggestedValue == "true";
+        var whitelistMetadata = ServerPropertyCatalog.Describe(whitelist, server.Version);
+        var whitelistDefault = whitelistMetadata.Compatibility == PropertyCompatibility.Supported && whitelistMetadata.SuggestedValue == "true";
         return new(
             document.Get("motd") ?? "A Minecraft Server",
             Integer(document, "max-players", 20), document.Get("gamemode") ?? "survival", document.Get("difficulty") ?? "easy",

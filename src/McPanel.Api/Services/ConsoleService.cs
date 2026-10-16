@@ -190,7 +190,7 @@ public sealed partial class ConsoleService(
     private static partial Regex JoinedRegex();
     [GeneratedRegex(@"(?<![A-Za-z0-9_])(?<name>[A-Za-z0-9_]{1,16})(?![A-Za-z0-9_]) left the game")]
     private static partial Regex LeftRegex();
-    [GeneratedRegex(@"(?:^|\]: )(?<name>[A-Za-z0-9_]{1,16})\[[^\r\n]+\] logged in with entity id -?\d+ at \(")]
+    [GeneratedRegex(@"(?:^|\]: )(?<name>[A-Za-z0-9_]{1,16}) ?\[[^\r\n]+\]:? logged in with entity id -?\d+ at \(")]
     private static partial Regex LoggedInRegex();
     [GeneratedRegex(@"(?:^|\]: )(?<name>[A-Za-z0-9_]{1,16}) lost connection: ")]
     private static partial Regex DisconnectedRegex();

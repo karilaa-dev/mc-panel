@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Text.Json;
 using McPanel.Api.Contracts;
 using McPanel.Api.Data;
 using McPanel.Api.Services;
@@ -14,12 +15,16 @@ public sealed partial class ApiValidationRegressionTests
     [InlineData("26.3", "", true)]
     [InlineData("26.3", "white-list=false\n", false)]
     [InlineData("26.3", "white-list=true\n", true)]
+    [InlineData("custom-fork-1.0", "", false)]
+    [InlineData("custom-fork-1.0", "white-list=false\n", false)]
+    [InlineData("custom-fork-1.0", "white-list=true\n", true)]
     public async Task Configuration_reads_versioned_whitelist_default_without_changing_explicit_settings(string version, string properties, bool expected)
     {
         var factory = _factory!.Services.GetRequiredService<IDbContextFactory<StateDbContext>>();
         await using (var db = await factory.CreateDbContextAsync())
         {
             var server = await db.Servers.SingleAsync(x => x.Id == _serverId);
+            server.Kind = ServerKind.CustomJar;
             server.Version = version;
             await db.SaveChangesAsync();
         }
@@ -30,9 +35,18 @@ public sealed partial class ApiValidationRegressionTests
 
         Assert.Equal(expected, configuration!.Whitelist);
         Assert.Equal(properties, await File.ReadAllTextAsync(file));
+
+        using var saved = await SendJsonAsync(HttpMethod.Put, $"/api/v1/servers/{_serverId}/configuration",
+            JsonSerializer.Serialize(configuration with { Motd = "Updated description" }));
+        saved.EnsureSuccessStatusCode();
+        var updated = PropertiesDocument.Parse(await File.ReadAllTextAsync(file));
+        Assert.Equal(expected ? "true" : "false", updated.Get("white-list"));
     }
 
     [Theory]
+    [InlineData("[12:00:00] [Server thread/INFO]: Alex [/127.0.0.1:12345]: logged in with entity id 42 at ([minecraft:overworld]0.0, 64.0, 0.0)")]
+    [InlineData("[12:00:00] [Server thread/INFO]: Alex [/[::1]:12345]: logged in with entity id 42 at (0.0, 64.0, 0.0)")]
+    [InlineData("[12:00:00 INFO]: Alex [<ip address withheld>]: logged in with entity id 42 at (0.0, 64.0, 0.0)")]
     [InlineData("[12:00:00] [Server thread/INFO]: Alex[/127.0.0.1:12345] logged in with entity id 42 at (0.0, 64.0, 0.0)")]
     [InlineData("[12:00:00] [Server thread/INFO]: Alex[/[::1]:12345] logged in with entity id 42 at (0.0, 64.0, 0.0)")]
     [InlineData("[12:00:00 INFO]: Alex[<ip address withheld>] logged in with entity id 42 at (0.0, 64.0, 0.0)")]
@@ -56,6 +70,7 @@ public sealed partial class ApiValidationRegressionTests
     }
 
     [Theory]
+    [InlineData("[Server thread/INFO]: <Steve> Alex [/127.0.0.1:12345]: logged in with entity id 42 at (0.0, 64.0, 0.0)")]
     [InlineData("[Server thread/INFO]: <Steve> Alex[/127.0.0.1:12345] logged in with entity id 42 at (0.0, 64.0, 0.0)")]
     [InlineData("[Server thread/INFO]: <Steve> Alex lost connection: Disconnected")]
     [InlineData("[Server thread/INFO]: com.mojang.authlib.GameProfile[id=<null>,name=Alex,properties={}] (/127.0.0.1:12345) lost connection: Disconnected")]
