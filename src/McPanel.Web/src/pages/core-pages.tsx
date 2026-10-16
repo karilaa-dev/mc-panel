@@ -380,7 +380,7 @@ export function CreateServerPage() {
             <SwitchField id="gate-start-on-boot" label="Start on boot" description="Start this Gate instance whenever the managed runtime starts." checked={gateStartOnBoot} onCheckedChange={setGateStartOnBoot} />
           </FormStack>}
 
-          {step === 2 && source === "Modpack" && <ModpackPicker inspection={packInspection} selectedOptionalFiles={selectedOptionalFiles} onChange={(value, optional) => { setPackInspection(value); setSelectedOptionalFiles(optional) }} />}
+          {step === 2 && !isGate && source === "Modpack" && <ModpackPicker inspection={packInspection} selectedOptionalFiles={selectedOptionalFiles} onChange={(value, optional) => { setPackInspection(value); setSelectedOptionalFiles(optional) }} />}
 
           {step === 2 && !isGate && source === "CustomJar" && <FormStack>
             <Input label="Minecraft version" placeholder="For example, 1.21.8" value={selectedVersion} onChange={(event) => setSelectedVersion(event.target.value)} description="Required for Java compatibility and server metadata." />

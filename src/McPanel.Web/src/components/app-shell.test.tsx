@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { MemoryRouter, Route, Routes } from "react-router-dom"
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AppShell } from "@/components/app-shell"
 import { Page } from "@/components/page"
@@ -30,7 +30,7 @@ function renderShell(initialEntry = "/") {
               <Route index element={<Page title="Dashboard destination"><p>Dashboard content</p></Page>} />
               <Route path="create" element={<h1>Create destination</h1>} />
               <Route path="servers/:serverId" element={<h1>Server destination</h1>} />
-              <Route path="servers/:serverId/console" element={<h1>Console destination</h1>} />
+              <Route path="servers/:serverId/console" element={<><h1>Console destination</h1><Link to="/servers/server-2/console">Second console</Link></>} />
             </Route>
           </Routes>
         </ThemeProvider>
@@ -116,6 +116,43 @@ describe("AppShell", () => {
     await user.click(await screen.findByRole("button", { name: "Start" }))
 
     await waitFor(() => expect(mockedApi.lifecycle).toHaveBeenCalledWith("server-1", "start"))
+  })
+
+  it("keeps a pending lifecycle action with the server that requested it", async () => {
+    const stoppedServer = {
+      kind: "Paper", version: "1.21.8", state: "Stopped", port: 25565, memoryMb: 2048, playerCount: 0, maxPlayers: 20,
+      cpuPercent: 0, memoryUsedMb: 0, uptimeSeconds: 0, restartRequired: false, startOnBoot: false,
+    } as const
+    mockedApi.servers.mockResolvedValue([
+      { ...stoppedServer, id: "server-1", name: "First server" },
+      { ...stoppedServer, id: "server-2", name: "Second server" },
+    ])
+    let rejectFirst: (error: Error) => void = () => undefined
+    mockedApi.lifecycle.mockImplementationOnce(() => new Promise((_, reject) => { rejectFirst = reject }))
+    let resolveSecond: () => void = () => undefined
+    mockedApi.lifecycle.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveSecond = () => resolve({ id: "job-22222222", type: "Start", state: "Queued", progress: 0 })
+    }))
+    const user = userEvent.setup()
+    renderShell("/servers/server-1/console")
+    const header = within(screen.getByRole("banner"))
+
+    await user.click(await header.findByRole("button", { name: "Start" }))
+    expect(await header.findByText("Starting…")).toBeVisible()
+
+    await user.click(screen.getByRole("link", { name: "Second console" }))
+    await waitFor(() => expect(header.getAllByText("Second server")[0]).toBeVisible())
+    expect(header.queryByText("Starting…")).not.toBeInTheDocument()
+    await user.click(header.getByRole("button", { name: "Start" }))
+    expect(await header.findByText("Starting…")).toBeVisible()
+
+    rejectFirst(new Error("first start failed"))
+    await waitFor(() => expect(mockedApi.lifecycle).toHaveBeenCalledTimes(2))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(header.getByText("Starting…")).toBeVisible()
+    expect(mockedApi.lifecycle).toHaveBeenNthCalledWith(1, "server-1", "start")
+    expect(mockedApi.lifecycle).toHaveBeenNthCalledWith(2, "server-2", "start")
+    resolveSecond()
   })
 
   it("keeps immediate stop available in the console header while starting", async () => {

@@ -90,6 +90,48 @@ public sealed partial class ApiValidationRegressionTests
     }
 
     [Fact]
+    public async Task Immediate_stop_cancels_a_claimed_start_before_it_takes_the_server_lock()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        await using var runtimeServer = new StartupGapRuntime(_paths!.RuntimeSocket, fresh: false);
+        var claim = new StartClaimPause();
+        var factory = RaceStateFactory(claim);
+        var services = _factory!.Services;
+        var runtime = new PersistentRuntimeClient(_paths, new ProductionRuntimeEnvironment(), NullLogger<PersistentRuntimeClient>.Instance);
+        using var queue = ActivatorUtilities.CreateInstance<OperationQueue>(services, factory);
+        using var supervisor = ActivatorUtilities.CreateInstance<ProcessSupervisor>(services, factory, queue, runtime);
+        await queue.StartAsync(default);
+        try
+        {
+            var start = await supervisor.QueueActionAsync(_serverId, "start", false, default);
+            // The worker has marked the job Running but has not reached the server lock.
+            await claim.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(JobState.Running, (await queue.GetAsync(start.Id, default))!.State);
+            var kill = await supervisor.QueueActionAsync(_serverId, "kill", true, default).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(JobState.Completed, kill.State);
+            claim.Release.TrySetResult();
+            for (var attempt = 0; attempt < 100 && !OperationQueue.IsTerminal((await queue.GetAsync(start.Id, default))!.State); attempt++)
+                await Task.Delay(20);
+            Assert.Equal(JobState.Canceled, (await queue.GetAsync(start.Id, default))!.State);
+            Assert.False(runtimeServer.LaunchReceived.Task.IsCompleted);
+            Assert.False(runtimeServer.Running);
+            Assert.Equal(ServerState.Stopped, (await ReadServerAsync()).State);
+
+            // A deliberate start requested after the immediate stop is admitted normally.
+            var restart = await supervisor.QueueActionAsync(_serverId, "start", false, default);
+            for (var attempt = 0; attempt < 100 && !OperationQueue.IsTerminal((await queue.GetAsync(restart.Id, default))!.State); attempt++)
+                await Task.Delay(20);
+            Assert.Equal(JobState.Completed, (await queue.GetAsync(restart.Id, default))!.State);
+            Assert.True(runtimeServer.Running);
+        }
+        finally
+        {
+            claim.Release.TrySetResult();
+            await queue.StopAsync(default);
+        }
+    }
+
+    [Fact]
     public async Task Immediate_stop_waits_for_a_dispatched_restart_after_cancellation()
     {
         if (!OperatingSystem.IsLinux()) return;
@@ -184,6 +226,26 @@ public sealed partial class ApiValidationRegressionTests
             int result, CancellationToken cancellationToken = default)
         {
             if (afterCommit) await PauseAsync(eventData.Context, cancellationToken);
+            return result;
+        }
+    }
+
+    // Pauses the queue worker right after it claims a job, before its action runs.
+    private sealed class StartClaimPause : DbCommandInterceptor
+    {
+        private int _paused;
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override async ValueTask<int> NonQueryExecutedAsync(DbCommand command, CommandExecutedEventData eventData,
+            int result, CancellationToken cancellationToken = default)
+        {
+            if (result > 0 && command.CommandText.StartsWith("UPDATE \"Jobs\"", StringComparison.Ordinal) &&
+                command.CommandText.Contains("\"Progress\" =") && command.CommandText.Contains("\"CancellationRequested\"") &&
+                Interlocked.Exchange(ref _paused, 1) == 0)
+            {
+                Entered.TrySetResult();
+                await Release.Task;
+            }
             return result;
         }
     }
