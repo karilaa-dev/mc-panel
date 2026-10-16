@@ -1,16 +1,19 @@
 import { useState, type ReactNode } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useParams } from "react-router-dom"
+import { Badge, Banner, Button, Checkbox, Input, InputArea, Label, Select, Tabs } from "@cloudflare/kumo"
 import {
-  ChevronDownIcon,
-  CircleHelpIcon,
-  ClipboardIcon,
-  KeyRoundIcon,
-  RefreshCwIcon,
-  SparklesIcon,
-} from "lucide-react"
-import { toast } from "sonner"
+  ArrowClockwiseIcon,
+  CaretDownIcon,
+  CopyIcon,
+  InfoIcon,
+  KeyIcon,
+  SparkleIcon,
+  WarningCircleIcon,
+  WarningIcon,
+} from "@phosphor-icons/react"
 import { api } from "@/lib/api"
+import { toast } from "@/lib/toast"
 import type {
   GateClassicConfigurationDto,
   GateConfigurationWriteDto,
@@ -19,68 +22,15 @@ import type {
   GateStatusDto,
   ServerSummaryDto,
 } from "@/lib/contracts"
+import { FieldLabel, SegmentedControl, SwitchField } from "@/components/controls"
+import { ErrorBanner, SectionSkeleton } from "@/components/feedback"
+import { GateBackendChecks } from "@/components/gate-backend-checks"
+import { ConfirmDialog } from "@/components/modal"
 import { MotdEditor } from "@/components/motd-editor"
 import { Page } from "@/components/page"
-import { GateBackendChecks } from "@/components/gate-backend-checks"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import { Checkbox } from "@/components/ui/checkbox"
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
-import {
-  Field,
-  FieldContent,
-  FieldDescription,
-  FieldError,
-  FieldGroup,
-  FieldLabel,
-  FieldLegend,
-  FieldSet,
-} from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { Skeleton } from "@/components/ui/skeleton"
-import { Spinner } from "@/components/ui/spinner"
-import { Switch } from "@/components/ui/switch"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Textarea } from "@/components/ui/textarea"
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
+import { Section } from "@/components/section"
+
+const classicTabs = ["players", "status", "compatibility", "network"]
 
 export function GateProxyPage() {
   const { serverId = "" } = useParams()
@@ -97,21 +47,19 @@ export function GateProxyPage() {
   })
   if (gate.isLoading || server.isLoading)
     return (
-      <Page title="Gate settings">
-        <Skeleton className="h-96" />
+      <Page title="Gate settings" size="narrow">
+        <SectionSkeleton rows={4} />
+        <SectionSkeleton rows={3} />
       </Page>
     )
   if (!gate.data || !server.data)
     return (
-      <Page title="Gate settings">
-        <Alert variant="destructive">
-          <AlertTitle>Gate unavailable</AlertTitle>
-          <AlertDescription>
-            {gate.error instanceof Error
-              ? gate.error.message
-              : "This Gate server could not be loaded."}
-          </AlertDescription>
-        </Alert>
+      <Page title="Gate settings" size="narrow">
+        <ErrorBanner
+          title="Gate unavailable"
+          description={gate.error instanceof Error ? gate.error.message : "This Gate server could not be loaded."}
+          onRetry={() => { void gate.refetch(); void server.refetch() }}
+        />
       </Page>
     )
   return (
@@ -213,337 +161,151 @@ function GateSettings({
     form.memoryMb! >= minimumMemoryMb &&
     form.memoryMb! <= 1_048_576 &&
     form.memoryMb! % 64 === 0
+  const activeTab = form.mode === "Lite" && classicTabs.includes(tab) ? "general" : tab
+  const tabs = [
+    { value: "general", label: "General" },
+    ...(form.mode === "Classic" ? [
+      { value: "players", label: "Players" },
+      { value: "status", label: "Server list" },
+      { value: "compatibility", label: "Compatibility" },
+      { value: "network", label: "Network" },
+    ] : []),
+    { value: "maintenance", label: "Maintenance" },
+  ]
 
   return (
     <Page
       title="Gate settings"
-      className="max-w-5xl"
+      size="narrow"
       description={`Configure how ${server.name} accepts players, connects to backends, and runs.`}
-      actions={
-        <Button
-          disabled={save.isPending || !memoryValid}
-          onClick={() => save.mutate()}
-        >
-          {save.isPending && <Spinner data-icon="inline-start" />}Save settings
-        </Button>
-      }
+      actions={<>
+        {gate.configuration.configurationDirty && <Badge variant="info" icon={<ArrowClockwiseIcon size={12} />}>Applying changes</Badge>}
+        <Button variant="primary" loading={save.isPending} disabled={!memoryValid} onClick={() => save.mutate()}>Save settings</Button>
+      </>}
     >
       {Boolean(gate.connectionProblems?.length) && (
-        <Alert variant="destructive">
-          <AlertTitle>Backend setup prevents joining</AlertTitle>
-          <AlertDescription>
-            {gate.connectionProblems?.map((warning) => (
-              <p key={warning}>{warning}</p>
-            ))}
-          </AlertDescription>
-        </Alert>
+        <Banner
+          role="alert"
+          variant="error"
+          icon={<WarningCircleIcon weight="fill" />}
+          title="Backend setup prevents joining"
+          description={<span className="flex flex-col gap-1">{gate.connectionProblems?.map((warning) => <span key={warning}>{warning}</span>)}</span>}
+        />
       )}
-      {!memoryValid && tab !== "general" && (
-        <Alert variant="destructive">
-          <AlertTitle>Increase the RAM limit</AlertTitle>
-          <AlertDescription>
-            The selected features need at least {minimumMemoryMb} MiB.{" "}
-            <Button variant="outline" onClick={() => setTab("general")}>
-              Review RAM limit
-            </Button>
-          </AlertDescription>
-        </Alert>
+      {!memoryValid && activeTab !== "general" && (
+        <Banner
+          variant="error"
+          icon={<WarningIcon weight="fill" />}
+          title="Increase the RAM limit"
+          description={`The selected features need at least ${minimumMemoryMb} MiB.`}
+          action={<Banner.Action variant="secondary" onClick={() => setTab("general")}>Review RAM limit</Banner.Action>}
+        />
       )}
-      <TooltipProvider delay={250}>
-        <Tabs
-          value={
-            form.mode === "Lite" && tab !== "maintenance" ? "general" : tab
-          }
-          onValueChange={setTab}
-        >
-          <TabsList aria-label="Gate settings categories">
-            <TabsTrigger value="general">General</TabsTrigger>
-            {[
-              ["players", "Players"],
-              ["status", "Server list"],
-              ["compatibility", "Compatibility"],
-              ["network", "Network"],
-            ].map(([value, label]) => (
-              <TabsTrigger
-                key={value}
-                value={value}
-                disabled={form.mode === "Lite"}
-                title={
-                  form.mode === "Lite"
-                    ? "Requires Classic mode. Change the proxy mode in General."
-                    : undefined
-                }
-              >
-                {label}
-              </TabsTrigger>
-            ))}
-            <TabsTrigger value="maintenance">Maintenance</TabsTrigger>
-          </TabsList>
-          <TabsContent value="general" className="flex flex-col gap-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>Proxy mode and listener</CardTitle>
-                <CardDescription>
-                  Choose how players connect through Gate.
-                </CardDescription>
-                {gate.configuration.configurationDirty && (
-                  <CardAction>
-                    <Badge variant="outline">
-                      <RefreshCwIcon data-icon="inline-start" />
-                      Applying changes
-                    </Badge>
-                  </CardAction>
-                )}
-              </CardHeader>
-              <CardContent>
-                <FieldGroup>
-                  <Field>
-                    <FieldLabel>Proxy mode</FieldLabel>
-                    <ToggleGroup
-                      value={[form.mode]}
-                      onValueChange={(values) =>
-                        values[0] && setMode(values[0] as GateMode)
-                      }
-                      variant="outline"
-                      spacing={0}
-                    >
-                      <ToggleGroupItem value="Lite">Lite</ToggleGroupItem>
-                      <ToggleGroupItem value="Classic">Classic</ToggleGroupItem>
-                    </ToggleGroup>
-                    <FieldDescription>
-                      Lite routes players transparently to backends. Classic
-                      adds player authentication, server switching, a custom
-                      server list, and cross-play.
-                    </FieldDescription>
-                  </Field>
-                  <Field>
-                    <FieldLabel htmlFor="gate-listener-port">
-                      Listener port
-                    </FieldLabel>
-                    <Input
-                      id="gate-listener-port"
-                      type="number"
-                      min={1024}
-                      max={65535}
-                      value={form.listenerPort}
-                      disabled={gate.runtime.state === "Running"}
-                      onChange={(event) =>
-                        setValue("listenerPort", Number(event.target.value))
-                      }
-                    />
-                    <FieldDescription>
-                      The local port Gate listens on. Stop Gate before changing
-                      it.
-                    </FieldDescription>
-                  </Field>
-                </FieldGroup>
-              </CardContent>
-            </Card>
-            {form.mode === "Lite" && (
-              <Alert>
-                <AlertTitle>Player features require Classic mode</AlertTitle>
-                <AlertDescription>
-                  Players, Server list, Compatibility, and Network settings
-                  become available in Classic mode. Their saved values are kept
-                  while Lite is active.
-                </AlertDescription>
-              </Alert>
-            )}
-            <Card>
-              <CardHeader>
-                <CardTitle>Resources and startup</CardTitle>
-                <CardDescription>
-                  Set Gate's memory budget and when it runs.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <FieldGroup>
-                  <Field data-invalid={!memoryValid}>
-                    <FieldLabel htmlFor="gate-memory">
-                      RAM limit (MiB)
-                    </FieldLabel>
-                    <Input
-                      id="gate-memory"
-                      type="number"
-                      min={minimumMemoryMb}
-                      max={1_048_576}
-                      step={64}
-                      value={form.memoryMb ?? ""}
-                      disabled={server.state !== "Stopped"}
-                      aria-invalid={!memoryValid}
-                      onChange={(event) =>
-                        setValue("memoryMb", Number(event.target.value))
-                      }
-                    />
-                    <FieldDescription>
-                      Total RAM for Gate and its child processes. Minimum for
-                      the selected components: {minimumMemoryMb} MiB. Stop Gate
-                      to change this limit.
-                    </FieldDescription>
-                    {!memoryValid && (
-                      <FieldError>
-                        Enter at least {minimumMemoryMb} MiB in steps of 64 MiB.
-                      </FieldError>
-                    )}
-                  </Field>
-                  <BooleanField
-                    id="gate-start-on-boot"
-                    label="Start on boot"
-                    description="Start this Gate server automatically when the host boots."
-                    value={Boolean(form.startOnBoot)}
-                    onChange={(value) => setValue("startOnBoot", value)}
-                  />
-                  <BooleanField
-                    id="gate-crash-recovery"
-                    label="Crash recovery"
-                    description="Restart Gate automatically if it crashes."
-                    value={Boolean(form.crashRecovery)}
-                    onChange={(value) => setValue("crashRecovery", value)}
-                  />
-                </FieldGroup>
-              </CardContent>
-            </Card>
-            {gate.configuration.lastApplyError && (
-              <Alert variant="destructive">
-                <AlertTitle>Last apply failed</AlertTitle>
-                <AlertDescription>
-                  {gate.configuration.lastApplyError}
-                </AlertDescription>
-              </Alert>
-            )}
-            <GateBackendChecks serverId={server.id} form={form} />
-          </TabsContent>
-          <GateFeatureSettings
-            serverId={server.id}
-            serverName={server.name}
-            gate={gate}
-            form={form}
-            setValue={setValue}
-            setClassic={setClassic}
-          />
-          <TabsContent value="maintenance" className="flex flex-col gap-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>Gate version</CardTitle>
-                <CardDescription>
-                  Installed version:{" "}
-                  {gate.installation.version ?? server.version}. Choose a stable
-                  release to upgrade or downgrade.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <FieldGroup>
-                  <Field>
-                    <FieldLabel>Release</FieldLabel>
-                    {versions.isPending ? (
-                      <Skeleton className="h-9 w-full" />
-                    ) : versions.isError ? (
-                      <Alert variant="destructive">
-                        <AlertTitle>Gate releases unavailable</AlertTitle>
-                        <AlertDescription>
-                          {versions.error.message}
-                          <Button
-                            variant="outline"
-                            onClick={() => void versions.refetch()}
-                          >
-                            Retry
-                          </Button>
-                        </AlertDescription>
-                      </Alert>
-                    ) : (
-                      <Select
-                        items={(versions.data ?? []).map((value) => ({
-                          value,
-                          label: value,
-                        }))}
-                        value={targetVersion}
-                        onValueChange={(value) =>
-                          value && setSelectedVersion(value)
-                        }
-                      >
-                        <SelectTrigger
-                          aria-label="Gate release"
-                          className="w-full"
-                        >
-                          <SelectValue placeholder="Choose a stable release" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectGroup>
-                            {versions.data?.map((value) => (
-                              <SelectItem key={value} value={value}>
-                                {value}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
-                    )}
-                    <FieldDescription>
-                      The current binary is retained for rollback. Older
-                      releases may not support every saved proxy setting or
-                      Minecraft version.
-                    </FieldDescription>
-                  </Field>
-                  <Field>
-                    <AlertDialog>
-                      <AlertDialogTrigger
-                        render={
-                          <Button
-                            variant="outline"
-                            disabled={
-                              !targetVersion ||
-                              versions.isError ||
-                              targetVersion === gate.installation.version ||
-                              update.isPending
-                            }
-                          />
-                        }
-                      >
-                        <RefreshCwIcon data-icon="inline-start" />
-                        Change Gate version
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>
-                            Install Gate {targetVersion}?
-                          </AlertDialogTitle>
-                          <AlertDialogDescription>
-                            {gate.runtime.state === "Running"
-                              ? "Gate will restart. "
-                              : ""}
-                            {activeConnections > 0
-                              ? `${activeConnections} active connection(s) will be disconnected. `
-                              : ""}
-                            The verified release replaces this instance's
-                            binary. Track the result in Activity.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction
-                            disabled={update.isPending}
-                            onClick={() => update.mutate()}
-                          >
-                            Queue version change
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-                  </Field>
-                </FieldGroup>
-              </CardContent>
-            </Card>
-            {form.mode === "Classic" && (
-              <GateDiagnostics classic={form.classic} setClassic={setClassic} />
-            )}
-          </TabsContent>
-        </Tabs>
-      </TooltipProvider>
+      {gate.configuration.lastApplyError && (
+        <Banner variant="error" icon={<WarningCircleIcon weight="fill" />} title="Last apply failed" description={gate.configuration.lastApplyError} />
+      )}
+      <Tabs variant="underline" value={activeTab} onValueChange={setTab} tabs={tabs} />
+      <div role="tabpanel" aria-label={tabs.find((item) => item.value === activeTab)?.label} className="flex flex-col gap-6">
+        {activeTab === "general" && <>
+          <Section title="Proxy mode and listener" description="Choose how players connect through Gate.">
+            <div className="flex flex-col gap-5">
+              <div className="flex flex-col gap-2">
+                <Label>Proxy mode</Label>
+                <SegmentedControl aria-label="Proxy mode" value={form.mode} onValueChange={(values) => values[0] && setMode(values[0] as GateMode)} options={[
+                  { value: "Lite", label: "Lite" },
+                  { value: "Classic", label: "Classic" },
+                ]} />
+                <p className="text-sm text-kumo-subtle">Lite routes players transparently to backends. Classic adds player authentication, server switching, a custom server list, and cross-play.</p>
+              </div>
+              <Input
+                label="Listener port"
+                type="number"
+                min={1024}
+                max={65535}
+                value={form.listenerPort}
+                disabled={gate.runtime.state === "Running"}
+                onChange={(event) => setValue("listenerPort", Number(event.target.value))}
+                description="The local port Gate listens on. Stop Gate before changing it."
+              />
+            </div>
+          </Section>
+          {form.mode === "Lite" && (
+            <Banner variant="secondary" icon={<InfoIcon weight="fill" />} title="Player features require Classic mode" description="Players, Server list, Compatibility, and Network settings become available in Classic mode. Their saved values are kept while Lite is active." />
+          )}
+          <Section title="Resources and startup" description="Set Gate's memory budget and when it runs.">
+            <div className="flex flex-col gap-5">
+              <Input
+                label="RAM limit (MiB)"
+                type="number"
+                min={minimumMemoryMb}
+                max={1_048_576}
+                step={64}
+                value={form.memoryMb ?? ""}
+                disabled={server.state !== "Stopped"}
+                onChange={(event) => setValue("memoryMb", Number(event.target.value))}
+                error={memoryValid ? undefined : `Enter at least ${minimumMemoryMb} MiB in steps of 64 MiB.`}
+                description={`Total RAM for Gate and its child processes. Minimum for the selected components: ${minimumMemoryMb} MiB. Stop Gate to change this limit.`}
+              />
+              <BooleanField
+                id="gate-start-on-boot"
+                label="Start on boot"
+                description="Start this Gate server automatically when the host boots."
+                value={Boolean(form.startOnBoot)}
+                onChange={(value) => setValue("startOnBoot", value)}
+              />
+              <BooleanField
+                id="gate-crash-recovery"
+                label="Crash recovery"
+                description="Restart Gate automatically if it crashes."
+                value={Boolean(form.crashRecovery)}
+                onChange={(value) => setValue("crashRecovery", value)}
+              />
+            </div>
+          </Section>
+          <GateBackendChecks serverId={server.id} form={form} />
+        </>}
+        <GateFeatureSettings
+          tab={activeTab}
+          serverId={server.id}
+          serverName={server.name}
+          gate={gate}
+          form={form}
+          setValue={setValue}
+          setClassic={setClassic}
+        />
+        {activeTab === "maintenance" && <>
+          <Section title="Gate version" description={`Installed version: ${gate.installation.version ?? server.version}. Choose a stable release to upgrade or downgrade.`}>
+            <div className="flex flex-col gap-4">
+              {versions.isError
+                ? <ErrorBanner title="Gate releases unavailable" description={versions.error.message} onRetry={() => void versions.refetch()} />
+                : <Select
+                  label="Gate release"
+                  className="w-full"
+                  loading={versions.isPending}
+                  placeholder="Choose a stable release"
+                  items={(versions.data ?? []).map((value) => ({ value, label: value }))}
+                  value={targetVersion}
+                  onValueChange={(value) => value && setSelectedVersion(value as string)}
+                  description="The current binary is retained for rollback. Older releases may not support every saved proxy setting or Minecraft version."
+                />}
+              <ConfirmDialog
+                trigger={<Button className="self-start" icon={ArrowClockwiseIcon} disabled={!targetVersion || versions.isError || targetVersion === gate.installation.version || update.isPending}>Change Gate version</Button>}
+                title={`Install Gate ${targetVersion}?`}
+                description={`${gate.runtime.state === "Running" ? "Gate will restart. " : ""}${activeConnections > 0 ? `${activeConnections} active connection(s) will be disconnected. ` : ""}The verified release replaces this instance's binary. Track the result in Activity.`}
+                confirmLabel="Queue version change"
+                onConfirm={() => update.mutate()}
+              />
+            </div>
+          </Section>
+          {form.mode === "Classic" && <GateDiagnostics classic={form.classic} setClassic={setClassic} />}
+        </>}
+      </div>
     </Page>
   )
 }
 
 type GateFeatureProps = {
+  tab?: string
   serverId: string
   serverName: string
   gate: GateStatusDto
@@ -558,21 +320,21 @@ type GateFeatureProps = {
   ) => void
 }
 
-function GateFeatureSettings(props: GateFeatureProps) {
+function GateFeatureSettings({ tab, ...props }: GateFeatureProps) {
   return (
     <>
-      <TabsContent value="players" className="flex flex-col gap-4">
+      {tab === "players" && <div className="flex flex-col gap-6">
         <PlayerSettings {...props} />
-      </TabsContent>
-      <TabsContent value="status" className="flex flex-col gap-4">
+      </div>}
+      {tab === "status" && <div className="flex flex-col gap-6">
         <ServerListSettings {...props} />
-      </TabsContent>
-      <TabsContent value="compatibility" className="flex flex-col gap-4">
+      </div>}
+      {tab === "compatibility" && <div className="flex flex-col gap-6">
         <CompatibilitySettings {...props} />
-      </TabsContent>
-      <TabsContent value="network" className="flex flex-col gap-4">
+      </div>}
+      {tab === "network" && <div className="flex flex-col gap-6">
         <NetworkSettings {...props} />
-      </TabsContent>
+      </div>}
     </>
   )
 }
@@ -593,40 +355,20 @@ function PlayerSettings({
   ]
   return (
     <>
-      <Card>
-        <CardHeader>
-          <CardTitle>Forwarding and authentication</CardTitle>
-          <CardDescription>
-            Choose how Gate authenticates players and securely forwards their
-            identity to backends.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FieldGroup>
-            <Field>
+      <Section title="Forwarding and authentication" description="Choose how Gate authenticates players and securely forwards their identity to backends.">
+          <div className="flex flex-col gap-5">
+            <div className="flex flex-col gap-2">
               <SettingLabel
                 label="Forwarding mode"
                 description="Velocity is recommended for compatible networks. BungeeGuard uses its own shared secret, Legacy has weaker identity guarantees, and None does not forward Java player identity."
               />
-              <ToggleGroup
-                value={[form.classicForwardingMode]}
-                onValueChange={(values) =>
-                  values[0] &&
-                  setValue(
-                    "classicForwardingMode",
-                    values[0] as GateForwardingMode
-                  )
-                }
-                variant="outline"
-                spacing={0}
-              >
-                {forwardingKinds.map((kind) => (
-                  <ToggleGroupItem key={kind} value={kind}>
-                    {kind}
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-            </Field>
+              <SegmentedControl
+                aria-label="Forwarding mode"
+                value={form.classicForwardingMode}
+                onValueChange={(values) => values[0] && setValue("classicForwardingMode", values[0] as GateForwardingMode)}
+                options={forwardingKinds.map((kind) => ({ value: kind, label: kind }))}
+              />
+            </div>
             <SecretControls
               serverId={serverId}
               kind={
@@ -658,14 +400,13 @@ function PlayerSettings({
               value={classic.forceKeyAuthentication}
               onChange={(value) => setClassic("forceKeyAuthentication", value)}
             />
-          </FieldGroup>
-        </CardContent>
-      </Card>
+          </div>
+        </Section>
       <AdvancedSettings
         title="Authentication details"
         description="Duplicate logins, session services, and client proxy checks."
       >
-        <FieldGroup>
+        <div className="flex flex-col gap-5">
           <TextField
             id="gate-session-server"
             label="Session server URL"
@@ -692,18 +433,10 @@ function PlayerSettings({
               setClassic("shouldPreventClientProxyConnections", value)
             }
           />
-        </FieldGroup>
+        </div>
       </AdvancedSettings>
-      <Card>
-        <CardHeader>
-          <CardTitle>Player commands</CardTitle>
-          <CardDescription>
-            Control server switching, command permissions, and backend plugin
-            messages.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FieldGroup>
+      <Section title="Player commands" description="Control server switching, command permissions, and backend plugin messages.">
+          <div className="flex flex-col gap-5">
             <BooleanField
               id="gate-bungee-channel"
               label="Bungee plugin channel"
@@ -736,9 +469,8 @@ function PlayerSettings({
               value={classic.announceProxyCommands}
               onChange={(value) => setClassic("announceProxyCommands", value)}
             />
-          </FieldGroup>
-        </CardContent>
-      </Card>
+          </div>
+        </Section>
       <GateBackendChecks serverId={serverId} form={form} />
     </>
   )
@@ -752,21 +484,14 @@ function ServerListSettings({
   const classic = form.classic
   return (
     <>
-      <Card>
-        <CardHeader>
-          <CardTitle>Server list appearance</CardTitle>
-          <CardDescription>
-            Choose what Java players see in their multiplayer server list.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FieldGroup>
+      <Section title="Server list appearance" description="Choose what Java players see in their multiplayer server list.">
+          <div className="flex flex-col gap-5">
             <MotdEditor
               value={classic.motd}
               serverName={serverName}
               onChange={(value) => setClassic("motd", value)}
             />
-            <FieldGroup className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-4 sm:grid-cols-2">
               <NumberField
                 id="gate-show-max"
                 label="Displayed maximum players"
@@ -783,8 +508,8 @@ function ServerListSettings({
                 placeholder="server-icon.png or data:image/png;base64,…"
                 onChange={(value) => setClassic("favicon", value || null)}
               />
-            </FieldGroup>
-            <FieldGroup className="grid gap-4 sm:grid-cols-2">
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
               <BooleanField
                 id="gate-announce-forge"
                 label="Announce Forge compatibility"
@@ -792,20 +517,11 @@ function ServerListSettings({
                 value={classic.announceForge}
                 onChange={(value) => setClassic("announceForge", value)}
               />
-            </FieldGroup>
-          </FieldGroup>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Query service</CardTitle>
-          <CardDescription>
-            Share server status with external lists and monitoring tools over
-            UDP.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FieldGroup>
+            </div>
+          </div>
+        </Section>
+      <Section title="Query service" description="Share server status with external lists and monitoring tools over UDP.">
+          <div className="flex flex-col gap-5">
             <BooleanField
               id="gate-query-enabled"
               label="Enable GameSpy query"
@@ -833,9 +549,8 @@ function ServerListSettings({
                 onChange={(value) => setClassic("queryPort", value)}
               />
             )}
-          </FieldGroup>
-        </CardContent>
-      </Card>
+          </div>
+        </Section>
     </>
   )
 }
@@ -852,17 +567,9 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
   ] as const
   return (
     <>
-      <Card>
-        <CardHeader>
-          <CardTitle>Java versions</CardTitle>
-          <CardDescription>
-            Let Java clients join backends running a different supported
-            Minecraft version.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FieldGroup>
-            {" "}
+      <Section title="Java versions" description="Let Java clients join backends running a different supported Minecraft version.">
+          <div className="flex flex-col gap-5">
+            
             <BooleanField
               id="gate-via-enabled"
               label="Via protocol translation"
@@ -879,16 +586,15 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
                 onChange={(value) => setClassic("viaMode", value)}
               />
             )}
-          </FieldGroup>
-        </CardContent>
-      </Card>
+          </div>
+        </Section>
       {classic.viaEnabled && (
         <AdvancedSettings
           title="Via overrides"
           description="Custom artifacts, downloads, and the internal listener."
         >
-          <FieldGroup>
-            <FieldGroup className="grid gap-3 sm:grid-cols-2">
+          <div className="flex flex-col gap-5">
+            <div className="grid gap-4 sm:grid-cols-2">
               <TextField
                 id="gate-via-bind"
                 label="Internal bind"
@@ -905,8 +611,8 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
                 placeholder="Latest compatible"
                 onChange={(value) => setClassic("viaVersion", value || null)}
               />
-            </FieldGroup>
-            <FieldGroup className="grid gap-3 sm:grid-cols-2">
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
               <TextField
                 id="gate-via-library"
                 label="Library override"
@@ -925,7 +631,7 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
                 placeholder="/opt/vialite/vialite"
                 onChange={(value) => setClassic("viaBinaryPath", value || null)}
               />
-            </FieldGroup>
+            </div>
             <TextField
               id="gate-via-mirror"
               label="Artifact mirror"
@@ -941,19 +647,12 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
               value={classic.viaOffline}
               onChange={(value) => setClassic("viaOffline", value)}
             />
-          </FieldGroup>
+          </div>
         </AdvancedSettings>
       )}
-      <Card>
-        <CardHeader>
-          <CardTitle>Bedrock cross-play</CardTitle>
-          <CardDescription>
-            Let Bedrock Edition players join through Geyser and Floodgate.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FieldGroup>
-            {" "}
+      <Section title="Bedrock cross-play" description="Let Bedrock Edition players join through Geyser and Floodgate.">
+          <div className="flex flex-col gap-5">
+            
             <BooleanField
               id="gate-bedrock-enabled"
               label="Bedrock cross-play"
@@ -996,8 +695,8 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
             )}
             {classic.bedrockEnabled && (
               <>
-                {" "}
-                <FieldGroup className="grid gap-3 sm:grid-cols-3">
+                
+                <div className="grid gap-4 sm:grid-cols-3">
                   <TextField
                     id="gate-geyser-listen"
                     label="Geyser listen address"
@@ -1028,18 +727,17 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
                       setClassic("bedrockFloodgateKeyPath", value)
                     }
                   />
-                </FieldGroup>
+                </div>
               </>
             )}
-          </FieldGroup>
-        </CardContent>
-      </Card>
+          </div>
+        </Section>
       {classic.bedrockEnabled && (
         <AdvancedSettings
           title="Bedrock overrides"
           description="Managed artifacts, Geyser configuration, and backend identity forwarding."
         >
-          <FieldGroup>
+          <div className="flex flex-col gap-5">
             {classic.bedrockManagedEnabled &&
               (classic.bedrockManagedEngine === "java" ? (
                 <>
@@ -1052,7 +750,7 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
                       setClassic("bedrockManagedJarUrl", value || null)
                     }
                   />
-                  <FieldGroup className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-4 sm:grid-cols-2">
                     <TextField
                       id="gate-geyser-data"
                       label="Geyser data directory"
@@ -1073,7 +771,7 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
                         setClassic("bedrockManagedJavaPath", value)
                       }
                     />
-                  </FieldGroup>
+                  </div>
                   <BooleanField
                     id="gate-geyser-update"
                     label="Automatically update Geyser"
@@ -1086,7 +784,7 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
                 </>
               ) : (
                 <>
-                  <FieldGroup className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-4 sm:grid-cols-2">
                     <TextField
                       id="gate-geyserlite-library"
                       label="Geyserlite library override"
@@ -1107,8 +805,8 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
                         setClassic("bedrockManagedBinaryPath", value || null)
                       }
                     />
-                  </FieldGroup>
-                  <FieldGroup className="grid gap-3 sm:grid-cols-2">
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2">
                     <TextField
                       id="gate-geyserlite-mirror"
                       label="Geyserlite mirror"
@@ -1129,7 +827,7 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
                         setClassic("bedrockManagedVersion", value || null)
                       }
                     />
-                  </FieldGroup>
+                  </div>
                   <BooleanField
                     id="gate-geyserlite-offline"
                     label="Geyserlite offline mode"
@@ -1141,15 +839,15 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
                   />
                 </>
               ))}
-            <Field>
+            <div className="flex flex-col gap-2">
               <SettingLabel
                 htmlFor="gate-geyser-args"
                 label="Extra managed process arguments"
                 description="Arguments appended to the managed Geyser process exactly as separate values, without shell interpretation."
               />
-              <Textarea
+              <InputArea
                 id="gate-geyser-args"
-                className="font-mono"
+                className="font-mono text-sm"
                 rows={3}
                 value={classic.bedrockManagedExtraArguments.join("\n")}
                 onChange={(event) =>
@@ -1159,27 +857,27 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
                   )
                 }
               />
-              <FieldDescription>One argument per line.</FieldDescription>
-            </Field>
-            <Field>
+              <p className="text-sm text-kumo-subtle">One argument per line.</p>
+            </div>
+            <div className="flex flex-col gap-2">
               <SettingLabel
                 htmlFor="gate-geyser-overrides"
                 label="Geyser config overrides"
                 description="JSON object merged into Gate’s generated Geyser configuration. Values here override generated defaults and should be used only for options not exposed above."
               />
-              <Textarea
+              <InputArea
                 id="gate-geyser-overrides"
-                className="font-mono"
+                className="font-mono text-sm"
                 rows={7}
                 value={classic.bedrockConfigOverridesJson}
                 onChange={(event) =>
                   setClassic("bedrockConfigOverridesJson", event.target.value)
                 }
               />
-              <FieldDescription>
+              <p className="text-sm text-kumo-subtle">
                 For example: {`{"bedrock":{"port":19132}}`}
-              </FieldDescription>
-            </Field>
+              </p>
+            </div>
             <BooleanField
               id="gate-backend-floodgate"
               label="Forward Floodgate identity to backends"
@@ -1190,30 +888,21 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
               }
             />
             {classic.bedrockBackendFloodgateEnabled && (
-              <Field>
+              <div className="flex flex-col gap-2">
                 <SettingLabel
                   label="Floodgate-aware backends"
                   description="Only checked backends receive Floodgate identity. Each must be configured with the same Floodgate key."
                 />
-                <FieldGroup className="grid gap-2 sm:grid-cols-2">
+                <div className="grid gap-2 sm:grid-cols-2">
                   {gate.routes.map((route) => {
-                    const id = `gate-floodgate-${route.serverId}`
-                    const checked =
+                                        const checked =
                       classic.bedrockBackendFloodgateServerIds.includes(
                         route.serverId
                       )
                     return (
-                      <Field key={route.serverId} orientation="horizontal">
-                        <FieldContent>
-                          <FieldLabel htmlFor={id}>
-                            {route.serverName}
-                          </FieldLabel>
-                          <FieldDescription>
-                            {route.backendAddress}
-                          </FieldDescription>
-                        </FieldContent>
+                      <label key={route.serverId} className="flex cursor-pointer items-start gap-3 rounded-lg p-3 ring ring-kumo-hairline hover:bg-kumo-tint">
                         <Checkbox
-                          id={id}
+                          className="mt-0.5"
                           checked={checked}
                           onCheckedChange={(value) =>
                             setClassic(
@@ -1231,18 +920,22 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
                             )
                           }
                         />
-                      </Field>
+                        <span className="flex min-w-0 flex-col">
+                          <span className="text-sm font-medium text-kumo-default">{route.serverName}</span>
+                          <span className="font-mono text-xs text-kumo-subtle">{route.backendAddress}</span>
+                        </span>
+                      </label>
                     )
                   })}
-                </FieldGroup>
+                </div>
                 {gate.routes.length === 0 && (
-                  <FieldDescription>
+                  <p className="text-sm text-kumo-subtle">
                     Add backends before enabling backend Floodgate forwarding.
-                  </FieldDescription>
+                  </p>
                 )}
-              </Field>
+              </div>
             )}
-          </FieldGroup>
+          </div>
         </AdvancedSettings>
       )}
     </>
@@ -1253,16 +946,8 @@ function NetworkSettings({ form, setClassic }: GateFeatureProps) {
   const classic = form.classic
   return (
     <>
-      <Card>
-        <CardHeader>
-          <CardTitle>Connections and failover</CardTitle>
-          <CardDescription>
-            Control backend connection timeouts, transfers, and recovery after a
-            disconnect.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FieldGroup>
+      <Section title="Connections and failover" description="Control backend connection timeouts, transfers, and recovery after a disconnect.">
+          <div className="flex flex-col gap-5">
             <BooleanField
               id="gate-failover"
               label="Fail over after unexpected disconnect"
@@ -1272,7 +957,7 @@ function NetworkSettings({ form, setClassic }: GateFeatureProps) {
                 setClassic("failoverOnUnexpectedServerDisconnect", value)
               }
             />
-            <FieldGroup className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-4 sm:grid-cols-2">
               <TextField
                 id="gate-connect-timeout"
                 label="Connection timeout"
@@ -1289,7 +974,7 @@ function NetworkSettings({ form, setClassic }: GateFeatureProps) {
                 placeholder="30s"
                 onChange={(value) => setClassic("readTimeout", value)}
               />
-            </FieldGroup>
+            </div>
             <BooleanField
               id="gate-accept-transfers"
               label="Accept transfer packets"
@@ -1297,20 +982,12 @@ function NetworkSettings({ form, setClassic }: GateFeatureProps) {
               value={classic.acceptTransfers}
               onChange={(value) => setClassic("acceptTransfers", value)}
             />
-          </FieldGroup>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Traffic limits</CardTitle>
-          <CardDescription>
-            Limit connections, logins, and packet traffic.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FieldGroup>
-            {" "}
-            <FieldGroup className="grid gap-4 lg:grid-cols-2">
+          </div>
+        </Section>
+      <Section title="Traffic limits" description="Limit connections, logins, and packet traffic.">
+          <div className="flex flex-col gap-5">
+            
+            <div className="grid gap-4 lg:grid-cols-2">
               <QuotaFields
                 prefix="connections"
                 title="Connection quota"
@@ -1343,8 +1020,8 @@ function NetworkSettings({ form, setClassic }: GateFeatureProps) {
                   setClassic("loginsQuotaMaxEntries", value)
                 }
               />
-            </FieldGroup>
-            <FieldGroup className="grid gap-3 sm:grid-cols-3">
+            </div>
+            <div className="grid gap-4 sm:grid-cols-3">
               <TextField
                 id="gate-packet-window"
                 label="Packet window"
@@ -1367,20 +1044,11 @@ function NetworkSettings({ form, setClassic }: GateFeatureProps) {
                 value={classic.bytesPerSecond}
                 onChange={(value) => setClassic("bytesPerSecond", value)}
               />
-            </FieldGroup>
-          </FieldGroup>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>PROXY protocol</CardTitle>
-          <CardDescription>
-            Preserve client addresses through trusted load balancers or send
-            PROXY headers to backends.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FieldGroup>
+            </div>
+          </div>
+        </Section>
+      <Section title="PROXY protocol" description="Preserve client addresses through trusted load balancers or send PROXY headers to backends.">
+          <div className="flex flex-col gap-5">
             <BooleanField
               id="gate-proxy-protocol"
               label="Accept PROXY protocol"
@@ -1396,15 +1064,15 @@ function NetworkSettings({ form, setClassic }: GateFeatureProps) {
               onChange={(value) => setClassic("proxyProtocolBackend", value)}
             />
             {classic.proxyProtocol && (
-              <Field>
+              <div className="flex flex-col gap-2">
                 <SettingLabel
                   htmlFor="gate-trusted-proxies"
                   label="Trusted upstreams"
                   description="IP addresses or CIDR blocks allowed to assert a client address. Never trust all public addresses unless direct access to Gate is blocked."
                 />
-                <Textarea
+                <InputArea
                   id="gate-trusted-proxies"
-                  className="font-mono"
+                  className="font-mono text-sm"
                   rows={6}
                   value={classic.proxyProtocolTrustedProxies.join("\n")}
                   onChange={(event) =>
@@ -1414,21 +1082,20 @@ function NetworkSettings({ form, setClassic }: GateFeatureProps) {
                     )
                   }
                 />
-                <FieldDescription>
+                <p className="text-sm text-kumo-subtle">
                   One IP address or CIDR block per line.
-                </FieldDescription>
-              </Field>
+                </p>
+              </div>
             )}
-          </FieldGroup>
-        </CardContent>
-      </Card>
+          </div>
+        </Section>
       <AdvancedSettings
         title="Packet compression"
         description="Tune compression to balance CPU use and bandwidth."
       >
-        <FieldGroup>
-          {" "}
-          <FieldGroup className="grid gap-3 sm:grid-cols-2">
+        <div className="flex flex-col gap-5">
+          
+          <div className="grid gap-4 sm:grid-cols-2">
             <NumberField
               id="gate-compression-threshold"
               label="Compression threshold"
@@ -1446,8 +1113,8 @@ function NetworkSettings({ form, setClassic }: GateFeatureProps) {
               max={9}
               onChange={(value) => setClassic("compressionLevel", value)}
             />
-          </FieldGroup>
-        </FieldGroup>
+          </div>
+        </div>
       </AdvancedSettings>
     </>
   )
@@ -1461,15 +1128,8 @@ function GateDiagnostics({
   setClassic: GateFeatureProps["setClassic"]
 }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Logs and shutdown</CardTitle>
-        <CardDescription>
-          Choose what Gate logs and what players see when it stops.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <FieldGroup>
+    <Section title="Logs and shutdown" description="Choose what Gate logs and what players see when it stops.">
+        <div className="flex flex-col gap-5">
           <BooleanField
             id="gate-debug"
             label="Debug logging"
@@ -1483,14 +1143,14 @@ function GateDiagnostics({
             description="Write every multiplayer server-list ping to Gate’s log. This can create substantial log volume on public servers."
             value={classic.logPingRequests}
             onChange={(value) => setClassic("logPingRequests", value)}
-          />{" "}
-          <Field>
+          />
+          <div className="flex flex-col gap-2">
             <SettingLabel
               htmlFor="gate-shutdown-reason"
               label="Shutdown reason"
               description="Message sent to connected players when this Gate instance shuts down or restarts."
             />
-            <Textarea
+            <InputArea
               id="gate-shutdown-reason"
               rows={3}
               value={classic.shutdownReason}
@@ -1498,10 +1158,9 @@ function GateDiagnostics({
                 setClassic("shutdownReason", event.target.value)
               }
             />
-          </Field>
-        </FieldGroup>
-      </CardContent>
-    </Card>
+          </div>
+        </div>
+      </Section>
   )
 }
 
@@ -1516,30 +1175,23 @@ function AdvancedSettings({
 }) {
   const [open, setOpen] = useState(false)
   return (
-    <Card size="sm">
-      <Collapsible open={open} onOpenChange={setOpen}>
-        <CardHeader>
-          <CardTitle>{title}</CardTitle>
-          <CardDescription>{description}</CardDescription>
-          <CollapsibleTrigger
-            render={
-              <Button
-                type="button"
-                variant="ghost"
-                className="w-fit"
-                aria-label={`${open ? "Hide" : "Show"} ${title.toLowerCase()}`}
-              />
-            }
-          >
-            <ChevronDownIcon data-icon="inline-start" />
-            {open ? "Hide options" : "Show options"}
-          </CollapsibleTrigger>
-        </CardHeader>
-        <CollapsibleContent>
-          <CardContent className="pt-4">{children}</CardContent>
-        </CollapsibleContent>
-      </Collapsible>
-    </Card>
+    <Section
+      title={title}
+      description={description}
+      actions={<Button
+        size="sm"
+        variant="ghost"
+        aria-expanded={open}
+        aria-label={`${open ? "Hide" : "Show"} ${title.toLowerCase()}`}
+        onClick={() => setOpen(!open)}
+      >
+        <CaretDownIcon size={14} className={open ? "rotate-180 transition-transform" : "transition-transform"} />
+        {open ? "Hide options" : "Show options"}
+      </Button>}
+      contentClassName={open ? undefined : "hidden"}
+    >
+      {open && children}
+    </Section>
   )
 }
 
@@ -1552,26 +1204,7 @@ function SettingLabel({
   label: string
   description: string
 }) {
-  return (
-    <div className="flex items-center gap-1">
-      <FieldLabel htmlFor={htmlFor}>{label}</FieldLabel>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              aria-label={`About ${label}`}
-            />
-          }
-        >
-          <CircleHelpIcon />
-        </TooltipTrigger>
-        <TooltipContent side="right">{description}</TooltipContent>
-      </Tooltip>
-    </div>
-  )
+  return <FieldLabel htmlFor={htmlFor} label={label} help={description} />
 }
 
 function BooleanField({
@@ -1587,14 +1220,7 @@ function BooleanField({
   value: boolean
   onChange: (value: boolean) => void
 }) {
-  return (
-    <Field orientation="horizontal">
-      <FieldContent>
-        <SettingLabel htmlFor={id} label={label} description={description} />
-      </FieldContent>
-      <Switch id={id} checked={value} onCheckedChange={onChange} />
-    </Field>
-  )
+  return <SwitchField id={id} label={label} tooltip={description} checked={value} onCheckedChange={onChange} />
 }
 
 function NumberField({
@@ -1617,10 +1243,11 @@ function NumberField({
   onChange: (value: number) => void
 }) {
   return (
-    <Field>
+    <div className="flex flex-col gap-2">
       <SettingLabel htmlFor={id} label={label} description={description} />
       <Input
         id={id}
+        aria-label={label}
         type="number"
         value={value}
         min={min}
@@ -1628,7 +1255,7 @@ function NumberField({
         step={step}
         onChange={(event) => onChange(Number(event.target.value))}
       />
-    </Field>
+    </div>
   )
 }
 
@@ -1648,15 +1275,16 @@ function TextField({
   onChange: (value: string) => void
 }) {
   return (
-    <Field>
+    <div className="flex flex-col gap-2">
       <SettingLabel htmlFor={id} label={label} description={description} />
       <Input
         id={id}
+        aria-label={label}
         value={value}
         placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
       />
-    </Field>
+    </div>
   )
 }
 
@@ -1673,29 +1301,17 @@ function SelectField<T extends string>({
   options: ReadonlyArray<{ value: T; label: string }>
   onChange: (value: T) => void
 }) {
-  const items = options.map((option) => ({ ...option }))
   return (
-    <Field>
+    <div className="flex flex-col gap-2">
       <SettingLabel label={label} description={description} />
       <Select
-        items={items}
+        aria-label={label}
+        className="w-full"
+        items={options.map((option) => ({ ...option }))}
         value={value}
         onValueChange={(nextValue) => nextValue && onChange(nextValue as T)}
-      >
-        <SelectTrigger className="w-full" aria-label={label}>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectGroup>
-            {options.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectGroup>
-        </SelectContent>
-      </Select>
-    </Field>
+      />
+    </div>
   )
 }
 
@@ -1725,9 +1341,9 @@ function QuotaFields({
   onMaxEntries: (value: number) => void
 }) {
   return (
-    <FieldSet>
-      <FieldLegend>{title}</FieldLegend>
-      <FieldGroup>
+    <fieldset className="flex flex-col gap-4 rounded-lg p-4 ring ring-kumo-hairline">
+      <legend className="px-1 text-base font-semibold text-kumo-default">{title}</legend>
+      <div className="flex flex-col gap-4">
         <BooleanField
           id={`gate-${prefix}-quota`}
           label="Enabled"
@@ -1736,7 +1352,7 @@ function QuotaFields({
           onChange={onEnabled}
         />
         {enabled && (
-          <FieldGroup className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-3">
             <NumberField
               id={`gate-${prefix}-ops`}
               label="Operations / second"
@@ -1762,10 +1378,10 @@ function QuotaFields({
               min={1}
               onChange={onMaxEntries}
             />
-          </FieldGroup>
+          </div>
         )}
-      </FieldGroup>
-    </FieldSet>
+      </div>
+    </fieldset>
   )
 }
 
@@ -1800,61 +1416,20 @@ function SecretControls({
   })
   if (!enabled) return null
   const secretPresent = hasSecret || Boolean(secret)
-  const generateButton = secretPresent ? (
-    <AlertDialog>
-      <AlertDialogTrigger render={<Button type="button" variant="outline" />}>
-        <SparklesIcon data-icon="inline-start" />
-        Generate new secret
-      </AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>
-            Replace the existing {label} secret?
-          </AlertDialogTitle>
-          <AlertDialogDescription>
-            Connections will fail until every affected backend is updated to use
-            the newly generated secret.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            disabled={generate.isPending}
-            onClick={() => generate.mutate(true)}
-          >
-            Generate new secret
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  ) : (
-    <Button
-      type="button"
-      variant="outline"
-      disabled={generate.isPending}
-      onClick={() => generate.mutate(false)}
-    >
-      {generate.isPending ? (
-        <Spinner data-icon="inline-start" />
-      ) : (
-        <SparklesIcon data-icon="inline-start" />
-      )}
-      Generate secret
-    </Button>
-  )
   return (
-    <Field>
+    <div className="flex flex-col gap-3 rounded-lg bg-kumo-elevated p-4 ring ring-kumo-hairline">
       <SettingLabel
         label={`${label} secret`}
         description={`Shared secret used to prove player identity to ${label}-configured backends. Keep it private and update every affected backend after rotating it.`}
       />
-      <FieldDescription>
+      <p className="-mt-1 text-sm text-kumo-subtle">
         {secretPresent
           ? "A secret is configured. Reveal it to copy into compatible backends, or generate a replacement."
           : "Generate a secret before starting Gate with this forwarding mode."}
-      </FieldDescription>
+      </p>
       {secretPresent && (
         <Input
+          aria-label={`${label} secret value`}
           className="font-mono"
           type={secret ? "text" : "password"}
           readOnly
@@ -1862,35 +1437,24 @@ function SecretControls({
         />
       )}
       <div className="flex flex-wrap gap-2">
-        {secretPresent && (
-          <Button
-            type="button"
-            variant="outline"
-            disabled={reveal.isPending}
-            onClick={() => reveal.mutate()}
-          >
-            <KeyRoundIcon data-icon="inline-start" />
-            Reveal
-          </Button>
-        )}
-        {secretPresent && (
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!secret}
-            onClick={() => {
-              if (secret) {
-                void navigator.clipboard.writeText(secret)
-                toast.success("Secret copied")
-              }
-            }}
-          >
-            <ClipboardIcon data-icon="inline-start" />
-            Copy
-          </Button>
-        )}
-        {generateButton}
+        {secretPresent && <Button icon={KeyIcon} loading={reveal.isPending} onClick={() => reveal.mutate()}>Reveal</Button>}
+        {secretPresent && <Button icon={CopyIcon} disabled={!secret} onClick={() => {
+          if (secret) {
+            void navigator.clipboard.writeText(secret)
+            toast.success("Secret copied")
+          }
+        }}>Copy</Button>}
+        {secretPresent
+          ? <ConfirmDialog
+            trigger={<Button icon={SparkleIcon}>Generate new secret</Button>}
+            title={`Replace the existing ${label} secret?`}
+            description="Connections fail until every affected backend is updated to use the newly generated secret."
+            confirmLabel="Generate new secret"
+            tone="danger"
+            onConfirm={() => generate.mutate(true)}
+          />
+          : <Button icon={SparkleIcon} loading={generate.isPending} onClick={() => generate.mutate(false)}>Generate secret</Button>}
       </div>
-    </Field>
+    </div>
   )
 }

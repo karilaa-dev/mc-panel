@@ -1,17 +1,13 @@
-import { Badge } from "@/components/ui/badge"
-import { Spinner } from "@/components/ui/spinner"
+import { Badge, Loader } from "@cloudflare/kumo"
 import type { ServerState } from "@/lib/contracts"
-import { CircleCheckIcon, CircleOffIcon, OctagonAlertIcon } from "lucide-react"
+
+const transitional: ServerState[] = ["Starting", "Stopping", "Installing", "Updating", "BackingUp"]
+const labels: Partial<Record<ServerState, string>> = { BackingUp: "Backing up" }
 
 export function StatusBadge({ state }: { state: ServerState }) {
-  if (["Starting", "Stopping", "Installing", "Updating", "BackingUp"].includes(state)) {
-    return <Badge variant="outline"><Spinner data-icon="inline-start" />{state}</Badge>
-  }
-  if (state === "Running") {
-    return <Badge variant="success"><CircleCheckIcon data-icon="inline-start" />Running</Badge>
-  }
-  if (state === "Stopped") {
-    return <Badge variant="secondary"><CircleOffIcon data-icon="inline-start" />Stopped</Badge>
-  }
-  return <Badge variant="destructive"><OctagonAlertIcon data-icon="inline-start" />{state}</Badge>
+  const label = labels[state] ?? state
+  if (transitional.includes(state)) return <Badge variant="info" icon={<Loader size={12} aria-label="" />}>{label}</Badge>
+  if (state === "Running") return <Badge variant="success" appearance="dot">{label}</Badge>
+  if (state === "Stopped") return <Badge variant="neutral" appearance="dot">{label}</Badge>
+  return <Badge variant="error" appearance="dot">{label}</Badge>
 }

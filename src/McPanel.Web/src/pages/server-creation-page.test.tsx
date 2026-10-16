@@ -94,6 +94,6 @@ describe("ServerCreationPage", () => {
     renderPage()
 
     expect(await screen.findByText("The server download could not be verified.")).toBeVisible()
-    expect(screen.getByRole("button", { name: "Open server" })).toHaveAttribute("href", "/servers/server-1")
+    expect(screen.getByRole("link", { name: "Open server" })).toHaveAttribute("href", "/servers/server-1")
   })
 })

@@ -1,9 +1,9 @@
 import { useState } from "react"
-import { fireEvent, render, screen, within } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it } from "vitest"
 import { MotdEditor } from "@/components/motd-editor"
-import { TooltipProvider } from "@/components/ui/tooltip"
+import { TooltipProvider } from "@cloudflare/kumo"
 import { parseMotd } from "@/lib/motd"
 
 function EditorHarness({ initial }: { initial: string }) {
@@ -43,7 +43,7 @@ describe("MotdEditor", () => {
     await user.click(screen.getByRole("button", { name: "Apply MOTD" }))
 
     expect(screen.getByTestId("saved-motd")).toHaveTextContent("§aHello§r world")
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
   })
 
   it("previews JSON components without exposing legacy formatting actions", () => {

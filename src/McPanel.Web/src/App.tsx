@@ -1,58 +1,78 @@
-import { lazy, Suspense, useEffect } from "react"
+import { lazy, useEffect } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { createBrowserRouter, RouterProvider, Navigate, Route, Routes } from "react-router-dom"
+import { Button, Loader, Toasty, TooltipProvider } from "@cloudflare/kumo"
+import { WifiSlashIcon } from "@phosphor-icons/react"
 import { AuthScreen } from "@/components/auth-screen"
 import { AppShell } from "@/components/app-shell"
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
-import { Skeleton } from "@/components/ui/skeleton"
-import { Toaster } from "@/components/ui/sonner"
-import { WifiOffIcon } from "lucide-react"
+import { EmptyState } from "@/components/feedback"
+import { errorMessage } from "@/lib/errors"
 import { api } from "@/lib/api"
+import { toastManager } from "@/lib/toast"
 
-const ActivityPage = lazy(() => import("@/pages/activity-page").then((module) => ({ default: module.ActivityPage })))
-const DashboardPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.DashboardPage })))
-const CreateServerPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.CreateServerPage })))
-const ServerCreationPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.ServerCreationPage })))
-const ServerOverviewPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.ServerOverviewPage })))
-const ServerPropertiesPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.ServerPropertiesPage })))
-const ServerIconPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.ServerIconPage })))
-const RuntimeSettingsPage = lazy(() => import("@/pages/core-pages").then((module) => ({ default: module.RuntimeSettingsPage })))
-const ModsPage = lazy(() => import("@/pages/mods-page").then((module) => ({ default: module.ModsPage })))
-const PluginsPage = lazy(() => import("@/pages/mods-page").then((module) => ({ default: module.PluginsPage })))
-const ConsolePage = lazy(() => import("@/pages/operations-pages").then((module) => ({ default: module.ConsolePage })))
-const FilesPage = lazy(() => import("@/pages/operations-pages").then((module) => ({ default: module.FilesPage })))
-const PlayersPage = lazy(() => import("@/pages/operations-pages").then((module) => ({ default: module.PlayersPage })))
-const BackupsPage = lazy(() => import("@/pages/operations-pages").then((module) => ({ default: module.BackupsPage })))
-const SchedulesPage = lazy(() => import("@/pages/management-pages").then((module) => ({ default: module.SchedulesPage })))
-const JavaPage = lazy(() => import("@/pages/management-pages").then((module) => ({ default: module.JavaPage })))
-const PanelSettingsPage = lazy(() => import("@/pages/management-pages").then((module) => ({ default: module.PanelSettingsPage })))
-const GateProxyPage = lazy(() => import("@/pages/gate-proxy-page").then((module) => ({ default: module.GateProxyPage })))
-const GateBackendsPage = lazy(() => import("@/pages/gate-backends-page").then((module) => ({ default: module.GateBackendsPage })))
+const pageModules = {
+  activity: () => import("@/pages/activity-page"),
+  core: () => import("@/pages/core-pages"),
+  mods: () => import("@/pages/mods-page"),
+  operations: () => import("@/pages/operations-pages"),
+  management: () => import("@/pages/management-pages"),
+  gateProxy: () => import("@/pages/gate-proxy-page"),
+  gateBackends: () => import("@/pages/gate-backends-page"),
+}
+
+const ActivityPage = lazy(() => pageModules.activity().then((module) => ({ default: module.ActivityPage })))
+const DashboardPage = lazy(() => pageModules.core().then((module) => ({ default: module.DashboardPage })))
+const CreateServerPage = lazy(() => pageModules.core().then((module) => ({ default: module.CreateServerPage })))
+const ServerCreationPage = lazy(() => pageModules.core().then((module) => ({ default: module.ServerCreationPage })))
+const ServerOverviewPage = lazy(() => pageModules.core().then((module) => ({ default: module.ServerOverviewPage })))
+const ServerPropertiesPage = lazy(() => pageModules.core().then((module) => ({ default: module.ServerPropertiesPage })))
+const ServerIconPage = lazy(() => pageModules.core().then((module) => ({ default: module.ServerIconPage })))
+const RuntimeSettingsPage = lazy(() => pageModules.core().then((module) => ({ default: module.RuntimeSettingsPage })))
+const ModsPage = lazy(() => pageModules.mods().then((module) => ({ default: module.ModsPage })))
+const PluginsPage = lazy(() => pageModules.mods().then((module) => ({ default: module.PluginsPage })))
+const ConsolePage = lazy(() => pageModules.operations().then((module) => ({ default: module.ConsolePage })))
+const FilesPage = lazy(() => pageModules.operations().then((module) => ({ default: module.FilesPage })))
+const PlayersPage = lazy(() => pageModules.operations().then((module) => ({ default: module.PlayersPage })))
+const BackupsPage = lazy(() => pageModules.operations().then((module) => ({ default: module.BackupsPage })))
+const SchedulesPage = lazy(() => pageModules.management().then((module) => ({ default: module.SchedulesPage })))
+const JavaPage = lazy(() => pageModules.management().then((module) => ({ default: module.JavaPage })))
+const PanelSettingsPage = lazy(() => pageModules.management().then((module) => ({ default: module.PanelSettingsPage })))
+const GateProxyPage = lazy(() => pageModules.gateProxy().then((module) => ({ default: module.GateProxyPage })))
+const GateBackendsPage = lazy(() => pageModules.gateBackends().then((module) => ({ default: module.GateBackendsPage })))
+
+/** Warm every page chunk once the browser is idle so later navigation never waits on code. */
+function usePreloadPages(enabled: boolean) {
+  useEffect(() => {
+    if (!enabled) return
+    const load = () => { for (const load of Object.values(pageModules)) void load().catch(() => undefined) }
+    if ("requestIdleCallback" in window) {
+      const handle = window.requestIdleCallback(load, { timeout: 4_000 })
+      return () => window.cancelIdleCallback(handle)
+    }
+    const handle = globalThis.setTimeout(load, 1_500)
+    return () => globalThis.clearTimeout(handle)
+  }, [enabled])
+}
 
 function LoadingScreen() {
   return (
-    <main className="mx-auto flex min-h-svh w-full max-w-6xl flex-col gap-6 p-6">
-      <Skeleton className="h-12 w-48" />
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, index) => (
-          <Skeleton key={index} className="h-28" />
-        ))}
-      </div>
-      <Skeleton className="h-80" />
+    <main className="delayed-appear flex min-h-svh flex-col items-center justify-center gap-4 p-6">
+      <img src="/mcpanel.svg" alt="" className="size-12" />
+      <Loader size="sm" className="text-kumo-subtle" aria-label="Loading MC Panel" />
     </main>
   )
 }
 
-function UnavailableScreen({ message }: { message: string }) {
+function UnavailableScreen({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
     <main className="flex min-h-svh items-center justify-center p-6">
-      <Empty>
-        <EmptyHeader>
-          <EmptyMedia variant="icon"><WifiOffIcon /></EmptyMedia>
-          <EmptyTitle>Panel unavailable</EmptyTitle>
-          <EmptyDescription>{message}</EmptyDescription>
-        </EmptyHeader>
-      </Empty>
+      <EmptyState
+        className="max-w-lg"
+        icon={<WifiSlashIcon />}
+        title="Panel unavailable"
+        description={message}
+        action={<Button variant="primary" onClick={onRetry}>Try again</Button>}
+      />
     </main>
   )
 }
@@ -71,16 +91,15 @@ function AppRoutes() {
     staleTime: 30_000,
     refetchInterval: 30_000,
   })
+  usePreloadPages(Boolean(auth.data?.authenticated))
 
   if (auth.isLoading) return <LoadingScreen />
-  if (auth.isError) {
-    return <UnavailableScreen message={auth.error instanceof Error ? auth.error.message : "Could not reach MC Panel."} />
-  }
-  if (!auth.data?.authenticated) return <AuthScreen status={auth.data!} />
+  // A failed background refresh keeps the app on screen; only a failed first load blocks it.
+  if (!auth.data) return <UnavailableScreen message={errorMessage(auth.error, "Could not reach MC Panel.")} onRetry={() => void auth.refetch()} />
+  if (!auth.data.authenticated) return <AuthScreen status={auth.data} />
 
   return (
-    <Suspense fallback={<LoadingScreen />}>
-      <Routes>
+    <Routes>
       <Route element={<AppShell />}>
         <Route index element={<DashboardPage />} />
         <Route path="activity" element={<ActivityPage />} />
@@ -103,13 +122,20 @@ function AppRoutes() {
         <Route path="panel-settings" element={<PanelSettingsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
-      </Routes>
-    </Suspense>
+    </Routes>
   )
 }
 
-const router = createBrowserRouter([{ path: "*", element: <><AppRoutes /><Toaster richColors closeButton /></> }])
+const router = createBrowserRouter([{ path: "*", element: <AppRoutes /> }])
 
-export function App() { return <RouterProvider router={router} /> }
+export function App() {
+  return (
+    <Toasty toastManager={toastManager}>
+      <TooltipProvider>
+        <RouterProvider router={router} />
+      </TooltipProvider>
+    </Toasty>
+  )
+}
 
 export default App

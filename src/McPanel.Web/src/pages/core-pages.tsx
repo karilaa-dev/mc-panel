@@ -1,18 +1,18 @@
-import { ImmediateStopButton } from "@/components/immediate-stop-button"
-import { QueryFeedback } from "@/components/query-feedback"
-import { useUnsavedChanges } from "@/hooks/use-unsaved-changes"
-import { useEffect, useMemo, useState } from "react"
+import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react"
 import { useForm, useWatch } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, useNavigate, useParams } from "react-router-dom"
-import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts"
 import { z } from "zod"
 import {
-  AlertTriangleIcon, ArrowRightIcon, CheckIcon, CircleGaugeIcon, ClipboardIcon, EyeIcon, EyeOffIcon,
-  CpuIcon, HardDriveIcon, MemoryStickIcon, PlusIcon, RotateCwIcon, ServerIcon,
-  NetworkIcon, SearchIcon, SquareIcon, Trash2Icon, UsersIcon,
-} from "lucide-react"
+  Badge, Banner, Button, Checkbox, ClipboardText, CommandPalette, Input, InputArea, InputGroup, Label, LayerCard,
+  LinkButton, Select, Tabs, cn,
+} from "@cloudflare/kumo"
+import {
+  ArrowClockwiseIcon, ArrowRightIcon, CheckCircleIcon, CheckIcon, CpuIcon, CubeIcon, EyeIcon, EyeSlashIcon, GaugeIcon,
+  HardDriveIcon, InfoIcon, MagnifyingGlassIcon, MemoryIcon, PlayIcon, PlusIcon, ShareNetworkIcon, StopIcon,
+  TrashIcon, UsersIcon, WarningCircleIcon, WarningIcon,
+} from "@phosphor-icons/react"
 import { ApiError, api } from "@/lib/api"
 import { createClientRequestId } from "@/lib/client-request-id"
 import { recommendedJavaMajor } from "@/lib/java-version"
@@ -25,42 +25,30 @@ import {
   memoryLimitMb,
   totalMemoryForHeapMb,
 } from "@/lib/memory-allocation"
-import type { CustomJarImportDto, ModpackInspectionDto, RuntimeConfigurationDto, ServerConfigurationDto, ServerKind, ServerPropertiesDto, ServerPropertyDefinitionDto, ServerPropertyDto, ServerState } from "@/lib/contracts"
+import type { CustomJarImportDto, ModpackInspectionDto, RuntimeConfigurationDto, ServerKind, ServerPropertiesDto, ServerPropertyDefinitionDto, ServerPropertyDto, ServerState, ServerSummaryDto } from "@/lib/contracts"
 import { serverKindLabel } from "@/lib/server-kind"
-import { Page } from "@/components/page"
+import { toast } from "@/lib/toast"
+import { useUnsavedChanges } from "@/hooks/use-unsaved-changes"
+import { pendingLifecycleLabels, useServerLifecycle } from "@/hooks/use-server-lifecycle"
+import { ChoiceCards, FileInput, HintButton, ProgressBar, Slider, SwitchField } from "@/components/controls"
+import { EmptyState, ErrorBanner, QueryFeedback, SectionSkeleton, Skeleton } from "@/components/feedback"
+import { ImmediateStopButton } from "@/components/immediate-stop-button"
+import { ConfirmDialog } from "@/components/modal"
 import { ModpackPicker } from "@/components/modpack-picker"
-import { ServerAvatar, ServerIconEditor } from "@/components/server-icon"
+import { Page } from "@/components/page"
 import { PublicHostEditor } from "@/components/public-host-editor"
+import { DetailList, Section, StatTile } from "@/components/section"
+import { ServerAvatar, ServerIconEditor } from "@/components/server-icon"
 import { StatusBadge } from "@/components/status-badge"
 import { ServerCoreSettingsSection } from "@/pages/software-page"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
-  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
-import { Checkbox } from "@/components/ui/checkbox"
-import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
-import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group"
-import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress"
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Skeleton } from "@/components/ui/skeleton"
-import { Slider } from "@/components/ui/slider"
-import { Spinner } from "@/components/ui/spinner"
-import { Switch } from "@/components/ui/switch"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Textarea } from "@/components/ui/textarea"
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
-import { toast } from "sonner"
 
-const bytes = (value: number) => value ? new Intl.NumberFormat(undefined, { style: "unit", unit: "gigabyte", maximumFractionDigits: 1 }).format(value / 1024 ** 3) : "0 GB"
+const HostActivityChart = lazy(() => import("@/components/host-activity-chart").then((module) => ({ default: module.HostActivityChart })))
+
+const gigabytes = (value: number) => new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value / 1024 ** 3)
+const usage = (used: number, total: number) => `${gigabytes(used)} / ${gigabytes(total)} GB`
 const duration = (seconds: number) => seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m` : `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`
+const gib = (mb: number) => `${(mb / 1024).toFixed(1)} GiB`
+const kindDescription = (server: Pick<ServerSummaryDto, "kind" | "version">) => server.kind === "Gate" ? `Gate Proxy · ${server.version}` : `${serverKindLabel(server.kind)} · Minecraft ${server.version}`
 const lifecycleStateLabels: Record<ServerState, string> = {
   Installing: "Installing…",
   Stopped: "Start",
@@ -73,18 +61,30 @@ const lifecycleStateLabels: Record<ServerState, string> = {
   Error: "Error",
 }
 
-function MetricCard({ label, value, icon: Icon, progress }: { label: string; value: string; icon: typeof CpuIcon; progress?: number }) {
+function ServerCard({ server }: { server: ServerSummaryDto }) {
+  const href = `/servers/${server.id}`
   return (
-    <Card size="sm">
-      <CardHeader>
-        <CardDescription>{label}</CardDescription>
-        <CardAction><Icon className="size-4 text-muted-foreground" /></CardAction>
-      </CardHeader>
-      <CardContent className="flex flex-1 flex-col gap-4">
-        <p className="text-2xl leading-tight font-semibold tracking-tight tabular-nums">{value}</p>
-        {progress !== undefined && <Progress className="mt-auto" value={Math.min(progress, 100)} aria-label={`${label}: ${progress.toFixed(0)} percent`} />}
-      </CardContent>
-    </Card>
+    <LayerCard className="min-w-0">
+      <LayerCard.Secondary className="items-start gap-3 py-4 font-normal">
+        <ServerAvatar server={server} className="size-10" />
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <Link to={href} className="truncate text-base font-semibold text-kumo-default hover:underline focus-visible:underline focus-visible:outline-none" title={server.name}>{server.name}</Link>
+          <span className="truncate text-sm text-kumo-subtle">{kindDescription(server)}</span>
+        </div>
+        <StatusBadge state={server.state} />
+      </LayerCard.Secondary>
+      <LayerCard.Primary className="gap-4 p-4">
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm tabular-nums">
+          <div className="flex min-w-0 flex-col gap-0.5"><dt className="text-kumo-subtle">{server.kind === "Gate" ? "Connections" : "Players"}</dt><dd className="font-medium">{server.kind === "Gate" ? server.playerCount : `${server.playerCount} / ${server.maxPlayers}`}</dd></div>
+          <div className="flex min-w-0 flex-col gap-0.5"><dt className="text-kumo-subtle">Memory</dt><dd className="font-medium">{server.memoryUsedMb.toFixed(0)} / {server.memoryMb} MiB</dd></div>
+          <div className="flex min-w-0 flex-col gap-0.5"><dt className="text-kumo-subtle">Address</dt><dd className="truncate font-mono text-xs" title={server.resolvedConnectionAddress ?? undefined}>{server.resolvedConnectionAddress ?? "Unavailable"}</dd></div>
+          <div className="flex min-w-0 flex-col gap-0.5"><dt className="text-kumo-subtle">Uptime</dt><dd className="font-medium">{server.state === "Running" ? duration(server.uptimeSeconds) : "—"}</dd></div>
+        </dl>
+        <div className="-mx-1 -mb-1 flex justify-end">
+          <LinkButton href={href} size="sm" variant="ghost">Manage<ArrowRightIcon size={14} /></LinkButton>
+        </div>
+      </LayerCard.Primary>
+    </LayerCard>
   )
 }
 
@@ -93,69 +93,103 @@ export function DashboardPage() {
   const hostQuery = useQuery({ queryKey: ["host"], queryFn: api.host, refetchInterval: 5_000 })
   const { data: servers, isLoading: serversLoading } = serversQuery
   const { data: host, isLoading: hostLoading } = hostQuery
-  const chartConfig = { cpu: { label: "CPU", color: "var(--chart-1)" }, memory: { label: "Memory", color: "var(--chart-2)" } } satisfies ChartConfig
-  const serversSection = <section aria-labelledby="servers-heading" className="flex flex-col gap-4">
-    <h2 id="servers-heading" className="text-lg font-semibold">Servers</h2>
-    <QueryFeedback query={serversQuery} />
-    {serversQuery.isError && !servers ? null : serversLoading ? <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,20rem),1fr))] gap-4">{Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-48" />)}</div> : servers?.length ? <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,20rem),1fr))] gap-4">{servers.map((server) => <Card key={server.id}>
-      <CardHeader>
-        <div className="flex min-w-0 items-center gap-3">
-          <ServerAvatar server={server} className="size-11 shrink-0" />
-          <div className="flex min-w-0 flex-col gap-1">
-            <CardTitle className="truncate" title={server.name}>{server.name}</CardTitle>
-            <CardDescription>{server.kind === "Gate" ? `Gate Proxy · ${server.version}` : `${serverKindLabel(server.kind)} · Minecraft ${server.version}`}</CardDescription>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-5 text-sm tabular-nums">
-          <div className="flex min-w-0 flex-col gap-1"><dt className="text-xs text-muted-foreground">{server.kind === "Gate" ? "Connections" : "Players"}</dt><dd className="font-medium">{server.kind === "Gate" ? server.playerCount : `${server.playerCount} / ${server.maxPlayers}`}</dd></div>
-          <div className="flex min-w-0 flex-col gap-1"><dt className="text-xs text-muted-foreground">Memory</dt><dd className="font-medium">{server.memoryUsedMb.toFixed(0)} / {server.memoryMb} MiB</dd></div>
-          <div className="flex min-w-0 flex-col gap-1"><dt className="text-xs text-muted-foreground">Address</dt><dd className="truncate font-mono text-sm" title={server.resolvedConnectionAddress ?? undefined}>{server.resolvedConnectionAddress ?? "Unavailable"}</dd></div>
-          <div className="flex min-w-0 flex-col gap-1"><dt className="text-xs text-muted-foreground">Uptime</dt><dd className="font-medium">{duration(server.uptimeSeconds)}</dd></div>
-        </dl>
-      </CardContent>
-      <CardFooter className="justify-between">
-        <StatusBadge state={server.state} />
-        <Button variant="ghost" size="sm" render={<Link to={`/servers/${server.id}`} />}>Manage<ArrowRightIcon data-icon="inline-end" /></Button>
-      </CardFooter>
-    </Card>)}</div> : <Empty className="border"><EmptyHeader><EmptyMedia variant="icon"><ServerIcon /></EmptyMedia><EmptyTitle>No servers yet</EmptyTitle><EmptyDescription>Create Vanilla, Paper, Fabric, Forge, or NeoForge without leaving the panel.</EmptyDescription></EmptyHeader><EmptyContent><Button render={<Link to="/create" />}><PlusIcon />Create your first server</Button></EmptyContent></Empty>}
-  </section>
-  return <Page title="Dashboard" description="Host health and every Minecraft server at a glance." actions={<Button render={<Link to="/create" />}><PlusIcon data-icon="inline-start" />Create server</Button>}>
-    {serversSection}
-    {host && <QueryFeedback query={hostQuery} />}
-    <Alert><AlertTriangleIcon /><AlertTitle>Trusted networks only</AlertTitle><AlertDescription>Keep this panel on a private network. Use the documented private HTTPS configuration for encrypted administration. Do not expose the panel port to the Internet.</AlertDescription></Alert>
+  const running = servers?.filter((server) => server.state === "Running").length ?? 0
+  const grid = "grid grid-cols-[repeat(auto-fill,minmax(min(100%,20rem),1fr))] gap-4"
+
+  return <Page title="Dashboard" description="Host health and every Minecraft server at a glance." actions={<LinkButton href="/create" variant="primary" icon={PlusIcon}>Create server</LinkButton>}>
+    <section aria-labelledby="servers-heading" className="flex flex-col gap-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 id="servers-heading" className="text-lg font-semibold text-kumo-strong">Servers</h2>
+        {Boolean(servers?.length) && <span className="text-sm text-kumo-subtle">{running} of {servers!.length} running</span>}
+      </div>
+      <QueryFeedback query={serversQuery} />
+      {serversQuery.isError && !servers ? null
+        : serversLoading ? <div className={grid}>{Array.from({ length: 3 }, (_, index) => <SectionSkeleton key={index} rows={3} />)}</div>
+          : servers?.length ? <div className={grid}>{servers.map((server) => <ServerCard key={server.id} server={server} />)}</div>
+            : <EmptyState icon={<CubeIcon />} title="No servers yet" description="Create a Vanilla, Paper, Fabric, Forge, or NeoForge server, or a Gate proxy, without leaving the panel." action={<LinkButton href="/create" variant="primary" icon={PlusIcon}>Create your first server</LinkButton>} />}
+    </section>
     <section aria-label="Host metrics" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      {hostQuery.isError && !host ? <QueryFeedback query={hostQuery} /> : hostLoading ? Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-28" />) : <>
-        <MetricCard label="Host CPU" value={`${host?.cpuPercent.toFixed(0) ?? 0}%`} icon={CpuIcon} progress={host?.cpuPercent} />
-        <MetricCard label="Host memory" value={`${bytes(host?.memoryUsedBytes ?? 0)} / ${bytes(host?.memoryTotalBytes ?? 0)}`} icon={MemoryStickIcon} progress={(host?.memoryUsedBytes ?? 0) / Math.max(host?.memoryTotalBytes ?? 1, 1) * 100} />
-        <MetricCard label="Panel disk" value={`${bytes(host?.diskUsedBytes ?? 0)} / ${bytes(host?.diskTotalBytes ?? 0)}`} icon={HardDriveIcon} progress={(host?.diskUsedBytes ?? 0) / Math.max(host?.diskTotalBytes ?? 1, 1) * 100} />
-        <MetricCard label="Running servers" value={`${servers?.filter((server) => server.state === "Running").length ?? 0} / ${servers?.length ?? 0}`} icon={ServerIcon} />
+      {hostQuery.isError && !host ? <div className="col-span-full"><QueryFeedback query={hostQuery} /></div> : hostLoading ? Array.from({ length: 4 }, (_, index) => <Skeleton key={index} className="h-[7.5rem]" />) : <>
+        <StatTile label="Host CPU" value={`${host?.cpuPercent.toFixed(0) ?? 0}%`} icon={CpuIcon} progress={host?.cpuPercent ?? 0} />
+        <StatTile label="Host memory" value={usage(host?.memoryUsedBytes ?? 0, host?.memoryTotalBytes ?? 0)} icon={MemoryIcon} progress={(host?.memoryUsedBytes ?? 0) / Math.max(host?.memoryTotalBytes ?? 1, 1) * 100} />
+        <StatTile label="Panel disk" value={usage(host?.diskUsedBytes ?? 0, host?.diskTotalBytes ?? 0)} icon={HardDriveIcon} progress={(host?.diskUsedBytes ?? 0) / Math.max(host?.diskTotalBytes ?? 1, 1) * 100} />
+        <StatTile label="Running servers" value={`${running} / ${servers?.length ?? 0}`} icon={CubeIcon} />
       </>}
     </section>
-    <Card>
-      <CardHeader><CardTitle>Host activity</CardTitle><CardDescription>15-minute in-memory view; history is not persisted.</CardDescription></CardHeader>
-      <CardContent>
-        <ChartContainer config={chartConfig} className="h-64 w-full aspect-auto">
-          <AreaChart data={host?.samples ?? []} accessibilityLayer><CartesianGrid vertical={false} strokeDasharray="3 3" /><XAxis dataKey="time" tickFormatter={(value) => new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} tickLine={false} axisLine={false} /><YAxis domain={[0, 100]} tickFormatter={(value) => `${value}%`} tickLine={false} axisLine={false} width={38} /><ChartTooltip content={<ChartTooltipContent />} /><ChartLegend content={<ChartLegendContent />} /><Area type="monotone" dataKey="cpu" stroke="var(--color-cpu)" strokeWidth={2} fill="var(--color-cpu)" fillOpacity={0.16} /><Area type="monotone" dataKey="memory" stroke="var(--color-memory)" strokeWidth={2} fill="var(--color-memory)" fillOpacity={0.1} /></AreaChart>
-        </ChartContainer>
-      </CardContent>
-    </Card>
+    {host && <QueryFeedback query={hostQuery} />}
+    <Section title="Host activity" description="CPU and memory over the last 15 minutes. History is kept in memory and resets when the panel restarts.">
+      <Suspense fallback={<Skeleton className="h-[260px]" />}>
+        {hostLoading ? <Skeleton className="h-[260px]" /> : <HostActivityChart samples={host?.samples ?? []} />}
+      </Suspense>
+    </Section>
+    <Banner role="note" variant="secondary" icon={<WarningIcon weight="fill" />} title="Trusted networks only" description="Keep this panel on a private network and use the documented private HTTPS setup for encrypted administration. Never expose the panel port to the Internet." />
   </Page>
 }
 
 const createSchema = z.object({
-  name: z.string().min(2).max(48).regex(/^[a-zA-Z0-9 _-]+$/, "Use letters, numbers, spaces, - or _."),
-  port: z.number().int().min(1024).max(65535),
+  name: z.string().min(2, "Use at least 2 characters.").max(48, "Use at most 48 characters.").regex(/^[a-zA-Z0-9 _-]+$/, "Use letters, numbers, spaces, - or _."),
+  port: z.number({ error: "Enter a port number." }).int().min(1024, "Use port 1024 or higher.").max(65535, "Use port 65535 or lower."),
   eulaAccepted: z.boolean().refine((value) => value, "You must accept the Minecraft EULA."),
 })
 type CreateFields = z.infer<typeof createSchema>
+type ServerCategory = "Regular" | "Proxy"
+type InstallSource = "Official" | "CustomJar" | "Modpack"
+
+const categoryOptions = [
+  { value: "Regular", title: "Regular server", description: "Runs a Minecraft world players join directly.", icon: <CubeIcon size={16} /> },
+  { value: "Proxy", title: "Proxy", description: "Minekube Gate routes players to one or more servers.", icon: <ShareNetworkIcon size={16} /> },
+] as const
+const sourceOptions = [
+  { value: "Official", title: "Official server core", description: "Verified Vanilla, Paper, Fabric, Forge, or NeoForge downloads." },
+  { value: "CustomJar", title: "Custom JAR", description: "Upload your own executable server JAR." },
+  { value: "Modpack", title: "Modrinth modpack", description: "Install a pack from Modrinth or a local .mrpack file." },
+] as const
+const coreOptions = [
+  { value: "Vanilla", title: "Vanilla", description: "The official Mojang server." },
+  { value: "Paper", title: "Paper", description: "Fast and stable, with plugin support." },
+  { value: "Fabric", title: "Fabric", description: "Lightweight, modern mod loader." },
+  { value: "Forge", title: "Forge", description: "The long-standing mod loader." },
+  { value: "NeoForge", title: "NeoForge", description: "Community fork of Forge for current versions." },
+] as const
+
+function Stepper({ steps, current }: { steps: string[]; current: number }) {
+  return (
+    <ol className="flex items-center gap-2 overflow-x-auto pb-1" aria-label="Setup progress">
+      {steps.map((label, index) => {
+        const number = index + 1
+        const done = number < current
+        const active = number === current
+        return (
+          <li key={label} className="flex shrink-0 items-center gap-2" aria-current={active ? "step" : undefined}>
+            <span className={cn(
+              "flex size-6 items-center justify-center rounded-full text-xs font-semibold tabular-nums ring transition-colors",
+              done && "bg-kumo-brand text-white ring-kumo-brand",
+              active && "bg-kumo-base text-kumo-default ring-2 ring-kumo-brand",
+              !done && !active && "bg-kumo-base text-kumo-subtle ring-kumo-line",
+            )}>{done ? <CheckIcon size={12} weight="bold" /> : number}</span>
+            <span className={cn("text-sm whitespace-nowrap", active ? "font-medium text-kumo-default" : "text-kumo-subtle")}>{label}</span>
+            {number < steps.length && <span aria-hidden="true" className={cn("mx-1 h-px w-6 sm:w-10", done ? "bg-kumo-brand" : "bg-kumo-line")} />}
+          </li>
+        )
+      })}
+    </ol>
+  )
+}
+
+function FormStack({ children }: { children: ReactNode }) {
+  return <div className="flex flex-col gap-5">{children}</div>
+}
+
+function ChoiceField({ label, children }: { label: string; children: (labelId: string) => ReactNode }) {
+  const labelId = `choice-${label.toLowerCase().replace(/\W+/g, "-")}`
+  return <div className="flex flex-col gap-2"><span id={labelId} className="text-base font-medium text-kumo-default">{label}</span>{children(labelId)}</div>
+}
 
 export function CreateServerPage() {
   const navigate = useNavigate()
   const [step, setStep] = useState(1)
-  const [category, setCategory] = useState<"Regular" | "Proxy">("Regular")
-  const [source, setSource] = useState<"Official" | "CustomJar" | "Modpack">("Official")
+  const [category, setCategory] = useState<ServerCategory>("Regular")
+  const [source, setSource] = useState<InstallSource>("Official")
   const [kind, setKind] = useState<ServerKind>("Paper")
   const [customJar, setCustomJar] = useState<CustomJarImportDto>()
   const [customJarUploading, setCustomJarUploading] = useState(false)
@@ -194,7 +228,7 @@ export function CreateServerPage() {
   const version = source === "Modpack"
     ? (packInspection?.minecraftVersion ?? "")
     : source === "CustomJar" ? selectedVersion.trim()
-    : versions.includes(selectedVersion) ? selectedVersion : (versions[0] ?? "")
+      : versions.includes(selectedVersion) ? selectedVersion : (versions[0] ?? "")
   const requiredJava = recommendedJavaMajor(version, serverKind)
   const compatibleJava = java.filter((runtime) => serverKind === "Forge" && requiredJava === 8
     ? runtime.major === requiredJava
@@ -232,12 +266,16 @@ export function CreateServerPage() {
   const { register, handleSubmit, control, setValue, formState: { errors, isSubmitting } } = useForm<CreateFields>({ resolver: zodResolver(createSchema), defaultValues: { name: "My server", port: 25565, eulaAccepted: false } })
   const eula = useWatch({ control, name: "eulaAccepted" })
   const isGate = category === "Proxy"
-  const totalSteps = isGate ? 2 : 4
+  const steps = isGate ? ["Server type", "Name and install"] : ["Server type", "Version", "Java and memory", "Name and confirm"]
+  const stepDescriptions = isGate
+    ? ["Choose what kind of server to create.", "Pick a verified Gate release and its listener."]
+    : ["Choose what kind of server to create.", "Select the Minecraft version and loader builds.", "Assign a compatible Java runtime and RAM.", "Name the server, choose its port, and accept the EULA."]
+  const totalSteps = steps.length
   const distributionReady = source === "Modpack" ? Boolean(packInspection)
     : source === "CustomJar" ? Boolean(customJar && version)
-    : serverKind === "Fabric"
-    ? Boolean(loaderVersion && installerVersion)
-    : serverKind === "Forge" || serverKind === "NeoForge" ? Boolean(loaderVersion) : true
+      : serverKind === "Fabric"
+        ? Boolean(loaderVersion && installerVersion)
+        : serverKind === "Forge" || serverKind === "NeoForge" ? Boolean(loaderVersion) : true
   const canAdvance = step === 1 ? Boolean(source === "Modpack" || kind) : step === 2 ? Boolean(version && distributionReady) : step === 3 ? Boolean(javaId) && memoryCapacityAvailable : eula
 
   async function submit(values: CreateFields) {
@@ -288,8 +326,7 @@ export function CreateServerPage() {
     } finally { setGateSubmitting(false) }
   }
 
-  async function uploadCustomJar(file?: File) {
-    if (!file) return
+  async function uploadCustomJar(file: File) {
     setCustomJarUploading(true)
     try {
       const uploaded = await api.uploadCustomJar(file)
@@ -301,36 +338,109 @@ export function CreateServerPage() {
     } finally { setCustomJarUploading(false) }
   }
 
-  if (isGate && step === 2) return <Page title="Create Gate Proxy" description="Choose a verified stable Gate release to install as an independently managed server.">
-    <Card className="mx-auto w-full max-w-3xl">
-      <CardHeader><CardTitle>Step 2 of 2</CardTitle><CardDescription>Name and install Gate</CardDescription></CardHeader>
-      <CardContent><Progress value={100}><ProgressLabel>Setup progress</ProgressLabel><ProgressValue /></Progress></CardContent>
-      <CardContent><FieldGroup><Field><FieldLabel>Gate version</FieldLabel>{gateVersions.isPending ? <Skeleton className="h-9 w-full" /> : gateVersions.isError ? <Alert variant="destructive"><AlertTitle>Gate releases unavailable</AlertTitle><AlertDescription>{gateVersions.error.message}<Button variant="outline" onClick={() => void gateVersions.refetch()}>Retry</Button></AlertDescription></Alert> : <Select items={(gateVersions.data ?? []).map((value) => ({ value, label: value }))} value={selectedGateVersion} onValueChange={(value) => value && setGateVersion(value)}><SelectTrigger aria-label="Gate version" className="w-full"><SelectValue placeholder="Choose a stable Gate release" /></SelectTrigger><SelectContent><SelectGroup>{gateVersions.data?.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectGroup></SelectContent></Select>}<FieldDescription>The newest stable release is selected by default. Downloads are checked against Minekube's SHA-256 manifest.</FieldDescription></Field><Field><FieldLabel htmlFor="gate-name">Server name</FieldLabel><Input id="gate-name" value={gateName} onChange={(event) => setGateName(event.target.value)} /></Field><Field><FieldLabel htmlFor="gate-port">Real local listener port</FieldLabel><Input id="gate-port" type="number" min={1024} max={65535} value={gatePort} onChange={(event) => setGatePort(Number(event.target.value))} /><FieldDescription>This locally bound port is conflict-checked. The advertised external address can use a different NAT, SRV, or forwarded port.</FieldDescription></Field><Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="gate-start-on-boot">Start on boot</FieldLabel><FieldDescription>Start this Gate instance whenever the managed runtime starts.</FieldDescription></FieldContent><Switch id="gate-start-on-boot" checked={gateStartOnBoot} onCheckedChange={setGateStartOnBoot} /></Field></FieldGroup></CardContent>
-      <CardFooter className="justify-between"><Button variant="outline" disabled={gateSubmitting} onClick={() => setStep(1)}>Back</Button><Button disabled={gateSubmitting || !selectedGateVersion || gateVersions.isError} onClick={() => void submitGate()}>{gateSubmitting && <Spinner data-icon="inline-start" />}Create Gate server</Button></CardFooter>
-    </Card>
-  </Page>
+  const finalStep = step === totalSteps
+  const footer = <>
+    <Button disabled={step === 1 || isSubmitting || gateSubmitting} onClick={() => setStep((current) => current - 1)}>Back</Button>
+    {!finalStep ? <Button variant="primary" disabled={!canAdvance} onClick={() => setStep((current) => current + 1)}>Continue<ArrowRightIcon size={16} /></Button>
+      : isGate ? <Button variant="primary" loading={gateSubmitting} disabled={!selectedGateVersion || gateVersions.isError} onClick={() => void submitGate()}>Create Gate server</Button>
+        : <Button variant="primary" form="create-form" type="submit" loading={isSubmitting} disabled={!eula}>Create server</Button>}
+  </>
 
-  return <Page title="Create server" description={isGate ? "Install a verified Minekube Gate proxy as a normal managed server." : "Install a verified server core or a Modrinth modpack in four simple steps."}>
-    <Card className="mx-auto w-full max-w-3xl">
-      <CardHeader><CardTitle>Step {step} of {totalSteps}</CardTitle><CardDescription>{isGate ? ["Choose a server type", "Name and install Gate"][step - 1] : ["Choose a server type", "Select a Minecraft version", "Assign Java and memory", "Name and confirm"][step - 1]}</CardDescription></CardHeader>
-      <CardContent><Progress value={step / totalSteps * 100}><ProgressLabel>Setup progress</ProgressLabel><ProgressValue /></Progress></CardContent>
-      <CardContent>
-        <form id="create-form" onSubmit={handleSubmit(submit)}>
-          {step === 1 && <FieldGroup>
-            <Field><FieldLabel>Server category</FieldLabel><ToggleGroup value={[category]} onValueChange={(values) => { if (!values[0]) return; const next = values[0] as "Regular" | "Proxy"; setCategory(next); if (next === "Regular") setSource("Official") }} variant="outline" spacing={2} className="max-w-full flex-wrap gap-2"><ToggleGroupItem value="Regular">Regular server</ToggleGroupItem><ToggleGroupItem value="Proxy">Proxy</ToggleGroupItem></ToggleGroup><FieldDescription>Regular servers run a Minecraft world. Proxies route players to one or more servers.</FieldDescription></Field>
-            {category === "Regular" ? <><Field><FieldLabel>Installation source</FieldLabel><ToggleGroup value={[source]} onValueChange={(values) => values[0] && setSource(values[0] as "Official" | "CustomJar" | "Modpack")} variant="outline" spacing={2} className="max-w-full flex-wrap gap-2"><ToggleGroupItem value="Official">Official server core</ToggleGroupItem><ToggleGroupItem value="CustomJar">Custom JAR</ToggleGroupItem><ToggleGroupItem value="Modpack">Modrinth modpack</ToggleGroupItem></ToggleGroup></Field>{source === "Official" && <Field><FieldLabel>Server core</FieldLabel><ToggleGroup value={[kind]} onValueChange={(values) => values[0] && setKind(values[0] as ServerKind)} variant="outline" spacing={2} className="max-w-full flex-wrap gap-2"><ToggleGroupItem value="Vanilla">Vanilla</ToggleGroupItem><ToggleGroupItem value="Paper">Paper</ToggleGroupItem><ToggleGroupItem value="Fabric">Fabric</ToggleGroupItem><ToggleGroupItem value="Forge">Forge</ToggleGroupItem><ToggleGroupItem value="NeoForge">NeoForge</ToggleGroupItem></ToggleGroup></Field>}</> : <Alert><NetworkIcon /><AlertTitle>Minekube Gate</AlertTitle><AlertDescription>Gate uses a separate two-step proxy setup and keeps its files and forwarding secrets private.</AlertDescription></Alert>}
-          </FieldGroup>}
-          {step === 2 && isGate && <FieldGroup><Field><FieldLabel htmlFor="gate-name">Server name</FieldLabel><Input id="gate-name" value={gateName} onChange={(event) => setGateName(event.target.value)} /></Field><Field><FieldLabel htmlFor="gate-port">Real local listener port</FieldLabel><Input id="gate-port" type="number" min={1024} max={65535} value={gatePort} onChange={(event) => setGatePort(Number(event.target.value))} /><FieldDescription>This locally bound port is conflict-checked. The advertised external address can use a different NAT, SRV, or forwarded port.</FieldDescription></Field><Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="gate-start-on-boot">Start on boot</FieldLabel><FieldDescription>Start this Gate instance whenever the managed runtime starts.</FieldDescription></FieldContent><Switch id="gate-start-on-boot" checked={gateStartOnBoot} onCheckedChange={setGateStartOnBoot} /></Field></FieldGroup>}
+  return <Page
+    size="narrow"
+    title={isGate && step === 2 ? "Create Gate Proxy" : "Create server"}
+    description={isGate ? "Install a verified Minekube Gate proxy as a managed server." : "Install a verified server core, a custom JAR, or a Modrinth modpack."}
+  >
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
+      <Stepper steps={steps} current={step} />
+      <Section title={steps[step - 1]} description={stepDescriptions[step - 1]} footer={<div className="flex w-full items-center justify-between gap-3">{footer}</div>}>
+        <div>
+          {step === 1 && <FormStack>
+            <ChoiceField label="Server category">{(labelId) => <ChoiceCards aria-labelledby={labelId} value={category} options={categoryOptions} onValueChange={(next) => { setCategory(next); if (next === "Regular") setSource("Official") }} />}</ChoiceField>
+            {category === "Regular" ? <>
+              <ChoiceField label="Installation source">{(labelId) => <ChoiceCards aria-labelledby={labelId} className="sm:grid-cols-3" value={source} options={sourceOptions} onValueChange={setSource} />}</ChoiceField>
+              {source === "Official" && <ChoiceField label="Server core">{(labelId) => <ChoiceCards aria-labelledby={labelId} className="sm:grid-cols-3" value={kind as (typeof coreOptions)[number]["value"]} options={coreOptions} onValueChange={setKind} />}</ChoiceField>}
+            </> : <Banner icon={<InfoIcon weight="fill" />} title="Minekube Gate" description="Gate uses a separate two-step setup and keeps its files and forwarding secrets private." />}
+          </FormStack>}
+
+          {step === 2 && isGate && <FormStack>
+            <Select
+              label="Gate version"
+              className="w-full"
+              loading={gateVersions.isPending}
+              placeholder="Choose a stable Gate release"
+              description="The newest stable release is selected by default. Downloads are checked against Minekube's SHA-256 manifest."
+              items={(gateVersions.data ?? []).map((value) => ({ value, label: value }))}
+              value={selectedGateVersion}
+              onValueChange={(value) => value && setGateVersion(value as string)}
+            />
+            {gateVersions.isError && <ErrorBanner title="Gate releases unavailable" description={gateVersions.error.message} onRetry={() => void gateVersions.refetch()} />}
+            <Input label="Server name" value={gateName} onChange={(event) => setGateName(event.target.value)} />
+            <Input label="Real local listener port" type="number" min={1024} max={65535} value={gatePort} onChange={(event) => setGatePort(Number(event.target.value))} description="This locally bound port is conflict-checked. The advertised external address can use a different NAT, SRV, or forwarded port." />
+            <SwitchField id="gate-start-on-boot" label="Start on boot" description="Start this Gate instance whenever the managed runtime starts." checked={gateStartOnBoot} onCheckedChange={setGateStartOnBoot} />
+          </FormStack>}
+
           {step === 2 && source === "Modpack" && <ModpackPicker inspection={packInspection} selectedOptionalFiles={selectedOptionalFiles} onChange={(value, optional) => { setPackInspection(value); setSelectedOptionalFiles(optional) }} />}
-          {step === 2 && source === "CustomJar" && <FieldGroup><Field><FieldLabel htmlFor="custom-version">Minecraft version</FieldLabel><Input id="custom-version" placeholder="For example, 1.21.8" value={selectedVersion} onChange={(event) => setSelectedVersion(event.target.value)} /><FieldDescription>This is required for Java compatibility and server metadata.</FieldDescription></Field><Field><FieldLabel htmlFor="custom-jar">Executable server JAR</FieldLabel><Input id="custom-jar" type="file" accept=".jar,application/java-archive" disabled={customJarUploading} onChange={(event) => void uploadCustomJar(event.target.files?.[0])} /><FieldDescription>The upload must be a readable ZIP-format JAR with a Main-Class manifest. It expires after one hour and can only be used once.</FieldDescription></Field>{customJarUploading && <Alert><Spinner /><AlertTitle>Uploading and validating</AlertTitle></Alert>}{customJar && <Alert><CheckIcon /><AlertTitle>{customJar.fileName}</AlertTitle><AlertDescription>Ready to install as Custom JAR.</AlertDescription></Alert>}</FieldGroup>}
-          {step === 2 && source === "Official" && <FieldGroup><Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="experimental">Show experimental versions</FieldLabel><FieldDescription>Includes snapshots, unstable loader tools, and non-recommended builds.</FieldDescription></FieldContent><Switch id="experimental" checked={showExperimental} onCheckedChange={setShowExperimental} /></Field>{showExperimental && <Alert><AlertTriangleIcon /><AlertTitle>Experimental server core</AlertTitle><AlertDescription>Snapshots and unstable builds can corrupt worlds or break plugins. Back up important data before using them.</AlertDescription></Alert>}<Field><FieldLabel>Minecraft version</FieldLabel>{catalogLoading ? <Skeleton className="h-9 w-full" /> : versions.length ? <Select items={versions.map((item) => ({ value: item, label: item }))} value={version} onValueChange={(value) => value && setSelectedVersion(value)}><SelectTrigger className="w-full" aria-label="Minecraft version"><SelectValue placeholder="Choose a stable release" /></SelectTrigger><SelectContent><SelectGroup>{versions.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectGroup></SelectContent></Select> : <Alert variant="destructive"><AlertTitle>Catalog unavailable</AlertTitle><AlertDescription>Check the panel’s network connection and retry.</AlertDescription></Alert>}</Field>{serverKind === "Paper" && visibleBuilds.length > 0 && <Field><FieldLabel>Paper build</FieldLabel><Select items={visibleBuilds.map((item) => ({ value: item.id, label: `${item.id} · ${item.channel}` }))} value={build} onValueChange={(value) => value && setSelectedBuild(value)}><SelectTrigger className="w-full" aria-label="Paper build"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{visibleBuilds.map((item) => <SelectItem key={item.id} value={item.id}>{item.id} · {item.channel}{item.experimental ? " (experimental)" : ""}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>}{serverKind === "Fabric" && <><Field><FieldLabel>Fabric loader</FieldLabel><Select items={fabricLoaders.map((item) => ({ value: item.version, label: item.version }))} value={loaderVersion} onValueChange={(value) => value && setSelectedLoader(value)}><SelectTrigger className="w-full" aria-label="Fabric loader"><SelectValue placeholder="Choose loader" /></SelectTrigger><SelectContent><SelectGroup>{fabricLoaders.map((item) => <SelectItem key={item.version} value={item.version}>{item.version}{item.stable ? "" : " (unstable)"}</SelectItem>)}</SelectGroup></SelectContent></Select></Field><Field><FieldLabel>Fabric installer</FieldLabel><Select items={installers.map((item) => ({ value: item.version, label: item.version }))} value={installerVersion} onValueChange={(value) => value && setSelectedInstaller(value)}><SelectTrigger className="w-full" aria-label="Fabric installer"><SelectValue placeholder="Choose installer" /></SelectTrigger><SelectContent><SelectGroup>{installers.map((item) => <SelectItem key={item.version} value={item.version}>{item.version}{item.stable ? "" : " (unstable)"}</SelectItem>)}</SelectGroup></SelectContent></Select></Field></>}{(serverKind === "Forge" || serverKind === "NeoForge") && <Field><FieldLabel>{serverKind} version</FieldLabel><Select items={visibleLoaderBuilds.map((item) => ({ value: item.version, label: `${item.version} · ${item.channel}` }))} value={loaderVersion} onValueChange={(value) => value && setSelectedLoader(value)}><SelectTrigger className="w-full" aria-label={`${serverKind} version`}><SelectValue placeholder={`Choose ${serverKind} version`} /></SelectTrigger><SelectContent><SelectGroup>{visibleLoaderBuilds.map((item) => <SelectItem key={item.version} value={item.version}>{item.version} · {item.channel}{item.experimental ? " (experimental)" : ""}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>}</FieldGroup>}
-          {step === 3 && <FieldGroup><Field><FieldLabel>Java runtime</FieldLabel>{compatibleJava.length ? <Select items={compatibleJava.map((item) => ({ value: item.id, label: `Java ${item.major} · ${item.vendor}` }))} value={javaId} onValueChange={(value) => value && setSelectedJavaId(value)}><SelectTrigger className="w-full" aria-label="Java runtime"><SelectValue placeholder="Choose Java" /></SelectTrigger><SelectContent><SelectGroup>{compatibleJava.map((item) => <SelectItem key={item.id} value={item.id}>Java {item.major} · {item.vendor}</SelectItem>)}</SelectGroup></SelectContent></Select> : <Alert variant="destructive"><AlertTitle>Java {requiredJava}+ is required</AlertTitle><AlertDescription>Install a compatible Java runtime on the host, then rescan from the Java page.</AlertDescription></Alert>} {selectedRuntime && <Alert><CheckIcon /><AlertTitle>Compatible runtime found</AlertTitle><AlertDescription>{selectedRuntime.path} · Java {selectedRuntime.major}</AlertDescription></Alert>}</Field>{memoryCapacityAvailable ? <Field><FieldLabel>RAM: {(effectiveMemoryMb / 1024).toFixed(1)} GiB</FieldLabel>{supportedMemoryLimitMb > MEMORY_MIN_MB ? <Slider aria-label="RAM" min={MEMORY_MIN_MB} max={supportedMemoryLimitMb} step={MEMORY_STEP_MB} value={[effectiveMemoryMb]} onValueChange={(value) => setMemoryMb(clampMemoryMb(Array.isArray(value) ? value[0] : value, supportedMemoryLimitMb, MEMORY_MIN_MB))} /> : <Input aria-label="RAM" value={`${(effectiveMemoryMb / 1024).toFixed(1)} GiB`} disabled readOnly />}<FieldDescription>Sets both Xms and Xmx to this exact value. MC Panel privately reserves JVM overhead. Maximum selectable RAM: {(supportedMemoryLimitMb / 1024).toFixed(1)} GiB.</FieldDescription></Field> : <Alert variant="destructive"><AlertTitle>Not enough allocatable host RAM</AlertTitle><AlertDescription>A server needs room for a 0.5 GiB heap plus JVM overhead, but the host allocation ceiling is {(hostTotalMemoryLimitMb / 1024).toFixed(1)} GiB.</AlertDescription></Alert>}</FieldGroup>}
-          {step === 4 && <FieldGroup><Field data-invalid={Boolean(errors.name)}><FieldLabel htmlFor="server-name">Server name</FieldLabel><Input id="server-name" aria-invalid={Boolean(errors.name)} {...register("name")} /><FieldError errors={[errors.name]} /></Field><Field data-invalid={Boolean(errors.port)}><FieldLabel htmlFor="port">Game port</FieldLabel><Input id="port" type="number" aria-invalid={Boolean(errors.port)} {...register("port", { valueAsNumber: true })} /><FieldError errors={[errors.port]} /></Field><Field data-invalid={Boolean(errors.eulaAccepted)} orientation="horizontal"><Checkbox id="eula" checked={eula} onCheckedChange={(checked) => setValue("eulaAccepted", checked === true, { shouldValidate: true })} aria-invalid={Boolean(errors.eulaAccepted)} /><FieldContent><FieldLabel htmlFor="eula">I accept the Minecraft EULA</FieldLabel><FieldDescription>This writes eula=true for this server. MC Panel never bundles Minecraft server files.</FieldDescription><FieldError errors={[errors.eulaAccepted]} /></FieldContent></Field></FieldGroup>}
-        </form>
-      </CardContent>
-      <CardFooter className="justify-between"><Button variant="outline" disabled={step === 1 || isSubmitting} onClick={() => setStep((current) => current - 1)}>Back</Button>{step < 4 ? <Button disabled={!canAdvance} onClick={() => setStep((current) => current + 1)}>Continue<ArrowRightIcon data-icon="inline-end" /></Button> : <Button form="create-form" type="submit" disabled={isSubmitting || !eula}>{isSubmitting && <Spinner data-icon="inline-start" />}Create server</Button>}</CardFooter>
-    </Card>
+
+          {step === 2 && !isGate && source === "CustomJar" && <FormStack>
+            <Input label="Minecraft version" placeholder="For example, 1.21.8" value={selectedVersion} onChange={(event) => setSelectedVersion(event.target.value)} description="Required for Java compatibility and server metadata." />
+            <FileInput label="Executable server JAR" accept=".jar,application/java-archive" pending={customJarUploading} fileName={customJar?.fileName} onFile={(file) => void uploadCustomJar(file)} description="A readable ZIP-format JAR with a Main-Class manifest. Uploads expire after one hour and can only be used once." />
+            {customJar && <Banner icon={<CheckCircleIcon weight="fill" />} title={customJar.fileName} description="Ready to install as Custom JAR." />}
+          </FormStack>}
+
+          {step === 2 && !isGate && source === "Official" && <FormStack>
+            <SwitchField id="experimental" label="Show experimental versions" description="Includes snapshots, unstable loader tools, and non-recommended builds." checked={showExperimental} onCheckedChange={setShowExperimental} />
+            {showExperimental && <Banner variant="alert" icon={<WarningIcon weight="fill" />} title="Experimental server core" description="Snapshots and unstable builds can corrupt worlds or break plugins. Back up important data before using them." />}
+            {!catalogLoading && !versions.length
+              ? <ErrorBanner title="Catalog unavailable" description="Check the panel’s network connection and retry." />
+              : <Select label="Minecraft version" className="w-full" loading={catalogLoading} placeholder="Choose a release" items={versions.map((item) => ({ value: item, label: item }))} value={version} onValueChange={(value) => value && setSelectedVersion(value as string)} />}
+            {serverKind === "Paper" && visibleBuilds.length > 0 && <Select label="Paper build" className="w-full" items={visibleBuilds.map((item) => ({ value: item.id, label: `${item.id} · ${item.channel}${item.experimental ? " (experimental)" : ""}` }))} value={build} onValueChange={(value) => value && setSelectedBuild(value as string)} />}
+            {serverKind === "Fabric" && <div className="grid gap-5 sm:grid-cols-2">
+              <Select label="Fabric loader" className="w-full" placeholder="Choose loader" items={fabricLoaders.map((item) => ({ value: item.version, label: `${item.version}${item.stable ? "" : " (unstable)"}` }))} value={loaderVersion} onValueChange={(value) => value && setSelectedLoader(value as string)} />
+              <Select label="Fabric installer" className="w-full" placeholder="Choose installer" items={installers.map((item) => ({ value: item.version, label: `${item.version}${item.stable ? "" : " (unstable)"}` }))} value={installerVersion} onValueChange={(value) => value && setSelectedInstaller(value as string)} />
+            </div>}
+            {(serverKind === "Forge" || serverKind === "NeoForge") && <Select label={`${serverKind} version`} className="w-full" placeholder={`Choose ${serverKind} version`} items={visibleLoaderBuilds.map((item) => ({ value: item.version, label: `${item.version} · ${item.channel}${item.experimental ? " (experimental)" : ""}` }))} value={loaderVersion} onValueChange={(value) => value && setSelectedLoader(value as string)} />}
+          </FormStack>}
+
+          {step === 3 && <FormStack>
+            {compatibleJava.length
+              ? <Select label="Java runtime" className="w-full" placeholder="Choose Java" items={compatibleJava.map((item) => ({ value: item.id, label: `Java ${item.major} · ${item.vendor}` }))} value={javaId} onValueChange={(value) => value && setSelectedJavaId(value as string)} />
+              : <ErrorBanner title={`Java ${requiredJava}+ is required`} description="Install a compatible Java runtime on the host, then rescan from the Java page." />}
+            {selectedRuntime && <Banner icon={<CheckCircleIcon weight="fill" />} title="Compatible runtime found" description={<span className="font-mono text-sm [overflow-wrap:anywhere]">{selectedRuntime.path} · Java {selectedRuntime.major}</span>} />}
+            {memoryCapacityAvailable ? <MemoryField valueMb={effectiveMemoryMb} limitMb={supportedMemoryLimitMb} onChange={(value) => setMemoryMb(clampMemoryMb(value, supportedMemoryLimitMb, MEMORY_MIN_MB))} description={`Sets both Xms and Xmx to this exact value. MC Panel privately reserves JVM overhead. Maximum selectable RAM: ${gib(supportedMemoryLimitMb)}.`} />
+              : <ErrorBanner title="Not enough allocatable host RAM" description={`A server needs room for a 0.5 GiB heap plus JVM overhead, but the host allocation ceiling is ${gib(hostTotalMemoryLimitMb)}.`} />}
+          </FormStack>}
+
+          {step === 4 && !isGate && <form id="create-form" onSubmit={handleSubmit(submit)} noValidate className="flex flex-col gap-5">
+            <div className="grid gap-5 sm:grid-cols-[minmax(0,1fr)_10rem]">
+              <Input label="Server name" error={errors.name?.message} {...register("name")} />
+              <Input label="Game port" type="number" error={errors.port?.message} {...register("port", { valueAsNumber: true })} />
+            </div>
+            <div className="flex flex-col gap-1.5 rounded-lg bg-kumo-elevated p-4 ring ring-kumo-hairline">
+              <Checkbox label="I accept the Minecraft EULA" checked={eula} variant={errors.eulaAccepted ? "error" : "default"} onCheckedChange={(checked) => setValue("eulaAccepted", checked === true, { shouldValidate: true })} />
+              <p className="pl-6 text-sm text-kumo-subtle">This writes eula=true for this server. MC Panel never bundles Minecraft server files.</p>
+              {errors.eulaAccepted && <p className="pl-6 text-sm text-kumo-danger">{errors.eulaAccepted.message}</p>}
+            </div>
+          </form>}
+        </div>
+      </Section>
+    </div>
   </Page>
+}
+
+function MemoryField({ valueMb, limitMb, onChange, description, disabled }: { valueMb: number; limitMb: number; onChange: (value: number) => void; description: string; disabled?: boolean }) {
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <Label>{`RAM: ${gib(valueMb)}`}</Label>
+        <span className="text-sm text-kumo-subtle tabular-nums">{gib(MEMORY_MIN_MB)} – {gib(limitMb)}</span>
+      </div>
+      {limitMb > MEMORY_MIN_MB
+        ? <Slider aria-label="RAM" min={MEMORY_MIN_MB} max={limitMb} step={MEMORY_STEP_MB} value={valueMb} disabled={disabled} onValueChange={onChange} />
+        : <Input aria-label="RAM" value={gib(valueMb)} disabled readOnly />}
+      <p className="text-sm text-pretty text-kumo-subtle">{description}</p>
+    </div>
+  )
 }
 
 export function ServerCreationPage() {
@@ -365,50 +475,45 @@ export function ServerCreationPage() {
   const message = job.data?.message ?? (job.isLoading ? "Preparing installation" : "Waiting for an update")
   const serverName = server.data?.name ?? "your server"
 
-  return <Page title={`Creating ${serverName}`} description="MC Panel is downloading, verifying, and configuring the server. This page updates automatically.">
-    <Card className="mx-auto w-full max-w-3xl">
-      <CardHeader>
-        <CardTitle>{failed ? "Installation stopped" : "Server installation in progress"}</CardTitle>
-        <CardDescription>{server.data ? `${server.data.kind === "Gate" ? "Gate Proxy" : `${serverKindLabel(server.data.kind)} · Minecraft`} ${server.data.version} · Port ${server.data.port}` : `Installation job ${jobId.slice(0, 8)}`}</CardDescription>
-        <CardAction>{failed
-          ? <Badge variant="destructive"><AlertTriangleIcon data-icon="inline-start" />Failed</Badge>
-          : <Badge variant="outline"><Spinner data-icon="inline-start" />{job.data?.state === "Queued" ? "Queued" : "Installing"}</Badge>}
-        </CardAction>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-6">
+  return <Page size="narrow" title={`Creating ${serverName}`} description="MC Panel is downloading, verifying, and configuring the server. This page updates automatically.">
+    <div className="mx-auto w-full max-w-3xl">
+      <Section
+        title={failed ? "Installation stopped" : "Installation in progress"}
+        description={server.data ? `${kindDescription(server.data)} · Port ${server.data.port}` : `Installation job ${jobId.slice(0, 8)}`}
+        actions={failed ? <Badge variant="error" appearance="dot">Failed</Badge> : job.data?.state === "Queued" ? <Badge variant="neutral" appearance="dot">Queued</Badge> : <StatusBadge state="Installing" />}
+        footer={<div className="flex w-full flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-kumo-subtle">You can leave this page; installation continues in the background.</p>
+          <div className="flex gap-2">
+            {job.isError && <Button onClick={() => void job.refetch()}>Retry</Button>}
+            {failed ? <LinkButton href={`/servers/${serverId}`} variant="primary">Open server</LinkButton> : <LinkButton href="/" variant="secondary">View dashboard</LinkButton>}
+          </div>
+        </div>}
+      >
         <div className="flex items-center gap-4">
-          {server.data ? <ServerAvatar server={server.data} className="size-12" /> : <Skeleton className="size-12 rounded-[20%]" />}
+          {server.data ? <ServerAvatar server={server.data} className="size-12" /> : <Skeleton className="size-12" />}
           <div className="min-w-0">
-            <p className="font-medium">{message}</p>
-            <p className="text-sm text-muted-foreground">{failed ? "Review the error below before opening the server." : "Large mod loaders can take a few minutes to finish."}</p>
+            <p className="font-medium text-kumo-default">{job.data?.state === "Queued" ? "Queued" : message}</p>
+            <p className="text-sm text-kumo-subtle">{failed ? "Review the error below before opening the server." : "Large mod loaders can take a few minutes to finish."}</p>
           </div>
         </div>
-        <Progress value={progress}>
-          <ProgressLabel>Installation progress</ProgressLabel>
-          <ProgressValue />
-        </Progress>
-        {failed && <Alert variant="destructive"><AlertTriangleIcon /><AlertTitle>Could not create the server</AlertTitle><AlertDescription>{job.data?.error ?? "The installation failed before it completed."}</AlertDescription></Alert>}
-        {job.isError && <Alert variant="destructive"><AlertTriangleIcon /><AlertTitle>Progress is unavailable</AlertTitle><AlertDescription>{job.error instanceof Error ? job.error.message : "Could not load the installation job."}</AlertDescription></Alert>}
-      </CardContent>
-      <CardFooter className="flex-wrap justify-between gap-3">
-        <p className="text-sm text-muted-foreground">You can safely leave this page; installation will continue in the background.</p>
-        <div className="flex gap-2">
-          {job.isError && <Button variant="outline" onClick={() => void job.refetch()}>Retry</Button>}
-          {failed && <Button nativeButton={false} render={<Link to={`/servers/${serverId}`} />}>Open server</Button>}
-          {!failed && <Button variant="outline" nativeButton={false} render={<Link to="/" />}>View dashboard</Button>}
-        </div>
-      </CardFooter>
-    </Card>
+        <ProgressBar label="Installation progress" value={progress} tone={failed ? "danger" : "default"} />
+        {failed && <ErrorBanner title="Could not create the server" description={job.data?.error ?? "The installation failed before it completed."} />}
+        {job.isError && <ErrorBanner title="Progress is unavailable" description={job.error instanceof Error ? job.error.message : "Could not load the installation job."} />}
+      </Section>
+    </div>
   </Page>
+}
+
+function OverviewSkeleton() {
+  return <Page title="Server overview"><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{Array.from({ length: 4 }, (_, index) => <Skeleton key={index} className="h-[7.5rem]" />)}</div><SectionSkeleton rows={2} /><SectionSkeleton rows={2} /></Page>
 }
 
 export function ServerOverviewPage() {
   const { serverId = "" } = useParams()
-  const queryClient = useQueryClient()
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteError, setDeleteError] = useState<string>()
   const { data: server, isLoading } = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
-  const lifecycle = useMutation({ mutationFn: (action: "start" | "stop" | "restart" | "update") => api.lifecycle(serverId, action), onSuccess: (job) => { toast.success("Operation started", { description: job.message ?? `Operation ${job.id.slice(0, 8)}` }); void queryClient.invalidateQueries({ queryKey: ["server", serverId] }) }, onError: (error) => toast.error(error.message) })
+  const lifecycle = useServerLifecycle(server)
   const remove = useMutation({
     mutationFn: () => api.deleteServer(serverId),
     onMutate: () => setDeleteError(undefined),
@@ -421,32 +526,100 @@ export function ServerOverviewPage() {
       setDeleteError(error.message)
     },
   })
-  if (isLoading || !server) return <Page title="Server overview"><Skeleton className="h-72" /></Page>
+  if (isLoading || !server) return <OverviewSkeleton />
+  const pending = lifecycle.pendingAction
   const stopped = server.state === "Stopped"
   const running = server.state === "Running"
   const canStart = server.state === "Stopped" || server.state === "Crashed"
   const canDelete = server.state === "Stopped" || server.state === "Error" || server.state === "Crashed"
   const lifecycleAction = running ? "stop" : canStart ? "start" : undefined
-  const lifecycleBusy = server.state === "Installing" || server.state === "Starting" || server.state === "Stopping" || server.state === "BackingUp" || server.state === "Updating"
-  return <Page title={<span className="flex items-center gap-3"><ServerAvatar server={server} className="size-10" /><span className="min-w-0">{server.name}</span></span>} description={server.kind === "Gate" ? `Gate Proxy · ${server.version}` : `${serverKindLabel(server.kind)} · Minecraft ${server.version}`} actions={<>{server.kind === "Gate" ? <Button variant="ghost" nativeButton={false} render={<Link to={`/servers/${server.id}/gate`} />}>Gate settings</Button> : server.kind === "CustomJar" ? <Button variant="ghost" nativeButton={false} render={<Link to={`/servers/${server.id}/runtime`} />}>Change server core</Button> : <Button variant="ghost" disabled={lifecycle.isPending || !stopped} title={stopped ? undefined : "Updates require a stopped server."} onClick={() => lifecycle.mutate("update")}>Update</Button>}<Button variant="outline" disabled={lifecycle.isPending || !running} title={running ? undefined : "Restart is available while the server is running."} onClick={() => lifecycle.mutate("restart")}><RotateCwIcon data-icon="inline-start" />Restart</Button><Button aria-label={lifecycleStateLabels[server.state]} variant={running ? "outline" : "default"} disabled={lifecycle.isPending || !lifecycleAction} title={lifecycleAction ? undefined : `No lifecycle action is available while the server is ${server.state.toLowerCase()}.`} onClick={() => lifecycleAction && lifecycle.mutate(lifecycleAction)}>{lifecycle.isPending || lifecycleBusy ? <Spinner data-icon="inline-start" /> : running ? <SquareIcon data-icon="inline-start" /> : canStart ? <CheckIcon data-icon="inline-start" /> : null}{lifecycleStateLabels[server.state]}</Button><ImmediateStopButton server={server} /></>}>
-    {server.restartRequired && <Alert><AlertTriangleIcon /><AlertTitle>Restart required</AlertTitle><AlertDescription>Saved settings will take effect after the next graceful restart.</AlertDescription></Alert>}
-    <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><MetricCard label="State" value={server.state} icon={CircleGaugeIcon} /><MetricCard label={server.kind === "Gate" ? "Connections" : "Players"} value={server.kind === "Gate" ? String(server.playerCount) : `${server.playerCount} / ${server.maxPlayers}`} icon={UsersIcon} /><MetricCard label="CPU" value={`${server.cpuPercent.toFixed(0)}%`} icon={CpuIcon} progress={server.cpuPercent} /><MetricCard label="Memory" value={`${server.memoryUsedMb.toFixed(0)} / ${server.memoryMb} MiB`} icon={MemoryStickIcon} progress={server.memoryUsedMb / server.memoryMb * 100} /></section>
-    <Card size="sm"><CardHeader><CardTitle>Connection</CardTitle><CardDescription>{server.resolvedConnectionAddress ?? "No connection address is available until a global or custom address is set."}</CardDescription><CardAction><div className="flex items-center gap-2"><Badge variant="outline">{server.connectionAddressSource ?? "Unavailable"}</Badge>{server.resolvedConnectionAddress && <Button size="icon-sm" variant="ghost" onClick={() => { void navigator.clipboard.writeText(server.resolvedConnectionAddress!); toast.success("Connection address copied") }}><ClipboardIcon /><span className="sr-only">Copy connection address</span></Button>}</div></CardAction></CardHeader><CardContent><PublicHostEditor serverId={server.id} value={server.advertisedAddressOverride} addressRevision={server.addressRevision ?? ""} inheritedPreview={server.connectionAddressSource === "Global" ? server.resolvedConnectionAddress : undefined} compact /></CardContent></Card>
-    <Card><CardHeader><CardTitle>Runtime details</CardTitle><CardAction><StatusBadge state={server.state} /></CardAction></CardHeader><CardContent className="grid gap-5 sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Uptime</p><p className="font-medium">{duration(server.uptimeSeconds)}</p></div><div><p className="text-xs text-muted-foreground">Server build</p><p className="font-medium">{serverKindLabel(server.kind)} {server.version}</p></div><div><p className="text-xs text-muted-foreground">Memory limit</p><p className="font-medium">{server.kind === "Gate" ? `${server.memoryMb} MiB` : `${(server.memoryMb / 1024).toFixed(1)} GiB`}</p></div></CardContent></Card>
-    {canDelete && <Card><CardHeader><CardTitle>Danger zone</CardTitle><CardDescription>Deletion permanently removes this managed workload, its files, backups, and instance-local secrets.</CardDescription></CardHeader><CardContent className="flex flex-wrap gap-2">{canDelete && <AlertDialog open={deleteOpen} onOpenChange={(open) => { if (!remove.isPending) { setDeleteOpen(open); if (!open) setDeleteError(undefined) } }}><AlertDialogTrigger render={<Button variant="destructive" />}><Trash2Icon data-icon="inline-start" />Delete server</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete {server.name}?</AlertDialogTitle><AlertDialogDescription>The server must not be running. Its panel-managed files and backups will be permanently removed. Gate instances also lose their private forwarding secrets.</AlertDialogDescription></AlertDialogHeader>{deleteError && <Alert variant="destructive"><AlertTriangleIcon /><AlertTitle>Deletion was blocked</AlertTitle><AlertDescription>{deleteError}</AlertDescription></Alert>}<AlertDialogFooter><AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={remove.isPending} onClick={(event) => { event.preventDefault(); remove.mutate() }}>{remove.isPending && <Spinner data-icon="inline-start" />}{remove.isPending ? "Deleting…" : "Delete server"}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}</CardContent></Card>}
+  const transitional = ["Installing", "Starting", "Stopping", "BackingUp", "Updating"].includes(server.state)
+  const primaryLabel = pending ? pendingLifecycleLabels[pending] : lifecycleStateLabels[server.state]
+
+  return <Page
+    title={<span className="flex min-w-0 items-center gap-3"><ServerAvatar server={server} className="size-10" /><span className="min-w-0">{server.name}</span></span>}
+    description={kindDescription(server)}
+    actions={<>
+      {server.kind === "Gate"
+        ? <LinkButton href={`/servers/${server.id}/gate`} variant="ghost">Gate settings</LinkButton>
+        : server.kind === "CustomJar"
+          ? <LinkButton href={`/servers/${server.id}/runtime`} variant="ghost">Change server core</LinkButton>
+          : <HintButton disabled={lifecycle.busy || !stopped} hint={stopped ? undefined : "Updates require a stopped server."} onClick={() => lifecycle.run("update")}>Update</HintButton>}
+      <HintButton icon={ArrowClockwiseIcon} disabled={lifecycle.busy || !running} hint={running ? undefined : "Restart is available while the server is running."} onClick={() => lifecycle.run("restart")}>Restart</HintButton>
+      <HintButton
+        aria-label={primaryLabel}
+        variant={running && !pending ? "secondary" : "primary"}
+        icon={pending || transitional ? undefined : running ? StopIcon : canStart ? PlayIcon : undefined}
+        loading={Boolean(pending) || transitional}
+        disabled={lifecycle.busy || !lifecycleAction}
+        hint={lifecycleAction || pending ? undefined : `No lifecycle action is available while the server is ${server.state.toLowerCase()}.`}
+        onClick={() => lifecycleAction && lifecycle.run(lifecycleAction)}
+      >
+        {primaryLabel}
+      </HintButton>
+      <ImmediateStopButton server={server} />
+    </>}
+  >
+    {server.restartRequired && <Banner variant="alert" icon={<WarningIcon weight="fill" />} title="Restart required" description="Saved settings take effect after the next graceful restart." />}
+    <section aria-label="Server metrics" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <StatTile label="State" value={server.state === "BackingUp" ? "Backing up" : server.state} icon={GaugeIcon} detail={server.state === "Running" ? `Up ${duration(server.uptimeSeconds)}` : undefined} />
+      <StatTile label={server.kind === "Gate" ? "Connections" : "Players"} value={server.kind === "Gate" ? String(server.playerCount) : `${server.playerCount} / ${server.maxPlayers}`} icon={UsersIcon} />
+      <StatTile label="CPU" value={`${server.cpuPercent.toFixed(0)}%`} icon={CpuIcon} progress={server.cpuPercent} />
+      <StatTile label="Memory" value={`${server.memoryUsedMb.toFixed(0)} / ${server.memoryMb} MiB`} icon={MemoryIcon} progress={server.memoryUsedMb / Math.max(server.memoryMb, 1) * 100} />
+    </section>
+    <div className="grid items-start gap-6 lg:grid-cols-2">
+      <Section
+        title="Connection"
+        description="The address players use to join. Leave the override empty to inherit the global server address."
+        actions={<Badge variant="outline">{server.connectionAddressSource ?? "Unavailable"}</Badge>}
+      >
+        {server.resolvedConnectionAddress
+          ? <ClipboardText text={server.resolvedConnectionAddress} className="w-full" />
+          : <p className="text-sm text-kumo-subtle">No connection address is available until a global or custom address is set.</p>}
+        <PublicHostEditor serverId={server.id} value={server.advertisedAddressOverride} addressRevision={server.addressRevision ?? ""} inheritedPreview={server.connectionAddressSource === "Global" ? server.resolvedConnectionAddress : undefined} compact />
+      </Section>
+      <Section title="Runtime details" actions={<StatusBadge state={server.state} />}>
+        <DetailList className="sm:grid-cols-3" items={[
+          { label: "Uptime", value: server.state === "Running" ? duration(server.uptimeSeconds) : "—" },
+          { label: "Server build", value: `${serverKindLabel(server.kind)} ${server.version}` },
+          { label: "Memory limit", value: server.kind === "Gate" ? `${server.memoryMb} MiB` : gib(server.memoryMb) },
+          { label: "Game port", value: String(server.port) },
+          { label: "Start on boot", value: server.startOnBoot ? "Enabled" : "Disabled" },
+        ]} />
+      </Section>
+    </div>
+    {canDelete && <Section title="Danger zone" description="Deletion permanently removes this managed workload, its files, backups, and instance-local secrets.">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-kumo-subtle">The server must be stopped. This cannot be undone.</p>
+        <ConfirmDialog
+          open={deleteOpen}
+          onOpenChange={(open) => { setDeleteOpen(open); if (!open) setDeleteError(undefined) }}
+          trigger={<Button variant="destructive" icon={TrashIcon}>Delete server</Button>}
+          title={`Delete ${server.name}?`}
+          description="Its panel-managed files and backups are permanently removed. Gate instances also lose their private forwarding secrets."
+          confirmLabel={remove.isPending ? "Deleting…" : "Delete server"}
+          tone="danger"
+          pending={remove.isPending}
+          closeOnConfirm={false}
+          onConfirm={() => remove.mutate()}
+        >
+          {deleteError && <Banner variant="error" size="sm" icon={<WarningCircleIcon weight="fill" />} title="Deletion was blocked" description={deleteError} />}
+        </ConfirmDialog>
+      </div>
+    </Section>}
   </Page>
 }
 
 export function ServerIconPage() {
   const { serverId = "" } = useParams()
   const { data: server, isLoading } = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
-  if (isLoading || !server) return <Page title="Server icon"><Skeleton className="h-72" /></Page>
+  if (isLoading || !server) return <Page title="Server icon"><SectionSkeleton rows={4} /></Page>
   const editable = (["Running", "Stopped", "Crashed"] as ServerState[]).includes(server.state)
   return <Page title="Server icon" description="Choose the icon shown throughout the panel and advertised to Minecraft clients.">
-    <Card>
-      <CardHeader><CardTitle>{server.name}</CardTitle><CardDescription>Uploaded icons are saved to the panel library, so they can be reused by this or any other server.</CardDescription></CardHeader>
-      <CardContent><ServerIconEditor server={server} disabled={!editable} /></CardContent>
-    </Card>
+    <Section title={server.name} description="Uploaded icons are saved to the panel library, so any server can reuse them.">
+      {!editable && <Banner variant="secondary" icon={<InfoIcon weight="fill" />} title="Icon changes are paused" description={`The icon cannot be changed while the server is ${server.state.toLowerCase()}.`} />}
+      <ServerIconEditor server={server} disabled={!editable} />
+    </Section>
   </Page>
 }
 
@@ -489,9 +662,11 @@ export function ServerPropertiesPage() {
   const propertiesQuery = useQuery({ queryKey: ["properties", serverId], queryFn: () => api.properties(serverId) })
   const { data, isLoading } = propertiesQuery
   if (propertiesQuery.isError && !data) return <Page title="Server properties"><QueryFeedback query={propertiesQuery} /></Page>
-  if (serverLoading || isLoading || !server || !data) return <Page title="Server properties"><Skeleton className="h-96" /></Page>
+  if (serverLoading || isLoading || !server || !data) return <Page title="Server properties"><SectionSkeleton rows={6} /></Page>
   return <ServerPropertiesEditor key={serverId} serverId={serverId} serverState={server.state} initial={data} />
 }
+
+type AvailableGroup = { section: string; definitions: ServerPropertyDefinitionDto[] }
 
 function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: string; serverState: ServerState; initial: ServerPropertiesDto }) {
   const queryClient = useQueryClient()
@@ -504,13 +679,20 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
   const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries(initial.entries.map((entry) => [entry.key, entry.value])))
   const [revealed, setRevealed] = useState<Set<string>>(() => new Set())
   const [addOpen, setAddOpen] = useState(false)
+  const [addSearch, setAddSearch] = useState("")
   const [pendingIncompatible, setPendingIncompatible] = useState<ServerPropertyDefinitionDto>()
   const [acknowledged, setAcknowledged] = useState<Set<string>>(() => new Set())
   const canSave = serverState === "Stopped" || serverState === "Running" || serverState === "Crashed"
   const normalizedSearch = search.trim().toLowerCase()
   const filtered = entries.filter((entry) => `${entry.key} ${humanizePropertyKey(entry.key)} ${entry.section}`.toLowerCase().includes(normalizedSearch))
   const tabGroups = propertyTabs.map((tab) => ({ ...tab, entries: filtered.filter((entry) => propertyTabFor(entry) === tab.value) }))
-  const availableGroups = propertySections.map((section) => ({ section, definitions: initial.available.filter((definition) => definition.section === section && !(definition.key in values)) })).filter((group) => group.definitions.length)
+  const currentTab = tabGroups.find((tab) => tab.value === activeTab) ?? tabGroups[0]
+  const availableGroups: AvailableGroup[] = propertySections.map((section) => ({ section, definitions: initial.available.filter((definition) => definition.section === section && !(definition.key in values)) })).filter((group) => group.definitions.length)
+  const normalizedAddSearch = addSearch.trim().toLowerCase()
+  const filteredAvailable = availableGroups
+    .map((group) => ({ ...group, definitions: group.definitions.filter((definition) => `${definition.key} ${humanizePropertyKey(definition.key)} ${group.section}`.toLowerCase().includes(normalizedAddSearch)) }))
+    .filter((group) => group.definitions.length)
+  const dirty = JSON.stringify(values) !== JSON.stringify(baseline)
   const save = useMutation({
     mutationFn: () => api.saveProperties(serverId, { revision, values, acknowledgedIncompatibleKeys: [...acknowledged] }),
     onSuccess: (saved) => {
@@ -525,7 +707,7 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
       if (error instanceof ApiError && error.status === 409) void api.properties(serverId).then(setConflict).catch(() => undefined)
     },
   })
-  const draft = useUnsavedChanges(JSON.stringify(values) !== JSON.stringify(baseline))
+  const draft = useUnsavedChanges(dirty)
   const update = (key: string, value: string) => setValues((current) => ({ ...current, [key]: value }))
   const toggleReveal = (key: string) => setRevealed((current) => {
     const next = new Set(current)
@@ -555,56 +737,107 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
   }
   const propertyField = (entry: ServerPropertyDto) => {
     const id = `property-${entry.key}`
+    const label = humanizePropertyKey(entry.key)
     const isRevealed = revealed.has(entry.key)
-    return <Field key={entry.key} orientation={entry.type === "boolean" ? "horizontal" : "responsive"}>
-      <FieldContent>
-        <FieldLabel htmlFor={id}>{humanizePropertyKey(entry.key)}</FieldLabel>
-        <FieldDescription className="flex flex-wrap items-center gap-2">
-          <code>{entry.key}</code>
-          {entry.compatibility !== "Supported" && entry.catalogued && <Badge variant="outline">Supported {supportedRange(entry.supportedRanges)}</Badge>}
-          {!entry.catalogued && <Badge variant="outline">Uncatalogued</Badge>}
-        </FieldDescription>
-      </FieldContent>
-      {entry.type === "boolean"
-        ? <Switch id={id} checked={values[entry.key] === "true"} onCheckedChange={(checked) => update(entry.key, String(checked))} />
-        : entry.sensitive
-          ? <InputGroup className="md:max-w-lg"><InputGroupInput id={id} type={isRevealed ? "text" : "password"} value={values[entry.key] ?? ""} onChange={(event) => update(entry.key, event.target.value)} /><InputGroupAddon align="inline-end"><InputGroupButton size="icon-xs" aria-label={`${isRevealed ? "Hide" : "Reveal"} ${humanizePropertyKey(entry.key)}`} onClick={() => toggleReveal(entry.key)}>{isRevealed ? <EyeOffIcon /> : <EyeIcon />}</InputGroupButton></InputGroupAddon></InputGroup>
-          : <Input id={id} inputMode={entry.type === "integer" ? "numeric" : undefined} className="md:max-w-lg" value={values[entry.key] ?? ""} onChange={(event) => update(entry.key, event.target.value)} />}
-    </Field>
+    const meta = <span className="flex flex-wrap items-center gap-1.5">
+      <code className="text-xs text-kumo-subtle">{entry.key}</code>
+      {entry.compatibility !== "Supported" && entry.catalogued && <Badge variant={entry.compatibility === "UnknownVersion" ? "outline" : "warning"}>Supported {supportedRange(entry.supportedRanges)}</Badge>}
+      {!entry.catalogued && <Badge variant="outline">Uncatalogued</Badge>}
+      {values[entry.key] !== baseline[entry.key] && <Badge variant="info">Edited</Badge>}
+    </span>
+    if (entry.type === "boolean") return <div key={entry.key} className="py-3.5 first:pt-0 last:pb-0">
+      <SwitchField id={id} label={label} description={meta} checked={values[entry.key] === "true"} onCheckedChange={(checked) => update(entry.key, String(checked))} />
+    </div>
+    return <div key={entry.key} className="grid gap-x-6 gap-y-2 py-3.5 first:pt-0 last:pb-0 md:grid-cols-[minmax(0,1fr)_minmax(0,26rem)] md:items-center">
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <Label htmlFor={id} className="w-fit">{label}</Label>
+        {meta}
+      </div>
+      {entry.sensitive
+        ? <InputGroup>
+          <InputGroup.Input id={id} aria-label={label} type={isRevealed ? "text" : "password"} value={values[entry.key] ?? ""} onChange={(event) => update(entry.key, event.target.value)} />
+          <InputGroup.Addon align="end"><InputGroup.Button shape="square" className="text-kumo-subtle" icon={isRevealed ? EyeSlashIcon : EyeIcon} aria-label={`${isRevealed ? "Hide" : "Reveal"} ${label}`} onClick={() => toggleReveal(entry.key)} /></InputGroup.Addon>
+        </InputGroup>
+        : <Input id={id} aria-label={label} inputMode={entry.type === "integer" ? "numeric" : undefined} value={values[entry.key] ?? ""} onChange={(event) => update(entry.key, event.target.value)} />}
+    </div>
   }
-  return <Page title="Server properties" description={`Minecraft ${initial.minecraftVersion} properties, grouped by purpose while preserving file order.`} actions={<><Button variant="outline" disabled={!canSave || !availableGroups.length} onClick={() => setAddOpen(true)}><PlusIcon data-icon="inline-start" />Add property</Button><Button disabled={save.isPending || !canSave} title={canSave ? undefined : `Properties cannot be saved while the server is ${serverState.toLowerCase()}.`} onClick={() => save.mutate()}>{save.isPending && <Spinner data-icon="inline-start" />}Save changes</Button></>}>
+
+  return <Page title="Server properties" description={`Minecraft ${initial.minecraftVersion} properties, grouped by purpose while preserving file order.`} actions={<>
+    {dirty && <Badge variant="warning" appearance="dot">Unsaved changes</Badge>}
+    <Button icon={PlusIcon} disabled={!canSave || !availableGroups.length} onClick={() => { setAddSearch(""); setAddOpen(true) }}>Add property</Button>
+    <HintButton variant="primary" loading={save.isPending} disabled={!canSave} hint={canSave ? undefined : `Properties cannot be saved while the server is ${serverState.toLowerCase()}.`} onClick={() => save.mutate()}>Save changes</HintButton>
+  </>}>
     {draft.dialog}
-    {conflict && <Alert variant="destructive"><AlertTriangleIcon /><AlertTitle>Properties changed on the server</AlertTitle><AlertDescription><p>Your draft is still here. Reapply only your edited keys to the latest revision, then review and save.</p><Button variant="outline" onClick={() => {
-      const latest = Object.fromEntries(conflict.entries.map((entry) => [entry.key, entry.value]))
-      const changed = Object.fromEntries(Object.entries(values).filter(([key, value]) => value !== baseline[key]))
-      setBaseline(latest); setValues({ ...latest, ...changed }); setEntries([...conflict.entries, ...entries.filter((entry) => !(entry.key in latest))]); setRevision(conflict.revision); setConflict(undefined)
-    }}>Reapply draft</Button></AlertDescription></Alert>}
-    <InputGroup className="max-w-md">
-      <InputGroupAddon><SearchIcon /><span className="sr-only">Search</span></InputGroupAddon>
-      <InputGroupInput aria-label="Search server properties" placeholder="Search properties" value={search} onChange={(event) => changeSearch(event.target.value)} />
-    </InputGroup>
-    <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as PropertyTab)}>
-      <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">{propertyTabs.map((tab) => <TabsTrigger key={tab.value} value={tab.value} className="w-full">{tab.label}</TabsTrigger>)}</TabsList>
-      {tabGroups.map((tab) => <TabsContent key={tab.value} value={tab.value}><Card>
-        <CardHeader><CardTitle>{tab.title}</CardTitle><CardDescription>{tab.description}</CardDescription></CardHeader>
-        <CardContent>{tab.entries.length ? <FieldGroup>{tab.entries.map(propertyField)}</FieldGroup> : <Empty><EmptyHeader><EmptyTitle>{normalizedSearch ? "No matching properties in this tab" : "No properties in this tab"}</EmptyTitle><EmptyDescription>{normalizedSearch ? "Try another tab or a different search." : "Properties appear here when they are present in server.properties."}</EmptyDescription></EmptyHeader></Empty>}</CardContent>
-      </Card></TabsContent>)}
-    </Tabs>
-    <CommandDialog open={addOpen} onOpenChange={setAddOpen} title="Add server property" description={`Search properties that are not currently present in server.properties for Minecraft ${initial.minecraftVersion}.`} showCloseButton>
-      <Command><CommandInput placeholder="Search available properties" />
-        <CommandList>
-          <CommandEmpty>No available property found.</CommandEmpty>
-          {availableGroups.map((group) => <CommandGroup key={group.section} heading={group.section}>
-            {group.definitions.map((definition) => <CommandItem key={definition.key} value={`${definition.key} ${humanizePropertyKey(definition.key)} ${group.section}`} onSelect={() => chooseProperty(definition)}>
-              <div className="flex min-w-0 flex-1 flex-col"><span>{humanizePropertyKey(definition.key)}</span><span className="truncate text-xs text-muted-foreground">{definition.key}{definition.compatibility === "Supported" ? ` · default ${definition.suggestedValue || "empty"}` : ` · supported ${supportedRange(definition.supportedRanges)}`}</span></div>
-            </CommandItem>)}
-          </CommandGroup>)}
-        </CommandList>
-      </Command>
-    </CommandDialog>
-    <AlertDialog open={Boolean(pendingIncompatible)} onOpenChange={(open) => { if (!open) setPendingIncompatible(undefined) }}>
-      <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Add a property outside its supported range?</AlertDialogTitle><AlertDialogDescription><code>{pendingIncompatible?.key}</code> is catalogued for Minecraft {pendingIncompatible ? supportedRange(pendingIncompatible.supportedRanges) : ""}, while this server uses {initial.minecraftVersion}. Minecraft may ignore it or fail to start.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => pendingIncompatible && addProperty(pendingIncompatible, true)}>Add anyway</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
-    </AlertDialog>
+    {conflict && <Banner
+      variant="error"
+      icon={<WarningCircleIcon weight="fill" />}
+      title="Properties changed on the server"
+      description="Your draft is kept. Reapply only your edited keys to the latest revision, then review and save."
+      action={<Banner.Action variant="secondary" onClick={() => {
+        const latest = Object.fromEntries(conflict.entries.map((entry) => [entry.key, entry.value]))
+        const changed = Object.fromEntries(Object.entries(values).filter(([key, value]) => value !== baseline[key]))
+        setBaseline(latest); setValues({ ...latest, ...changed }); setEntries([...conflict.entries, ...entries.filter((entry) => !(entry.key in latest))]); setRevision(conflict.revision); setConflict(undefined)
+      }}>Reapply draft</Banner.Action>}
+    />}
+    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <Tabs
+        variant="segmented"
+        value={activeTab}
+        onValueChange={(value) => setActiveTab(value as PropertyTab)}
+        tabs={tabGroups.map((tab) => ({ value: tab.value, label: <span className="flex items-center gap-1.5">{tab.label}{normalizedSearch && <span className="text-xs text-kumo-subtle tabular-nums">{tab.entries.length}</span>}</span> }))}
+      />
+      <InputGroup className="md:max-w-xs">
+        <InputGroup.Addon><MagnifyingGlassIcon className="text-kumo-subtle" /></InputGroup.Addon>
+        <InputGroup.Input aria-label="Search server properties" placeholder="Search properties" value={search} onChange={(event) => changeSearch(event.target.value)} />
+      </InputGroup>
+    </div>
+    <Section title={currentTab.title} description={currentTab.description}>
+      {currentTab.entries.length
+        ? <div className="divide-y divide-kumo-hairline">{currentTab.entries.map(propertyField)}</div>
+        : <EmptyState inset size="sm" title={normalizedSearch ? "No matching properties in this tab" : "No properties in this tab"} description={normalizedSearch ? "Try another tab or a different search." : "Properties appear here when they are present in server.properties."} />}
+    </Section>
+    <CommandPalette.Root<AvailableGroup, ServerPropertyDefinitionDto>
+      open={addOpen}
+      onOpenChange={setAddOpen}
+      items={filteredAvailable}
+      value={addSearch}
+      onValueChange={setAddSearch}
+      filter={() => true}
+      itemToStringValue={(group) => group.section}
+      getSelectableItems={(groups) => groups.flatMap((group) => group.definitions)}
+      onSelect={(definition) => chooseProperty(definition)}
+    >
+      <CommandPalette.Input placeholder={`Add a property for Minecraft ${initial.minecraftVersion}`} aria-label="Search available properties" />
+      <CommandPalette.List>
+        <CommandPalette.Results>
+          {(group: AvailableGroup) => (
+            <CommandPalette.Group key={group.section} items={group.definitions}>
+              <CommandPalette.GroupLabel>{group.section}</CommandPalette.GroupLabel>
+              <CommandPalette.Items>
+                {(definition: ServerPropertyDefinitionDto) => (
+                  <CommandPalette.ResultItem
+                    key={definition.key}
+                    value={definition}
+                    title={humanizePropertyKey(definition.key)}
+                    description={`${definition.key}${definition.compatibility === "Supported" ? ` · default ${definition.suggestedValue || "empty"}` : ` · supported ${supportedRange(definition.supportedRanges)}`}`}
+                    onClick={() => chooseProperty(definition)}
+                  />
+                )}
+              </CommandPalette.Items>
+            </CommandPalette.Group>
+          )}
+        </CommandPalette.Results>
+        <CommandPalette.Empty>No available property found.</CommandPalette.Empty>
+      </CommandPalette.List>
+    </CommandPalette.Root>
+    <ConfirmDialog
+      open={Boolean(pendingIncompatible)}
+      onOpenChange={(open) => { if (!open) setPendingIncompatible(undefined) }}
+      title="Add a property outside its supported range?"
+      description={<><code>{pendingIncompatible?.key}</code> is catalogued for Minecraft {pendingIncompatible ? supportedRange(pendingIncompatible.supportedRanges) : ""}, while this server uses {initial.minecraftVersion}. Minecraft may ignore it or fail to start.</>}
+      confirmLabel="Add anyway"
+      onConfirm={() => pendingIncompatible && addProperty(pendingIncompatible, true)}
+    />
   </Page>
 }
 
@@ -614,7 +847,7 @@ export function RuntimeSettingsPage() {
   const { data, isLoading } = useQuery({ queryKey: ["runtime", serverId], queryFn: () => api.runtime(serverId) })
   const { data: java = [] } = useQuery({ queryKey: ["java"], queryFn: api.java })
   const { data: systemInfo, isLoading: systemInfoLoading } = useQuery({ queryKey: ["system-info"], queryFn: api.systemInfo })
-  if (serverLoading || isLoading || systemInfoLoading || !server || !data || !systemInfo) return <Page title="Runtime"><Skeleton className="h-96" /></Page>
+  if (serverLoading || isLoading || systemInfoLoading || !server || !data || !systemInfo) return <Page title="Runtime"><SectionSkeleton rows={5} /><SectionSkeleton rows={3} /></Page>
   return <RuntimeSettingsEditor key={`${serverId}-${data.javaRuntimeId}-${data.totalMemoryMb}-${data.maximumMemoryMb}-${data.initialMemoryMb}`} serverId={serverId} serverState={server.state} serverKind={server.kind} initial={data} java={java} memoryLimitMb={heapLimitMb(systemInfo.memoryAllocationLimitBytes)} />
 }
 
@@ -635,58 +868,35 @@ function RuntimeSettingsEditor({ serverId, serverState, serverKind, initial, jav
     onError: (error) => toast.error(error.message),
   })
   const update = <K extends keyof RuntimeConfigurationDto>(key: K, value: RuntimeConfigurationDto[K]) => setForm((current) => ({ ...current, [key]: value }))
-  const changeMemory = (value: number | readonly number[]) => {
-    const next = clampMemoryMb(Array.isArray(value) ? value[0] : value, memoryLimitMb, MEMORY_MIN_MB)
+  const changeMemory = (value: number) => {
+    const next = clampMemoryMb(value, memoryLimitMb, MEMORY_MIN_MB)
     setForm((current) => ({ ...current, totalMemoryMb: totalMemoryForHeapMb(next), maximumMemoryMb: next, initialMemoryMb: next }))
   }
   const changeAikar = (checked: boolean) => {
     if (checked && serverKind !== "Paper") setConfirmAikar(true)
     else update("useAikarFlags", checked)
   }
-  return <Page title="Runtime" description="Server core, Java, RAM, startup behavior, and JVM arguments." actions={<Button disabled={save.isPending || !canSave || !memoryValid} title={canSave ? undefined : `Runtime settings cannot be saved while the server is ${serverState.toLowerCase()}.`} onClick={() => save.mutate()}>{save.isPending && <Spinner data-icon="inline-start" />}Save runtime settings</Button>}>
-    <Card><CardHeader><CardTitle>Java and memory</CardTitle><CardDescription>Choose one RAM value; MC Panel applies it equally to Xms and Xmx.</CardDescription></CardHeader><CardContent><FieldGroup>
-      <Field><FieldLabel>Java runtime</FieldLabel><Select items={java.map((runtime) => ({ value: runtime.id, label: `Java ${runtime.major} · ${runtime.vendor}` }))} value={form.javaRuntimeId} onValueChange={(value) => value && update("javaRuntimeId", value)}><SelectTrigger className="w-full" aria-label="Java runtime"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{java.map((runtime) => <SelectItem key={runtime.id} value={runtime.id}>Java {runtime.major} · {runtime.vendor}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>
-      <Field><FieldLabel>RAM: {(form.maximumMemoryMb / 1024).toFixed(1)} GiB</FieldLabel><Slider aria-label="RAM" min={MEMORY_MIN_MB} max={memoryLimitMb} step={MEMORY_STEP_MB} value={[form.maximumMemoryMb]} onValueChange={changeMemory} /><FieldDescription>Both Xms and Xmx will use this exact value. JVM overhead is handled internally.</FieldDescription></Field>
-      <Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="aikar-flags">Use Aikar flags</FieldLabel><FieldDescription>Adds PaperMC’s canonical non-memory JVM preset before your custom arguments.</FieldDescription></FieldContent><Switch id="aikar-flags" checked={form.useAikarFlags} onCheckedChange={changeAikar} /></Field>
-      <Field><FieldLabel htmlFor="jvm-args">Additional JVM arguments</FieldLabel><Textarea id="jvm-args" maxLength={2048} value={form.jvmArguments} onChange={(event) => update("jvmArguments", event.target.value)} /><FieldDescription>Custom arguments follow the Aikar preset. -jar, Xms/Xmx, and control characters are rejected.</FieldDescription></Field>
-      <Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="start-boot">Start on panel boot</FieldLabel><FieldDescription>Servers start sequentially after MC Panel is ready.</FieldDescription></FieldContent><Switch id="start-boot" checked={form.startOnBoot} onCheckedChange={(checked) => update("startOnBoot", checked)} /></Field>
-      <Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="crash-recovery">Crash recovery</FieldLabel><FieldDescription>Retry unexpected exits up to three times.</FieldDescription></FieldContent><Switch id="crash-recovery" checked={form.crashRecovery} onCheckedChange={(checked) => update("crashRecovery", checked)} /></Field>
-    </FieldGroup></CardContent></Card>
+  return <Page title="Runtime" description="Server core, Java, RAM, startup behavior, and JVM arguments." actions={<HintButton variant="primary" loading={save.isPending} disabled={!canSave || !memoryValid} hint={canSave ? undefined : `Runtime settings cannot be saved while the server is ${serverState.toLowerCase()}.`} onClick={() => save.mutate()}>Save runtime settings</HintButton>}>
+    <Section title="Java and memory" description="Choose one RAM value; MC Panel applies it equally to Xms and Xmx.">
+      <Select label="Java runtime" className="w-full" items={java.map((runtime) => ({ value: runtime.id, label: `Java ${runtime.major} · ${runtime.vendor}` }))} value={form.javaRuntimeId} onValueChange={(value) => value && update("javaRuntimeId", value as string)} />
+      <MemoryField valueMb={form.maximumMemoryMb} limitMb={memoryLimitMb} onChange={changeMemory} description="Both Xms and Xmx use this exact value. JVM overhead is handled internally." />
+    </Section>
+    <Section title="Startup and JVM" description="How the server process starts and recovers.">
+      <div className="flex flex-col gap-5">
+        <SwitchField id="aikar-flags" label="Use Aikar flags" description="Adds PaperMC’s canonical non-memory JVM preset before your custom arguments." checked={form.useAikarFlags} onCheckedChange={changeAikar} />
+        <SwitchField id="start-boot" label="Start on panel boot" description="Servers start one at a time after MC Panel is ready." checked={form.startOnBoot} onCheckedChange={(checked) => update("startOnBoot", checked)} />
+        <SwitchField id="crash-recovery" label="Crash recovery" description="Retry unexpected exits up to three times." checked={form.crashRecovery} onCheckedChange={(checked) => update("crashRecovery", checked)} />
+        <InputArea label="Additional JVM arguments" className="font-mono text-sm" rows={3} maxLength={2048} value={form.jvmArguments} onChange={(event) => update("jvmArguments", event.target.value)} description="Custom arguments follow the Aikar preset. -jar, Xms/Xmx, and control characters are rejected." />
+      </div>
+    </Section>
     <ServerCoreSettingsSection />
-    <AlertDialog open={confirmAikar} onOpenChange={setConfirmAikar}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Enable Aikar flags for {serverKind}?</AlertDialogTitle><AlertDialogDescription>The preset is designed for Paper. It can be used with {serverKind}, but performance and compatibility should be tested before relying on it.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => { update("useAikarFlags", true); setConfirmAikar(false) }}>Enable flags</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
-  </Page>
-}
-
-export function SettingsPage() {
-  const { serverId = "" } = useParams()
-  const { data: server, isLoading: serverLoading } = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
-  const { data, isLoading } = useQuery({ queryKey: ["configuration", serverId], queryFn: () => api.configuration(serverId) })
-  const { data: java = [] } = useQuery({ queryKey: ["java"], queryFn: api.java })
-  const { data: systemInfo, isLoading: systemInfoLoading } = useQuery({ queryKey: ["system-info"], queryFn: api.systemInfo })
-  if (serverLoading || isLoading || systemInfoLoading || !server || !data || !systemInfo) return <Page title="Settings"><Skeleton className="h-96" /></Page>
-  const supportedMemoryLimitMb = heapLimitMb(systemInfo.memoryAllocationLimitBytes)
-  return <SettingsEditor key={`${serverId}-${data.javaRuntimeId}`} serverId={serverId} serverState={server.state} initial={data} java={java} memoryLimitMb={supportedMemoryLimitMb} />
-}
-
-function SettingsEditor({ serverId, serverState, initial, java, memoryLimitMb }: { serverId: string; serverState: ServerState; initial: ServerConfigurationDto; java: Awaited<ReturnType<typeof api.java>>; memoryLimitMb: number }) {
-  const queryClient = useQueryClient()
-  const [form, setForm] = useState({ ...initial, memoryMb: clampMemoryMb(initial.memoryMb, memoryLimitMb, MEMORY_MIN_MB) })
-  const canSave = serverState === "Stopped" || serverState === "Running" || serverState === "Crashed"
-  const saveHint = canSave ? undefined : `Settings cannot be saved while the server is ${serverState.toLowerCase()}.`
-  const save = useMutation({
-    mutationFn: () => api.saveConfiguration(serverId, form),
-    onSuccess: () => { toast.success("Settings saved"); void queryClient.invalidateQueries({ queryKey: ["server", serverId] }) },
-    onError: (error) => toast.error(error.message),
-  })
-  const update = <K extends keyof ServerConfigurationDto>(key: K, value: ServerConfigurationDto[K]) => setForm((current) => current ? { ...current, [key]: value } : current)
-  const selectOptions = (values: string[]) => values.map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))
-  return <Page title="Settings" description="Curated Minecraft and Java settings. Unknown server.properties values are preserved." actions={<Button disabled={save.isPending || !canSave} title={saveHint} onClick={() => save.mutate()}>{save.isPending && <Spinner data-icon="inline-start" />}Save changes</Button>}>
-    <Tabs defaultValue="general"><TabsList className="w-full justify-start overflow-x-auto"><TabsTrigger value="general">General</TabsTrigger><TabsTrigger value="gameplay">Gameplay</TabsTrigger><TabsTrigger value="network">Network</TabsTrigger><TabsTrigger value="java">Java & memory</TabsTrigger><TabsTrigger value="advanced">Advanced</TabsTrigger></TabsList>
-      <TabsContent value="general"><Card><CardHeader><CardTitle>General</CardTitle></CardHeader><CardContent><FieldGroup><Field orientation="responsive"><FieldContent><FieldLabel htmlFor="motd">Message of the day</FieldLabel><FieldDescription>Shown in the multiplayer server list. Up to 512 characters.</FieldDescription></FieldContent><Input id="motd" className="md:w-80" maxLength={512} value={form.motd} onChange={(event) => update("motd", event.target.value)} /></Field><Field orientation="responsive"><FieldContent><FieldLabel htmlFor="max-players">Maximum players</FieldLabel></FieldContent><Input id="max-players" className="md:w-32" type="number" value={form.maxPlayers} onChange={(event) => update("maxPlayers", Number(event.target.value))} /></Field><Field orientation="responsive"><FieldContent><FieldLabel htmlFor="world-name">World name</FieldLabel><FieldDescription>Up to 128 characters; the panel also enforces the UTF-8 byte limit.</FieldDescription></FieldContent><Input id="world-name" className="md:w-80" maxLength={128} value={form.worldName} onChange={(event) => update("worldName", event.target.value)} /></Field><Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="start-boot">Start on panel boot</FieldLabel><FieldDescription>Servers start sequentially after MC Panel is ready.</FieldDescription></FieldContent><Switch id="start-boot" checked={form.startOnBoot} onCheckedChange={(value) => update("startOnBoot", value)} /></Field></FieldGroup></CardContent></Card></TabsContent>
-      <TabsContent value="gameplay"><Card><CardHeader><CardTitle>Gameplay</CardTitle></CardHeader><CardContent><FieldGroup><Field orientation="responsive"><FieldContent><FieldLabel>Game mode</FieldLabel></FieldContent><Select items={selectOptions(["survival", "creative", "adventure", "spectator"])} value={form.gameMode} onValueChange={(value) => value && update("gameMode", value)}><SelectTrigger className="md:w-48" aria-label="Game mode"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{["survival", "creative", "adventure", "spectator"].map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectGroup></SelectContent></Select></Field><Field orientation="responsive"><FieldContent><FieldLabel>Difficulty</FieldLabel></FieldContent><Select items={selectOptions(["peaceful", "easy", "normal", "hard"])} value={form.difficulty} onValueChange={(value) => value && update("difficulty", value)}><SelectTrigger className="md:w-48" aria-label="Difficulty"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{["peaceful", "easy", "normal", "hard"].map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectGroup></SelectContent></Select></Field><FieldSet><FieldLegend>Rules</FieldLegend>{([["pvp", "Player versus player"], ["allowFlight", "Allow flight"], ["commandBlocks", "Command blocks"], ["whitelist", "Whitelist"]] as const).map(([key, label]) => <Field key={key} orientation="horizontal"><FieldContent><FieldLabel htmlFor={key}>{label}</FieldLabel></FieldContent><Switch id={key} checked={form[key]} onCheckedChange={(value) => update(key, value)} /></Field>)}</FieldSet></FieldGroup></CardContent></Card></TabsContent>
-      <TabsContent value="network"><Card><CardHeader><CardTitle>Network</CardTitle></CardHeader><CardContent><FieldGroup><Field orientation="responsive"><FieldContent><FieldLabel htmlFor="server-port">Port</FieldLabel><FieldDescription>Ports below 1024 are rejected.</FieldDescription></FieldContent><Input id="server-port" className="md:w-32" type="number" value={form.port} onChange={(event) => update("port", Number(event.target.value))} /></Field><Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="online-mode">Online mode</FieldLabel><FieldDescription>Keep enabled to authenticate players with Mojang.</FieldDescription></FieldContent><Switch id="online-mode" checked={form.onlineMode} onCheckedChange={(value) => update("onlineMode", value)} /></Field><Field orientation="responsive"><FieldContent><FieldLabel htmlFor="view-distance">View distance</FieldLabel></FieldContent><Input id="view-distance" className="md:w-32" type="number" value={form.viewDistance} onChange={(event) => update("viewDistance", Number(event.target.value))} /></Field><Field orientation="responsive"><FieldContent><FieldLabel htmlFor="simulation-distance">Simulation distance</FieldLabel></FieldContent><Input id="simulation-distance" className="md:w-32" type="number" value={form.simulationDistance} onChange={(event) => update("simulationDistance", Number(event.target.value))} /></Field></FieldGroup></CardContent></Card></TabsContent>
-      <TabsContent value="java"><Card><CardHeader><CardTitle>Java & memory</CardTitle></CardHeader><CardContent><FieldGroup><Field><FieldLabel>Java runtime</FieldLabel><Select items={java.map((runtime) => ({ value: runtime.id, label: `Java ${runtime.major} · ${runtime.vendor}` }))} value={form.javaRuntimeId} onValueChange={(value) => value && update("javaRuntimeId", value)}><SelectTrigger className="w-full" aria-label="Java runtime"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{java.map((runtime) => <SelectItem key={runtime.id} value={runtime.id}>Java {runtime.major} · {runtime.vendor}</SelectItem>)}</SelectGroup></SelectContent></Select></Field><Field><FieldLabel>RAM: {(form.memoryMb / 1024).toFixed(1)} GiB</FieldLabel><Slider aria-label="RAM" min={MEMORY_MIN_MB} max={memoryLimitMb} step={MEMORY_STEP_MB} value={[form.memoryMb]} onValueChange={(value) => update("memoryMb", clampMemoryMb(Array.isArray(value) ? value[0] : value, memoryLimitMb, MEMORY_MIN_MB))} /><FieldDescription>Sets both Xms and Xmx to this exact value. JVM overhead is handled internally.</FieldDescription></Field><Field><FieldLabel htmlFor="jvm-args">Additional JVM arguments</FieldLabel><Textarea id="jvm-args" maxLength={2048} value={form.jvmArguments} onChange={(event) => update("jvmArguments", event.target.value)} /><FieldDescription>Arguments are parsed without a shell. -jar, memory flags, and control characters are rejected. Up to 2,048 characters.</FieldDescription></Field></FieldGroup></CardContent></Card></TabsContent>
-      <TabsContent value="advanced"><Card><CardHeader><CardTitle>Advanced</CardTitle></CardHeader><CardContent><FieldGroup><Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="crash-recovery">Crash recovery</FieldLabel><FieldDescription>Retry unexpected exits up to three times.</FieldDescription></FieldContent><Switch id="crash-recovery" checked={form.crashRecovery} onCheckedChange={(value) => update("crashRecovery", value)} /></Field><Field orientation="responsive"><FieldContent><FieldLabel htmlFor="spawn-protection">Spawn protection</FieldLabel></FieldContent><Input id="spawn-protection" className="md:w-32" type="number" value={form.spawnProtection} onChange={(event) => update("spawnProtection", Number(event.target.value))} /></Field></FieldGroup></CardContent></Card></TabsContent>
-    </Tabs>
+    <ConfirmDialog
+      open={confirmAikar}
+      onOpenChange={setConfirmAikar}
+      title={`Enable Aikar flags for ${serverKind}?`}
+      description={`The preset is designed for Paper. It can be used with ${serverKind}, but test performance and compatibility before relying on it.`}
+      confirmLabel="Enable flags"
+      onConfirm={() => update("useAikarFlags", true)}
+    />
   </Page>
 }

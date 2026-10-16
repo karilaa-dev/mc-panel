@@ -266,8 +266,8 @@ describe("ModsPage", () => {
       loader: "fabric",
       limit: 20,
     })
-    expect(screen.getByRole("combobox", { name: "Minecraft version filter" })).toHaveTextContent("1.21.8")
-    expect(screen.getByRole("combobox", { name: "Mod loader filter" })).toHaveTextContent("Fabric")
+    expect(screen.getByRole("combobox", { name: "Minecraft version" })).toHaveTextContent("1.21.8")
+    expect(screen.getByRole("combobox", { name: "Loader" })).toHaveTextContent("Fabric")
     expect(document.querySelector('[data-slot="avatar"]')).toHaveClass("size-24", "rounded-xl")
     expect(document.querySelector('[data-modrinth-toolbar]')).toHaveClass("mx-auto", "lg:w-2/3")
     expect(document.querySelector('[data-modrinth-results]')).toHaveClass("mx-auto", "lg:w-2/3")
@@ -276,8 +276,6 @@ describe("ModsPage", () => {
     await user.click(screen.getByRole("button", { name: "Gallery view" }))
     expect(document.querySelector('img[src="https://cdn.modrinth.com/data/project-1/hero.png"]')).toBeInTheDocument()
     expect(document.querySelector('[data-modrinth-card="gallery"]')).toHaveClass("h-[21.5rem]")
-    expect(document.querySelector('[data-modrinth-card="gallery"] [data-slot="badge"]')).toHaveClass("h-6", "text-sm")
-    expect(document.querySelector('[data-modrinth-card="gallery"] [data-slot="card-content"]')).not.toHaveClass("pb-4")
   })
 
   it("shows Paper plugins and browses Modrinth with Paper defaults", async () => {

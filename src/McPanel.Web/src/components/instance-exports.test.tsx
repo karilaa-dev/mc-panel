@@ -32,7 +32,7 @@ it("requires a selection and submits only the checked instance IDs", async () =>
   renderExports()
   await user.click(await screen.findByRole("button", { name: "Choose instances" }))
   expect(screen.getByRole("button", { name: "Export 0 selected instances" })).toBeDisabled()
-  await user.click(screen.getByRole("checkbox", { name: "Survival" }))
+  await user.click(screen.getByRole("checkbox", { name: /Survival/ }))
   await user.click(screen.getByRole("button", { name: "Export 1 selected instance" }))
   await waitFor(() => expect(api.exportInstances).toHaveBeenCalledWith({ all: false, serverIds: ["one"] }))
 })
@@ -42,6 +42,6 @@ it("shows completed downloads and blocks duplicate exports while a job runs", as
     { id: "busy", type: "InstancesExport", state: "Running", progress: 40 },
   ])
   renderExports()
-  expect(await screen.findByRole("button", { name: "Export in progress" })).toBeDisabled()
+  expect(await screen.findByRole("button", { name: /Export in progress/ })).toBeDisabled()
   expect(screen.getByRole("link", { name: "Download instance export" })).toHaveAttribute("href", "/exports/done/download")
 })

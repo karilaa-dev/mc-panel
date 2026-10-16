@@ -1,17 +1,15 @@
 import { useState, type CSSProperties } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import itemTextureManifest from "minecraft-textures/manifest/26.2.id.json"
-import { ArchiveIcon, ArchiveRestoreIcon, EyeIcon, RefreshCwIcon } from "lucide-react"
-import { toast } from "sonner"
+import { Badge, Banner, Button } from "@cloudflare/kumo"
+import { ArchiveIcon, ClockCounterClockwiseIcon, EyeIcon, InfoIcon } from "@phosphor-icons/react"
 import { api } from "@/lib/api"
 import type { InventoryItemDto, InventorySlotDto, PlayerDto } from "@/lib/contracts"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
-import { Spinner } from "@/components/ui/spinner"
+import { toast } from "@/lib/toast"
+import { useRetained } from "@/hooks/use-retained"
+import { HintButton } from "@/components/controls"
+import { ErrorBanner, InlineLoading } from "@/components/feedback"
+import { ConfirmDialog, Modal, ModalClose, Sheet } from "@/components/modal"
 
 type SlotKey = `${string}:${number}`
 type TextureEntry = { readable: string; texture: string }
@@ -37,12 +35,14 @@ function itemsFromSlots(slots: InventorySlotDto[]) {
 }
 
 export function PlayerInventorySheet({ serverId, player, open, onOpenChange }: { serverId: string; player?: PlayerDto; open: boolean; onOpenChange: (open: boolean) => void }) {
-  const uuid = player?.uuid ?? ""
+  const shownPlayer = useRetained(player)
+  const uuid = shownPlayer?.uuid ?? ""
   const queryClient = useQueryClient()
   const [previewId, setPreviewId] = useState<string>()
+  const shownPreviewId = useRetained(previewId)
   const inventory = useQuery({ queryKey: ["player-inventory", serverId, uuid], queryFn: () => api.playerInventory(serverId, uuid), enabled: open && Boolean(uuid), refetchInterval: open ? 5_000 : false })
   const backups = useQuery({ queryKey: ["player-inventory-backups", serverId, uuid], queryFn: () => api.playerInventoryBackups(serverId, uuid), enabled: open && Boolean(uuid) })
-  const preview = useQuery({ queryKey: ["player-inventory-backup", serverId, uuid, previewId], queryFn: () => api.playerInventoryBackup(serverId, uuid, previewId!), enabled: open && Boolean(uuid) && Boolean(previewId) })
+  const preview = useQuery({ queryKey: ["player-inventory-backup", serverId, uuid, shownPreviewId], queryFn: () => api.playerInventoryBackup(serverId, uuid, shownPreviewId!), enabled: open && Boolean(uuid) && Boolean(previewId) })
   const createBackup = useMutation({
     mutationFn: () => api.createPlayerInventoryBackup(serverId, uuid, inventory.data!.revision),
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["player-inventory-backups", serverId, uuid] }); toast.success("Inventory backup created") },
@@ -56,20 +56,38 @@ export function PlayerInventorySheet({ serverId, player, open, onOpenChange }: {
   const currentItems = inventory.data ? itemsFromSlots(inventory.data.slots) : new Map<SlotKey, InventoryItemDto>()
 
   return <>
-    <Sheet open={open} onOpenChange={(value) => { if (!value) setPreviewId(undefined); onOpenChange(value) }}><SheetContent className="!w-full !max-w-3xl gap-0"><SheetHeader className="pb-3"><SheetTitle>{player?.name ?? "Player"} inventory</SheetTitle><SheetDescription>Read-only saved inventory and Ender Chest. Create, preview, and restore inventory-only backups here.</SheetDescription></SheetHeader>
-      <div className="flex-1 overflow-y-auto px-4 pb-4">
-        {inventory.isError ? <Alert variant="destructive"><AlertTitle>Inventory could not be loaded</AlertTitle><AlertDescription className="flex flex-wrap items-center gap-2">{inventory.error.message}<Button size="sm" variant="outline" onClick={() => void inventory.refetch()}><RefreshCwIcon data-icon="inline-start" />Try again</Button></AlertDescription></Alert> : inventory.isLoading || !inventory.data ? <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground"><Spinner />Loading saved inventory…</div> : <div className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center gap-2 text-xs"><Badge variant={inventory.data.online ? "secondary" : "outline"}>{inventory.data.online ? "Online · last saved snapshot" : "Offline"}</Badge><span className="text-muted-foreground">Saved {formatDate(inventory.data.savedAt)}</span>{inventory.data.dataVersion && <span className="text-muted-foreground">DataVersion {inventory.data.dataVersion}</span>}</div>
-          {inventory.data.snapshotMayBeStale && <Alert><AlertTitle>Player is online</AlertTitle><AlertDescription>This is Minecraft’s latest on-disk save and may be stale. Viewing, backup, and backup preview remain available; restore requires the player to be offline.</AlertDescription></Alert>}
-          <InventoryLayout items={currentItems} />
-          <RecoveryPanel backups={backups.data ?? []} online={inventory.data.online} backupPending={createBackup.isPending} restorePending={restore.isPending} onBackup={() => createBackup.mutate()} onPreview={setPreviewId} onRestore={(backupId) => restore.mutate(backupId)} />
-        </div>}
-      </div>
-    </SheetContent></Sheet>
-    <Dialog open={Boolean(previewId)} onOpenChange={(value) => !value && setPreviewId(undefined)}><DialogContent className="!max-w-3xl"><DialogHeader><DialogTitle>Inventory backup preview</DialogTitle><DialogDescription>{preview.data ? `${preview.data.playerName} · ${formatDate(preview.data.backup.createdAt)}` : "Loading the inventory-only snapshot…"}</DialogDescription></DialogHeader>
-      {preview.isError ? <Alert variant="destructive"><AlertTitle>Backup could not be previewed</AlertTitle><AlertDescription>{preview.error.message}</AlertDescription></Alert> : preview.isLoading || !preview.data ? <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground"><Spinner />Loading backup…</div> : <div className="max-h-[70vh] overflow-y-auto"><InventoryLayout items={itemsFromSlots(preview.data.slots)} /></div>}
-      <DialogFooter showCloseButton />
-    </DialogContent></Dialog>
+    <Sheet
+      open={open}
+      onOpenChange={(value) => { if (!value) setPreviewId(undefined); onOpenChange(value) }}
+      title={`${shownPlayer?.name ?? "Player"} inventory`}
+      description="Read-only saved inventory and Ender Chest, with inventory-only backups."
+      className="max-w-3xl"
+    >
+      {inventory.isError ? <ErrorBanner title="Inventory could not be loaded" description={inventory.error.message} onRetry={() => void inventory.refetch()} retryLabel="Try again" />
+        : inventory.isLoading || !inventory.data ? <div className="flex min-h-48 items-center justify-center"><InlineLoading>Loading saved inventory…</InlineLoading></div>
+          : <>
+            <div className="flex flex-wrap items-center gap-2 text-sm text-kumo-subtle">
+              <Badge variant={inventory.data.online ? "success" : "neutral"} appearance="dot">{inventory.data.online ? "Online · last saved snapshot" : "Offline"}</Badge>
+              <span>Saved {formatDate(inventory.data.savedAt)}</span>
+              {inventory.data.dataVersion && <span>· DataVersion {inventory.data.dataVersion}</span>}
+            </div>
+            {inventory.data.snapshotMayBeStale && <Banner variant="secondary" icon={<InfoIcon weight="fill" />} title="Player is online" description="This is Minecraft’s latest on-disk save and may be stale. Viewing, backup, and preview remain available; restore requires the player to be offline." />}
+            <InventoryLayout items={currentItems} />
+            <RecoveryPanel backups={backups.data ?? []} online={inventory.data.online} backupPending={createBackup.isPending} restorePending={restore.isPending} onBackup={() => createBackup.mutate()} onPreview={setPreviewId} onRestore={(backupId) => restore.mutate(backupId)} />
+          </>}
+    </Sheet>
+    <Modal
+      open={Boolean(previewId)}
+      onOpenChange={(value) => { if (!value) setPreviewId(undefined) }}
+      size="xl"
+      title="Inventory backup preview"
+      description={preview.data ? `${preview.data.playerName} · ${formatDate(preview.data.backup.createdAt)}` : "Loading the inventory-only snapshot…"}
+      footer={<ModalClose>Close</ModalClose>}
+    >
+      {preview.isError ? <ErrorBanner title="Backup could not be previewed" description={preview.error.message} />
+        : preview.isLoading || !preview.data ? <div className="flex min-h-48 items-center justify-center"><InlineLoading>Loading backup…</InlineLoading></div>
+          : <InventoryLayout items={itemsFromSlots(preview.data.slots)} />}
+    </Modal>
   </>
 }
 
@@ -78,7 +96,7 @@ function InventoryLayout({ items }: { items: Map<SlotKey, InventoryItemDto> }) {
 }
 
 function PlayerInventory({ items }: { items: Map<SlotKey, InventoryItemDto> }) {
-  return <section className="w-[352px]" aria-label="Player inventory"><h3 className="mb-1.5 text-xs font-medium text-muted-foreground">Player inventory</h3><div className="relative h-[332px] w-[352px] overflow-hidden [image-rendering:pixelated]" style={{ backgroundImage: `url(${INVENTORY_TEXTURE})`, backgroundPosition: "0 0", backgroundRepeat: "no-repeat", backgroundSize: "512px 512px" }}>
+  return <section className="w-[352px]" aria-label="Player inventory"><h3 className="mb-1.5 text-sm font-medium text-kumo-subtle">Player inventory</h3><div className="relative h-[332px] w-[352px] overflow-hidden [image-rendering:pixelated]" style={{ backgroundImage: `url(${INVENTORY_TEXTURE})`, backgroundPosition: "0 0", backgroundRepeat: "no-repeat", backgroundSize: "512px 512px" }}>
     {Array.from({ length: 4 }, (_, index) => <InventorySlot key={`armor-${index}`} index={index} label="Armor" item={items.get(keyOf("armor", index))} placeholder={EQUIPMENT_TEXTURES[index]} style={slotPosition(7, 7 + index * 18)} />)}
     <InventorySlot index={0} label="Offhand" item={items.get(keyOf("offhand", 0))} placeholder={OFFHAND_TEXTURE} style={slotPosition(76, 61)} />
     {Array.from({ length: 27 }, (_, index) => <InventorySlot key={`storage-${index}`} index={index} label="Storage" item={items.get(keyOf("storage", index))} style={slotPosition(7 + (index % 9) * 18, 83 + Math.floor(index / 9) * 18)} />)}
@@ -108,9 +126,33 @@ function ItemIcon({ item }: { item: InventoryItemDto }) {
 }
 
 function RecoveryPanel({ backups, online, backupPending, restorePending, onBackup, onPreview, onRestore }: { backups: { id: string; createdAt: string; sourceRevision: string }[]; online: boolean; backupPending: boolean; restorePending: boolean; onBackup: () => void; onPreview: (backupId: string) => void; onRestore: (backupId: string) => void }) {
-  return <section className="rounded-lg border bg-card"><div className="flex items-start justify-between gap-3 border-b px-3 py-2.5"><div><h3 className="text-sm font-semibold">Inventory backups</h3><p className="mt-0.5 text-xs text-muted-foreground">Only Inventory and EnderItems are stored.</p></div><Button size="sm" variant="outline" disabled={backupPending} onClick={onBackup}><ArchiveIcon data-icon="inline-start" />{backupPending ? "Backing up…" : "Back up now"}</Button></div><div className="max-h-56 overflow-y-auto p-2">
-    {backups.length ? backups.map((backup) => <div key={backup.id} className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5 hover:bg-muted/50"><div className="min-w-0"><p className="truncate text-xs font-medium">{formatDate(backup.createdAt)}</p><p className="font-mono text-[10px] text-muted-foreground">{backup.sourceRevision.slice(0, 12)}</p></div><div className="flex gap-1"><Button size="xs" variant="ghost" onClick={() => onPreview(backup.id)}><EyeIcon data-icon="inline-start" />Preview</Button><AlertDialog><AlertDialogTrigger render={<Button size="xs" variant="ghost" disabled={online || restorePending} />}><ArchiveRestoreIcon data-icon="inline-start" />Restore</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Restore this inventory backup?</AlertDialogTitle><AlertDialogDescription>Current inventory and Ender Chest contents will be backed up first. The player must still be offline; position, health, and other player data are not changed.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => onRestore(backup.id)}>Restore backup</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog></div></div>) : <p className="px-2 py-4 text-center text-xs text-muted-foreground">No inventory backups yet.</p>}
-  </div></section>
+  return <section className="overflow-hidden rounded-lg bg-kumo-elevated ring ring-kumo-hairline" aria-labelledby="inventory-backups-heading">
+    <div className="flex items-start justify-between gap-3 px-4 py-3">
+      <div>
+        <h3 id="inventory-backups-heading" className="text-base font-semibold text-kumo-default">Inventory backups</h3>
+        <p className="text-sm text-kumo-subtle">Only Inventory and EnderItems are stored.</p>
+      </div>
+      <Button size="sm" icon={ArchiveIcon} loading={backupPending} onClick={onBackup}>{backupPending ? "Backing up…" : "Back up now"}</Button>
+    </div>
+    <div className="max-h-64 overflow-y-auto bg-kumo-base ring ring-kumo-fill">
+      {backups.length ? <ul className="divide-y divide-kumo-hairline">{backups.map((backup) => <li key={backup.id} className="flex items-center justify-between gap-3 px-4 py-2.5">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium text-kumo-default">{formatDate(backup.createdAt)}</p>
+          <p className="font-mono text-xs text-kumo-subtle">{backup.sourceRevision.slice(0, 12)}</p>
+        </div>
+        <div className="flex gap-1">
+          <Button size="sm" variant="ghost" icon={EyeIcon} onClick={() => onPreview(backup.id)}>Preview</Button>
+          <ConfirmDialog
+            trigger={<HintButton size="sm" variant="ghost" icon={ClockCounterClockwiseIcon} disabled={online || restorePending} hint={online ? "The player must be offline to restore." : undefined}>Restore</HintButton>}
+            title="Restore this inventory backup?"
+            description="The current inventory and Ender Chest are backed up first. The player must still be offline; position, health, and other player data are not changed."
+            confirmLabel="Restore backup"
+            onConfirm={() => onRestore(backup.id)}
+          />
+        </div>
+      </li>)}</ul> : <p className="px-4 py-6 text-center text-sm text-kumo-subtle">No inventory backups yet.</p>}
+    </div>
+  </section>
 }
 
 function slotPosition(x: number, y: number): CSSProperties {

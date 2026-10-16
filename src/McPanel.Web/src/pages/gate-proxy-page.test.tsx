@@ -125,14 +125,15 @@ describe("GateProxyPage", () => {
     await waitFor(() => expect(mockedApi.saveGate).toHaveBeenCalledWith("gate-1", expect.objectContaining({ backendServerIds: ["server-1"], externalBackends: [], classic: defaultGateClassicConfiguration })))
   })
 
-  it("keeps player features disabled in Lite while maintenance stays available", async () => {
+  it("hides Classic-only categories in Lite while maintenance stays available", async () => {
     mockedApi.gate.mockResolvedValue({ ...status, configuration: { ...status.configuration, mode: "Lite" } })
     renderPage()
 
-    expect(await screen.findByRole("tab", { name: "Players" })).toHaveAttribute("aria-disabled", "true")
+    expect(await screen.findByRole("tab", { name: "General" })).toBeVisible()
+    expect(screen.queryByRole("tab", { name: "Players" })).not.toBeInTheDocument()
     expect(screen.getByText("Player features require Classic mode")).toBeVisible()
-    for (const name of ["Server list", "Compatibility", "Network"]) expect(screen.getByRole("tab", { name })).toHaveAttribute("aria-disabled", "true")
-    expect(screen.getByRole("tab", { name: "Maintenance" })).not.toHaveAttribute("aria-disabled", "true")
+    for (const name of ["Server list", "Compatibility", "Network"]) expect(screen.queryByRole("tab", { name })).not.toBeInTheDocument()
+    expect(screen.getByRole("tab", { name: "Maintenance" })).toBeVisible()
   })
 
   it("keeps advanced controls with their feature and preserves edits across categories", async () => {

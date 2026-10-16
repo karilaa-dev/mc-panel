@@ -1,13 +1,10 @@
 import { useRef, useState, type CSSProperties, type ReactNode } from "react"
-import { BoldIcon, BracesIcon, CaseUpperIcon, CircleHelpIcon, DicesIcon, EraserIcon, ItalicIcon, PencilIcon, RotateCcwIcon, StrikethroughIcon, UnderlineIcon } from "lucide-react"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
-import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { Banner, Button, InputArea, Label, LayerCard, Tooltip } from "@cloudflare/kumo"
+import {
+  ArrowCounterClockwiseIcon, BracketsCurlyIcon, DiceFiveIcon, EraserIcon, InfoIcon, PaletteIcon, PencilSimpleIcon,
+  TextBIcon, TextItalicIcon, TextStrikethroughIcon, TextUnderlineIcon,
+} from "@phosphor-icons/react"
+import { Modal, ModalClose } from "@/components/modal"
 import { minecraftColors, parseMotd, visibleMotdText, type MotdSegment } from "@/lib/motd"
 
 function hexFormattingCode(color: string) {
@@ -29,35 +26,24 @@ export function MotdEditor({ value, onChange, serverName = "Minecraft Server" }:
     setOpen(false)
   }
 
-  return <Field>
+  return <div className="flex flex-col gap-2">
     <div className="flex items-center justify-between gap-3">
-      <div className="flex items-center gap-1">
-        <FieldLabel>MOTD</FieldLabel>
-        <Tooltip>
-          <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-xs" aria-label="About MOTD editor" />}><CircleHelpIcon /></TooltipTrigger>
-          <TooltipContent side="right">Message displayed below this Gate instance in the Java multiplayer server list.</TooltipContent>
-        </Tooltip>
-      </div>
-      <Dialog open={open} onOpenChange={changeOpen}>
-        <DialogTrigger render={<Button type="button" variant="outline" size="sm" />}><PencilIcon data-icon="inline-start" />Edit MOTD</DialogTrigger>
-        <DialogContent className="max-h-[90vh] sm:max-w-4xl">
-          <DialogHeader>
-            <DialogTitle>Edit server-list MOTD</DialogTitle>
-            <DialogDescription>Format the message shown for this Gate instance in the Java multiplayer server list.</DialogDescription>
-          </DialogHeader>
-          <div className="no-scrollbar -mx-4 max-h-[calc(90vh-10rem)] overflow-y-auto px-4">
-            <MotdComposer value={draft} onChange={setDraft} serverName={serverName} />
-          </div>
-          <DialogFooter>
-            <DialogClose render={<Button type="button" variant="outline" />}>Cancel</DialogClose>
-            <Button type="button" onClick={apply}>Apply MOTD</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <Label tooltip="Message displayed below this Gate instance in the Java multiplayer server list.">MOTD</Label>
+      <Button size="sm" icon={PencilSimpleIcon} onClick={() => changeOpen(true)}>Edit MOTD</Button>
     </div>
     <MotdPreview parsed={parsed} serverName={serverName} compact />
-    <FieldDescription>Edit the preview, then save Gate settings to apply it to the running proxy.</FieldDescription>
-  </Field>
+    <p className="text-sm text-kumo-subtle">Edit the message, then save Gate settings to apply it to the running proxy.</p>
+    <Modal
+      open={open}
+      onOpenChange={changeOpen}
+      size="xl"
+      title="Edit server-list MOTD"
+      description="Format the message shown for this Gate instance in the Java multiplayer server list."
+      footer={<><ModalClose /><Button variant="primary" onClick={apply}>Apply MOTD</Button></>}
+    >
+      <MotdComposer value={draft} onChange={setDraft} serverName={serverName} />
+    </Modal>
+  </div>
 }
 
 function MotdComposer({ value, onChange, serverName }: { value: string; onChange: (value: string) => void; serverName: string }) {
@@ -98,53 +84,48 @@ function MotdComposer({ value, onChange, serverName }: { value: string; onChange
   return <div className="flex flex-col gap-4">
     <MotdPreview parsed={parsed} serverName={serverName} />
 
-    {parsed.json ? <Alert variant={parsed.jsonError ? "destructive" : "default"}>
-      <BracesIcon />
-      <AlertTitle>{parsed.jsonError ? "Invalid JSON text component" : "Raw JSON text component"}</AlertTitle>
-      <AlertDescription>{parsed.jsonError ?? "The preview understands text, extra, colors, and formatting. Visual formatting controls are disabled to avoid corrupting the JSON structure."}</AlertDescription>
-    </Alert> : <div className="flex flex-col gap-2" role="toolbar" aria-label="MOTD formatting toolbar">
+    {parsed.json ? <Banner
+      variant={parsed.jsonError ? "error" : "default"}
+      icon={<BracketsCurlyIcon weight="fill" />}
+      title={parsed.jsonError ? "Invalid JSON text component" : "Raw JSON text component"}
+      description={parsed.jsonError ?? "The preview understands text, extra, colors, and formatting. Visual formatting controls are disabled to avoid corrupting the JSON structure."}
+    /> : <div className="flex flex-col gap-2 rounded-lg bg-kumo-elevated p-3 ring ring-kumo-hairline" role="toolbar" aria-label="MOTD formatting toolbar">
       <div className="grid grid-cols-8 gap-1 md:grid-cols-[repeat(16,minmax(0,1fr))]">
-        {minecraftColors.map((entry) => <Tooltip key={entry.code}>
-          <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" aria-label={`${entry.label} MOTD color`} style={{ backgroundColor: entry.color }} />} onClick={() => insertFormatting(`§${entry.code}`)}>
-            <span className="sr-only">{entry.label}</span>
-          </TooltipTrigger>
-          <TooltipContent>{entry.label} · §{entry.code}</TooltipContent>
-        </Tooltip>)}
+        {minecraftColors.map((entry) => <Tooltip key={entry.code} content={`${entry.label} · §${entry.code}`} render={
+          <button type="button" aria-label={`${entry.label} MOTD color`} className="h-7 cursor-pointer rounded-md ring ring-kumo-line transition-transform hover:scale-110 focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:outline-none" style={{ backgroundColor: entry.color }} onClick={() => insertFormatting(`§${entry.code}`)} />
+        } />)}
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <FormatButton label="Bold" code="§l" onApply={insertFormatting}><BoldIcon /></FormatButton>
-        <FormatButton label="Italic" code="§o" onApply={insertFormatting}><ItalicIcon /></FormatButton>
-        <FormatButton label="Underline" code="§n" onApply={insertFormatting}><UnderlineIcon /></FormatButton>
-        <FormatButton label="Strikethrough" code="§m" onApply={insertFormatting}><StrikethroughIcon /></FormatButton>
-        <FormatButton label="Obfuscated" code="§k" onApply={insertFormatting}><DicesIcon /></FormatButton>
-        <FormatButton label="Reset formatting" code="§r" onApply={insertFormatting}><RotateCcwIcon /></FormatButton>
-        <Input type="color" className="size-8 p-1" aria-label="Custom MOTD color" value={customColor} onChange={(event) => setCustomColor(event.target.value)} />
-        <Button type="button" variant="outline" onClick={() => insertFormatting(hexFormattingCode(customColor))}><CaseUpperIcon data-icon="inline-start" />Apply custom color</Button>
-        <Button type="button" variant="ghost" onClick={removeFormatting}><EraserIcon data-icon="inline-start" />Remove formatting</Button>
+      <div className="flex flex-wrap items-center gap-1">
+        <FormatButton label="Bold" code="§l" onApply={insertFormatting}><TextBIcon size={16} weight="bold" /></FormatButton>
+        <FormatButton label="Italic" code="§o" onApply={insertFormatting}><TextItalicIcon size={16} /></FormatButton>
+        <FormatButton label="Underline" code="§n" onApply={insertFormatting}><TextUnderlineIcon size={16} /></FormatButton>
+        <FormatButton label="Strikethrough" code="§m" onApply={insertFormatting}><TextStrikethroughIcon size={16} /></FormatButton>
+        <FormatButton label="Obfuscated" code="§k" onApply={insertFormatting}><DiceFiveIcon size={16} /></FormatButton>
+        <FormatButton label="Reset formatting" code="§r" onApply={insertFormatting}><ArrowCounterClockwiseIcon size={16} /></FormatButton>
+        <span className="mx-1 h-6 w-px bg-kumo-line" aria-hidden="true" />
+        <input type="color" className="h-7 w-9 cursor-pointer rounded-md border-0 bg-transparent p-0.5 ring ring-kumo-line" aria-label="Custom MOTD color" value={customColor} onChange={(event) => setCustomColor(event.target.value)} />
+        <Button size="sm" icon={PaletteIcon} onClick={() => insertFormatting(hexFormattingCode(customColor))}>Apply custom color</Button>
+        <Button size="sm" variant="ghost" icon={EraserIcon} onClick={removeFormatting}>Remove formatting</Button>
       </div>
     </div>}
 
-    <Field>
-      <FieldLabel htmlFor="gate-motd">Message</FieldLabel>
-      <Textarea
-        ref={textarea}
-        id="gate-motd"
-        aria-label="MOTD message"
-        className="font-mono"
-        rows={4}
-        maxLength={4096}
-        value={value}
-        onSelect={(event) => rememberSelection(event.currentTarget)}
-        onClick={(event) => rememberSelection(event.currentTarget)}
-        onKeyUp={(event) => rememberSelection(event.currentTarget)}
-        onChange={(event) => {
-          rememberSelection(event.currentTarget)
-          onChange(event.target.value)
-        }}
-      />
-      <FieldDescription>{parsed.json ? "Editing raw JSON" : "Select text before choosing a color or style to format only that selection. Minecraft uses § formatting codes."} · {plainText.length} visible characters · {parsed.lines.length} line{parsed.lines.length === 1 ? "" : "s"}</FieldDescription>
-    </Field>
-    {parsed.lines.length > 2 && <Alert><AlertTitle>Only two lines are normally visible</AlertTitle><AlertDescription>Java clients usually show only the first two MOTD lines in the multiplayer list.</AlertDescription></Alert>}
+    <InputArea
+      ref={textarea}
+      label="MOTD message"
+      className="font-mono text-sm"
+      rows={4}
+      maxLength={4096}
+      value={value}
+      onSelect={(event) => rememberSelection(event.currentTarget)}
+      onClick={(event) => rememberSelection(event.currentTarget)}
+      onKeyUp={(event) => rememberSelection(event.currentTarget)}
+      onChange={(event) => {
+        rememberSelection(event.currentTarget)
+        onChange(event.target.value)
+      }}
+      description={`${parsed.json ? "Editing raw JSON" : "Select text before choosing a color or style to format only that selection. Minecraft uses § formatting codes."} · ${plainText.length} visible characters · ${parsed.lines.length} line${parsed.lines.length === 1 ? "" : "s"}`}
+    />
+    {parsed.lines.length > 2 && <Banner variant="alert" icon={<InfoIcon weight="fill" />} title="Only two lines are normally visible" description="Java clients usually show only the first two MOTD lines in the multiplayer list." />}
   </div>
 }
 
@@ -156,20 +137,17 @@ function MotdPreview({ parsed, serverName, compact = false }: { parsed: ReturnTy
     </div>
   </div>
   if (compact) return preview
-  return <Card size="sm">
-    <CardHeader>
-      <CardTitle>In-game preview</CardTitle>
-      <CardDescription>Preview of the two lines normally visible in the Java multiplayer list.</CardDescription>
-    </CardHeader>
-    <CardContent>{preview}</CardContent>
-  </Card>
+  return <LayerCard>
+    <LayerCard.Secondary className="flex-col items-start gap-0.5 py-3 font-normal">
+      <span className="text-sm font-semibold text-kumo-default">In-game preview</span>
+      <span className="text-sm text-kumo-subtle">The two lines normally visible in the Java multiplayer list.</span>
+    </LayerCard.Secondary>
+    <LayerCard.Primary className="p-3">{preview}</LayerCard.Primary>
+  </LayerCard>
 }
 
 function FormatButton({ label, code, onApply, children }: { label: string; code: string; onApply: (code: string) => void; children: ReactNode }) {
-  return <Tooltip>
-    <TooltipTrigger render={<Button type="button" variant="outline" size="icon-sm" aria-label={label} />} onClick={() => onApply(code)}>{children}</TooltipTrigger>
-    <TooltipContent>{label} · {code}</TooltipContent>
-  </Tooltip>
+  return <Tooltip content={`${label} · ${code}`} render={<Button size="sm" variant="ghost" shape="square" aria-label={label} onClick={() => onApply(code)}>{children}</Button>} />
 }
 
 function MotdPreviewSegment({ segment }: { segment: MotdSegment }) {

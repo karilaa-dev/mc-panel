@@ -1,5 +1,3 @@
-import { QueryFeedback } from "@/components/query-feedback"
-import { useUnsavedChanges } from "@/hooks/use-unsaved-changes"
 import {
   lazy,
   Suspense,
@@ -12,40 +10,46 @@ import {
 import { HubConnectionBuilder, LogLevel } from "@microsoft/signalr"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useParams } from "react-router-dom"
+import { Badge, Banner, Button, DropdownMenu, Input, InputGroup, LinkButton, Switch, Table, Tabs } from "@cloudflare/kumo"
 import {
-  ArchiveRestoreIcon,
-  BanIcon,
-  ChevronRightIcon,
-  ClipboardIcon,
-  DownloadIcon,
-  Edit3Icon,
+  ArchiveIcon,
+  ArrowBendUpLeftIcon,
+  ArrowClockwiseIcon,
+  ArrowsLeftRightIcon,
+  CaretRightIcon,
+  ClockCounterClockwiseIcon,
+  CopyIcon,
+  DotsThreeIcon,
+  DownloadSimpleIcon,
+  ExportIcon,
   FileArchiveIcon,
   FileIcon,
+  FilePlusIcon,
   FolderIcon,
   FolderPlusIcon,
+  HouseIcon,
   ImageIcon,
-  MoreHorizontalIcon,
-  PlayIcon,
+  InfoIcon,
+  MagnifyingGlassIcon,
+  PaperPlaneRightIcon,
+  PencilSimpleIcon,
   PlusIcon,
-  RefreshCwIcon,
-  SearchIcon,
-  SendIcon,
+  ProhibitIcon,
+  PushPinIcon,
+  PushPinSlashIcon,
   ShieldCheckIcon,
-  TerminalSquareIcon,
-  Trash2Icon,
-  UploadIcon,
+  TerminalWindowIcon,
+  TrashIcon,
+  UploadSimpleIcon,
+  UserCheckIcon,
   UserMinusIcon,
-  UserRoundCheckIcon,
-  UserRoundXIcon,
-} from "lucide-react"
-import { toast } from "sonner"
-import { Page } from "@/components/page"
-import { PlayerInventorySheet } from "@/components/player-inventory-sheet"
-import { FileImagePreview } from "@/components/file-image-preview"
-import { imageFileType } from "@/lib/image-file"
-import type { TerminalHandle } from "@/components/terminal-view"
+  UsersIcon,
+  UserSwitchIcon,
+} from "@phosphor-icons/react"
 import { api } from "@/lib/api"
+import { imageFileType } from "@/lib/image-file"
 import { isConsoleError } from "@/lib/terminal-format"
+import { toast } from "@/lib/toast"
 import type {
   ConsoleEventDto,
   FileEntryDto,
@@ -54,69 +58,16 @@ import type {
   PlayerDto,
   ServerSummaryDto,
 } from "@/lib/contracts"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
-import { Badge } from "@/components/ui/badge"
-import { Button, buttonVariants } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "@/components/ui/empty"
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupButton,
-  InputGroupInput,
-} from "@/components/ui/input-group"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { Skeleton } from "@/components/ui/skeleton"
-import { Spinner } from "@/components/ui/spinner"
-import { Switch } from "@/components/ui/switch"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
+import { useRetained } from "@/hooks/use-retained"
+import { HintButton } from "@/components/controls"
+import { useUnsavedChanges } from "@/hooks/use-unsaved-changes"
+import { EmptyState, QueryFeedback, Skeleton } from "@/components/feedback"
+import { FileImagePreview } from "@/components/file-image-preview"
+import { ConfirmDialog, Modal, ModalClose } from "@/components/modal"
+import { Page } from "@/components/page"
+import { PlayerInventorySheet } from "@/components/player-inventory-sheet"
+import { Section } from "@/components/section"
+import type { TerminalHandle } from "@/components/terminal-view"
 
 const TerminalView = lazy(() => import("@/components/terminal-view").then((module) => ({ default: module.TerminalView })))
 const CodeEditor = lazy(() => import("@/components/code-editor").then((module) => ({ default: module.CodeEditor })))
@@ -330,70 +281,65 @@ function ConsoleSession({ serverId }: { serverId: string }) {
     <Page
       title="Console"
       description={isGate ? "Live, durable Gate logs with reconnect recovery." : "Live, durable Minecraft output with command history and reconnect recovery."}
-      actions={<Badge variant={connected ? "success" : "outline"}>{connected ? "Live" : "Reconnecting"}</Badge>}
+      actions={<Badge variant={connected ? "success" : "warning"} appearance="dot">{connected ? "Live" : "Reconnecting"}</Badge>}
     >
-      <Card className="overflow-hidden">
-        <CardHeader>
-          <CardTitle>{isGate ? "Gate output" : "Server output"}</CardTitle>
-          <CardDescription>History is retained by the panel and resumes from the last received line. Normal output stays neutral; warnings and errors are highlighted by severity.</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <InputGroup className="min-w-64 flex-1 sm:max-w-sm">
-              <InputGroupAddon><SearchIcon /></InputGroupAddon>
-              <InputGroupInput
-                aria-label="Search console"
-                placeholder="Search output"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && search) terminalRef.current?.search(search)
-                }}
-              />
-              <InputGroupAddon align="inline-end">
-                <InputGroupButton onClick={() => search && terminalRef.current?.search(search)}>Find</InputGroupButton>
-              </InputGroupAddon>
-            </InputGroup>
-            <div className="flex items-center gap-2">
-              <Switch id="errors-only" checked={errorsOnly} onCheckedChange={(value) => {
-                setErrorsOnly(value)
-                terminalRef.current?.clear()
-                sequenceRef.current = 0
-              }} />
-              <label htmlFor="errors-only" className="text-sm">Errors only</label>
-            </div>
-            <Button variant="outline" onClick={() => void terminalRef.current?.copy()}><ClipboardIcon data-icon="inline-start" />Copy selection</Button>
-            <Button variant="ghost" onClick={() => terminalRef.current?.clear()}>Clear view</Button>
+      <Section
+        title={isGate ? "Gate output" : "Server output"}
+        description="History is kept by the panel and resumes from the last received line. Warnings and errors are highlighted."
+        contentClassName="gap-3 p-3 sm:p-4"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <InputGroup className="min-w-56 flex-1 sm:max-w-sm" size="sm">
+            <InputGroup.Addon><MagnifyingGlassIcon className="text-kumo-subtle" /></InputGroup.Addon>
+            <InputGroup.Input
+              aria-label="Search console"
+              placeholder="Search output"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && search) terminalRef.current?.search(search)
+              }}
+            />
+            <InputGroup.Addon align="end"><InputGroup.Button onClick={() => search && terminalRef.current?.search(search)}>Find</InputGroup.Button></InputGroup.Addon>
+          </InputGroup>
+          <label className="flex cursor-pointer items-center gap-2 px-1 text-sm text-kumo-default">
+            <Switch size="sm" aria-label="Errors only" checked={errorsOnly} onCheckedChange={(value) => {
+              setErrorsOnly(value)
+              terminalRef.current?.clear()
+              sequenceRef.current = 0
+            }} />
+            Errors only
+          </label>
+          <div className="ml-auto flex gap-1">
+            <Button size="sm" variant="ghost" icon={CopyIcon} onClick={() => void terminalRef.current?.copy()}>Copy selection</Button>
+            <Button size="sm" variant="ghost" icon={TrashIcon} onClick={() => terminalRef.current?.clear()}>Clear view</Button>
           </div>
-          <div className="h-[min(65vh,42rem)] min-h-96 rounded-lg bg-background p-4 ring-1 ring-foreground/10">
-            <Suspense fallback={<Skeleton className="h-full" />}><TerminalView onReady={onTerminalReady} label={isGate ? "Gate proxy console output" : "Minecraft server console output"} /></Suspense>
-          </div>
-          {!isGate && <form onSubmit={submit}>
-            <InputGroup>
-              <InputGroupAddon><TerminalSquareIcon /></InputGroupAddon>
-              <InputGroupInput
-                aria-label="Console command"
-                placeholder="Enter a Minecraft command without /"
-                value={command}
-                maxLength={4096}
-                disabled={sendCommand.isPending || !canSendCommand}
-                title={commandHint}
-                onChange={(event) => setCommand(event.target.value.replace(/[\r\n]/g, ""))}
-                onKeyDown={(event) => {
-                  if (event.key === "ArrowUp") { event.preventDefault(); moveHistory(-1) }
-                  if (event.key === "ArrowDown") { event.preventDefault(); moveHistory(1) }
-                }}
-              />
-              <InputGroupAddon align="inline-end">
-                <InputGroupButton type="submit" disabled={!canSendCommand || !command.trim() || sendCommand.isPending} title={commandHint}>
-                  {sendCommand.isPending ? <Spinner /> : <SendIcon />}
-                  <span className="sr-only">Send command</span>
-                </InputGroupButton>
-              </InputGroupAddon>
-            </InputGroup>
-          </form>}
-        </CardContent>
-      </Card>
+        </div>
+        <div className="h-[min(65vh,42rem)] min-h-96 overflow-hidden rounded-lg bg-kumo-base p-3 ring ring-kumo-line">
+          <Suspense fallback={<Skeleton className="h-full" />}><TerminalView onReady={onTerminalReady} label={isGate ? "Gate proxy console output" : "Minecraft server console output"} /></Suspense>
+        </div>
+        {!isGate && <form onSubmit={submit}>
+          <InputGroup disabled={sendCommand.isPending || !canSendCommand}>
+            <InputGroup.Addon><TerminalWindowIcon className="text-kumo-subtle" /></InputGroup.Addon>
+            <InputGroup.Input
+              aria-label="Console command"
+              className="font-mono"
+              placeholder={canSendCommand ? "Enter a Minecraft command without /" : "Start the server to send commands"}
+              value={command}
+              maxLength={4096}
+              title={commandHint}
+              onChange={(event) => setCommand(event.target.value.replace(/[\r\n]/g, ""))}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowUp") { event.preventDefault(); moveHistory(-1) }
+                if (event.key === "ArrowDown") { event.preventDefault(); moveHistory(1) }
+              }}
+            />
+            <InputGroup.Addon align="end">
+              <InputGroup.Button type="submit" shape="square" aria-label="Send command" disabled={!canSendCommand || !command.trim() || sendCommand.isPending} loading={sendCommand.isPending} icon={PaperPlaneRightIcon} />
+            </InputGroup.Addon>
+          </InputGroup>
+        </form>}
+      </Section>
     </Page>
   )
 }
@@ -412,11 +358,16 @@ function ServerFiles({ serverId }: { serverId: string }) {
   const uploadRef = useRef<HTMLInputElement>(null)
   const [path, setPath] = useState("")
   const [operation, setOperation] = useState<FileOperation>()
+  const shownOperation = useRetained(operation)
   const [operationValue, setOperationValue] = useState("")
   const [editing, setEditing] = useState<{ path: string; content: string; original: string; revision: string }>()
+  const shownEditing = useRetained(editing)
   const [previewing, setPreviewing] = useState<string>()
+  const [deleting, setDeleting] = useState<FileEntryDto>()
+  const shownDeleting = useRetained(deleting)
   const draft = useUnsavedChanges(Boolean(editing && editing.content !== editing.original))
   const [replaceUpload, setReplaceUpload] = useState<File>()
+  const shownReplaceUpload = useRetained(replaceUpload)
   const server = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
   const queryKey = ["files", serverId, path]
   const files = useQuery({ queryKey, queryFn: () => api.files(serverId, path) })
@@ -434,6 +385,7 @@ function ServerFiles({ serverId }: { serverId: string }) {
   })
   const segments = path.split("/").filter(Boolean)
   const join = (name: string) => [path, name].filter(Boolean).join("/")
+  const isGate = server.data?.kind === "Gate"
 
   async function openEditor(entry: FileEntryDto) {
     try {
@@ -442,6 +394,12 @@ function ServerFiles({ serverId }: { serverId: string }) {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "This file cannot be edited as text.")
     }
+  }
+
+  function openEntry(entry: FileEntryDto) {
+    if (entry.isDirectory) setPath(entry.path)
+    else if (imageFileType(entry.path)) setPreviewing(entry.path)
+    else void openEditor(entry)
   }
 
   function submitOperation(event: FormEvent) {
@@ -454,18 +412,29 @@ function ServerFiles({ serverId }: { serverId: string }) {
       mutate.mutate(() => api.createFile(serverId, join(value), operation.type === "create-folder"))
     }
     setOperation(undefined)
-    setOperationValue("")
   }
+
+  const breadcrumb = <nav className="flex min-w-0 flex-wrap items-center gap-0.5 text-sm" aria-label="File path">
+    <Button size="sm" variant="ghost" icon={HouseIcon} onClick={() => setPath("")} aria-current={segments.length ? undefined : "location"}>Root</Button>
+    {segments.map((segment, index) => (
+      <span key={`${segment}-${index}`} className="flex min-w-0 items-center gap-0.5">
+        <CaretRightIcon size={12} className="shrink-0 text-kumo-subtle" aria-hidden="true" />
+        <Button size="sm" variant="ghost" className="max-w-48" onClick={() => setPath(segments.slice(0, index + 1).join("/"))} aria-current={index === segments.length - 1 ? "location" : undefined}><span className="truncate">{segment}</span></Button>
+      </span>
+    ))}
+  </nav>
 
   return (
     <Page
       title="Files"
-      description={server.data?.kind === "Gate" ? "Manage this Gate instance’s files. Forwarding secrets remain protected." : "Manage files inside this server’s confined directory."}
+      description={isGate ? "Manage this Gate instance’s files. Forwarding secrets remain protected." : "Manage files inside this server’s confined directory."}
       actions={<>
         <input
           ref={uploadRef}
           className="sr-only"
           type="file"
+          tabIndex={-1}
+          aria-hidden="true"
           disabled={!canModify}
           onChange={(event) => {
             const file = event.target.files?.[0]
@@ -473,103 +442,119 @@ function ServerFiles({ serverId }: { serverId: string }) {
             event.target.value = ""
           }}
         />
-        <Button variant="outline" disabled={!canModify} title={modifyHint} onClick={() => uploadRef.current?.click()}><UploadIcon data-icon="inline-start" />Upload</Button>
-        <Button variant="outline" disabled={!canModify} title={modifyHint} onClick={() => { setOperation({ type: "create-folder" }); setOperationValue("") }}><FolderPlusIcon data-icon="inline-start" />New folder</Button>
-        <Button disabled={!canModify} title={modifyHint} onClick={() => { setOperation({ type: "create-file" }); setOperationValue("") }}><PlusIcon data-icon="inline-start" />New file</Button>
+        <HintButton icon={UploadSimpleIcon} disabled={!canModify} hint={modifyHint} onClick={() => uploadRef.current?.click()}>Upload</HintButton>
+        <HintButton icon={FolderPlusIcon} disabled={!canModify} hint={modifyHint} onClick={() => { setOperation({ type: "create-folder" }); setOperationValue("") }}>New folder</HintButton>
+        <HintButton variant="primary" icon={FilePlusIcon} disabled={!canModify} hint={modifyHint} onClick={() => { setOperation({ type: "create-file" }); setOperationValue("") }}>New file</HintButton>
       </>}
     >
-      <Card>
-        <CardHeader>
-          <CardTitle>Server root</CardTitle>
-          <CardDescription>{server.data?.kind === "Gate" ? "Gate configuration, versions, rollback data, and logs are available here. The keys directory is intentionally hidden." : "Archives are extracted with traversal, symlink, size, and entry-count checks."}</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <nav className="flex flex-wrap items-center gap-1 text-sm" aria-label="File path">
-            <Button variant="ghost" size="sm" onClick={() => setPath("")}><FolderIcon data-icon="inline-start" />Root</Button>
-            {segments.map((segment, index) => (
-              <span key={`${segment}-${index}`} className="flex items-center gap-1">
-                <ChevronRightIcon className="text-muted-foreground" />
-                <Button variant="ghost" size="sm" onClick={() => setPath(segments.slice(0, index + 1).join("/"))}>{segment}</Button>
-              </span>
-            ))}
-          </nav>
-          <QueryFeedback query={files} />
-          {files.isLoading ? <Skeleton className="h-72" /> : files.isError && !files.data ? null : files.data?.length ? (
-            <ScrollArea className="max-h-[60vh]">
-              <Table>
-                <TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Size</TableHead><TableHead>Modified</TableHead><TableHead><span className="sr-only">Actions</span></TableHead></TableRow></TableHeader>
-                <TableBody>
-                  {files.data.map((entry) => (
-                    <TableRow key={entry.path}>
-                      <TableCell>
-                        <Button
-                          variant="ghost"
-                          className="max-w-sm justify-start"
-                          onClick={() => entry.isDirectory ? setPath(entry.path) : imageFileType(entry.path) ? setPreviewing(entry.path) : void openEditor(entry)}
-                        >
-                          {entry.isDirectory ? <FolderIcon data-icon="inline-start" /> : imageFileType(entry.path) ? <ImageIcon data-icon="inline-start" /> : <FileIcon data-icon="inline-start" />}
-                          <span className="truncate">{entry.name}</span>
-                        </Button>
-                      </TableCell>
-                      <TableCell>{entry.isDirectory ? "—" : formatBytes(entry.size)}</TableCell>
-                      <TableCell>{formatDate(entry.modifiedAt)}</TableCell>
-                      <TableCell className="text-right">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" />}><MoreHorizontalIcon /><span className="sr-only">Actions for {entry.name}</span></DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuGroup>
-                              {!entry.isDirectory && (imageFileType(entry.path) ? <DropdownMenuItem onClick={() => setPreviewing(entry.path)}><ImageIcon />Preview image</DropdownMenuItem> : <DropdownMenuItem onClick={() => void openEditor(entry)}><Edit3Icon />Edit text</DropdownMenuItem>)}
-                              {!entry.isDirectory && <DropdownMenuItem render={<a href={api.fileDownloadUrl(serverId, entry.path)} />}><DownloadIcon />Download</DropdownMenuItem>}
-                              {!entry.isDirectory && entry.name.toLowerCase().endsWith(".zip") && <DropdownMenuItem disabled={!canModify} onClick={() => mutate.mutate(() => api.extractFile(serverId, entry.path, path))}><FileArchiveIcon />Extract here</DropdownMenuItem>}
-                              <DropdownMenuItem disabled={!canModify} onClick={() => { setOperation({ type: "move", entry }); setOperationValue(entry.path) }}><PlayIcon />Move or rename</DropdownMenuItem>
-                            </DropdownMenuGroup>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                        <AlertDialog>
-                          <AlertDialogTrigger render={<Button variant="ghost" size="icon-sm" disabled={!canModify} title={modifyHint} />}><Trash2Icon /><span className="sr-only">Delete {entry.name}</span></AlertDialogTrigger>
-                          <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete {entry.name}?</AlertDialogTitle><AlertDialogDescription>This permanently removes the selected {entry.isDirectory ? "folder and its contents" : "file"} from the server.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => mutate.mutate(() => api.deleteFile(serverId, entry.path))}>Delete</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
-                        </AlertDialog>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </ScrollArea>
-          ) : (
-            <Empty><EmptyHeader><EmptyMedia variant="icon"><FolderIcon /></EmptyMedia><EmptyTitle>This folder is empty</EmptyTitle><EmptyDescription>Upload a file or create a folder to get started.</EmptyDescription></EmptyHeader></Empty>
-          )}
-        </CardContent>
-      </Card>
+      {modifyHint && !server.isLoading && <Banner variant="secondary" icon={<InfoIcon weight="fill" />} title="File changes are paused" description={modifyHint} />}
+      <Section
+        title={breadcrumb}
+        description={isGate ? "Gate configuration, versions, rollback data, and logs are available here. The keys directory is intentionally hidden." : "Archives are extracted with traversal, symlink, size, and entry-count checks."}
+        actions={<Button size="sm" variant="ghost" shape="square" icon={ArrowClockwiseIcon} aria-label="Refresh files" loading={files.isFetching && !files.isLoading} onClick={() => void refresh()} />}
+        flush
+      >
+        <QueryFeedback query={files} />
+        {files.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-8" />)}</div> : files.isError && !files.data ? null : (
+          <div className="max-h-[65vh] overflow-auto">
+            <Table className="[&_td]:py-1.5">
+              <Table.Header className="sticky top-0 z-1"><Table.Row><Table.Head>Name</Table.Head><Table.Head className="w-28">Size</Table.Head><Table.Head className="w-48">Modified</Table.Head><Table.Head className="w-14"><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
+              <Table.Body>
+                {segments.length > 0 && <Table.Row>
+                  <Table.Cell colSpan={4}>
+                    <Button size="sm" variant="ghost" icon={ArrowBendUpLeftIcon} onClick={() => setPath(segments.slice(0, -1).join("/"))}>Parent folder</Button>
+                  </Table.Cell>
+                </Table.Row>}
+                {files.data?.map((entry) => {
+                  const image = imageFileType(entry.path)
+                  const EntryIcon = entry.isDirectory ? FolderIcon : image ? ImageIcon : FileIcon
+                  return <Table.Row key={entry.path}>
+                    <Table.Cell>
+                      <button type="button" className="flex max-w-md min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-base text-kumo-default hover:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:outline-none" onClick={() => openEntry(entry)}>
+                        <EntryIcon size={16} weight={entry.isDirectory ? "fill" : "regular"} className={entry.isDirectory ? "shrink-0 text-(--color-kumo-brand)" : "shrink-0 text-kumo-subtle"} aria-hidden="true" />
+                        <span className="truncate">{entry.name}</span>
+                      </button>
+                    </Table.Cell>
+                    <Table.Cell className="text-kumo-subtle tabular-nums">{entry.isDirectory ? "—" : formatBytes(entry.size)}</Table.Cell>
+                    <Table.Cell className="whitespace-nowrap text-kumo-subtle">{formatDate(entry.modifiedAt)}</Table.Cell>
+                    <Table.Cell className="text-right">
+                      <DropdownMenu>
+                        <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsThreeIcon size={18} weight="bold" />} aria-label={`Actions for ${entry.name}`} />} />
+                        <DropdownMenu.Content align="end">
+                          {entry.isDirectory && <DropdownMenu.Item icon={FolderIcon} onClick={() => setPath(entry.path)}>Open folder</DropdownMenu.Item>}
+                          {!entry.isDirectory && (image
+                            ? <DropdownMenu.Item icon={ImageIcon} onClick={() => setPreviewing(entry.path)}>Preview image</DropdownMenu.Item>
+                            : <DropdownMenu.Item icon={PencilSimpleIcon} onClick={() => void openEditor(entry)}>Edit text</DropdownMenu.Item>)}
+                          {!entry.isDirectory && <DropdownMenu.LinkItem icon={DownloadSimpleIcon} href={api.fileDownloadUrl(serverId, entry.path)}>Download</DropdownMenu.LinkItem>}
+                          {!entry.isDirectory && entry.name.toLowerCase().endsWith(".zip") && <DropdownMenu.Item icon={FileArchiveIcon} disabled={!canModify} onClick={() => mutate.mutate(() => api.extractFile(serverId, entry.path, path))}>Extract here</DropdownMenu.Item>}
+                          <DropdownMenu.Item icon={ArrowsLeftRightIcon} disabled={!canModify} onClick={() => { setOperation({ type: "move", entry }); setOperationValue(entry.path) }}>Move or rename</DropdownMenu.Item>
+                          <DropdownMenu.Separator />
+                          <DropdownMenu.Item icon={TrashIcon} variant="danger" disabled={!canModify} onClick={() => setDeleting(entry)}>Delete</DropdownMenu.Item>
+                        </DropdownMenu.Content>
+                      </DropdownMenu>
+                    </Table.Cell>
+                  </Table.Row>
+                })}
+              </Table.Body>
+            </Table>
+            {!files.data?.length && <EmptyState inset size="sm" icon={<FolderIcon />} title="This folder is empty" description="Upload a file or create a folder to get started." />}
+          </div>
+        )}
+      </Section>
 
-      <Dialog open={Boolean(operation)} onOpenChange={(open) => !open && setOperation(undefined)}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>{operation?.type === "move" ? "Move or rename" : operation?.type === "create-folder" ? "Create folder" : "Create file"}</DialogTitle><DialogDescription>Paths are always resolved inside the managed server directory.</DialogDescription></DialogHeader>
-          <form id="file-operation" onSubmit={submitOperation}>
-            <FieldGroup><Field><FieldLabel htmlFor="file-path">{operation?.type === "move" ? "Destination path" : "Name"}</FieldLabel><Input id="file-path" value={operationValue} onChange={(event) => setOperationValue(event.target.value)} autoFocus /></Field></FieldGroup>
-          </form>
-          <DialogFooter showCloseButton><Button type="submit" form="file-operation" disabled={!canModify || !operationValue.trim()} title={modifyHint}>Save</Button></DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <Modal
+        open={Boolean(operation)}
+        onOpenChange={(open) => { if (!open) setOperation(undefined) }}
+        size="lg"
+        title={shownOperation?.type === "move" ? "Move or rename" : shownOperation?.type === "create-folder" ? "Create folder" : "Create file"}
+        description="Paths are always resolved inside the managed server directory."
+        footer={<><ModalClose /><HintButton type="submit" form="file-operation" variant="primary" disabled={!canModify || !operationValue.trim()} hint={modifyHint}>{shownOperation?.type === "move" ? "Move" : "Create"}</HintButton></>}
+      >
+        <form id="file-operation" onSubmit={submitOperation}>
+          <Input label={shownOperation?.type === "move" ? "Destination path" : "Name"} className="font-mono" value={operationValue} onChange={(event) => setOperationValue(event.target.value)} autoFocus />
+        </form>
+      </Modal>
 
-      <Dialog open={Boolean(editing)} onOpenChange={(open) => !open && draft.confirmDiscard(() => setEditing(undefined))}>
-        <DialogContent className="grid h-[calc(100dvh-2rem)] min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)_auto] sm:h-[min(90dvh,56rem)] sm:max-w-6xl">
-          <DialogHeader className="min-w-0 pr-8"><DialogTitle className="truncate" title={editing?.path}>Edit {editing?.path.split("/").at(-1)}</DialogTitle><DialogDescription>Changes are saved when you select Save file.</DialogDescription></DialogHeader>
-          {editing && <Suspense fallback={<Skeleton className="h-full min-h-0" />}><CodeEditor fileName={editing.path} value={editing.content} onChange={(content) => setEditing({ ...editing, content })} /></Suspense>}
-          <DialogFooter showCloseButton><Button disabled={!canModify || !editing || mutate.isPending} title={modifyHint} onClick={() => editing && mutate.mutate(async () => { await api.saveFile(serverId, editing.path, editing.content, editing.revision); setEditing(undefined) })}>{mutate.isPending && <Spinner data-icon="inline-start" />}Save file</Button></DialogFooter>
-        </DialogContent>
-      </Dialog>
-      <Dialog open={Boolean(previewing)} onOpenChange={(open) => !open && setPreviewing(undefined)}>
-        {previewing && <FileImagePreview key={previewing} serverId={serverId} path={previewing} />}
-      </Dialog>
+      <Modal
+        open={Boolean(editing)}
+        onOpenChange={(open) => { if (!open) draft.confirmDiscard(() => setEditing(undefined)) }}
+        className="h-[calc(100dvh-4rem)] sm:h-[min(90dvh,56rem)] sm:w-[min(72rem,calc(100vw-4rem))] sm:max-h-[min(90dvh,56rem)]"
+        bodyClassName="pb-0"
+        title={<span className="block truncate" title={shownEditing?.path}>Edit {shownEditing?.path.split("/").at(-1)}</span>}
+        description={editing && editing.content !== editing.original ? "Unsaved changes. Select Save file to write them to the server." : "Changes are saved when you select Save file."}
+        footer={<><ModalClose>Close</ModalClose><HintButton variant="primary" loading={mutate.isPending} disabled={!canModify || !editing} hint={modifyHint} onClick={() => editing && mutate.mutate(async () => { await api.saveFile(serverId, editing.path, editing.content, editing.revision); setEditing(undefined) })}>Save file</HintButton></>}
+      >
+        {shownEditing && <Suspense fallback={<Skeleton className="h-full min-h-0 flex-1" />}><CodeEditor fileName={shownEditing.path} value={shownEditing.content} onChange={(content) => editing && setEditing({ ...editing, content })} /></Suspense>}
+      </Modal>
+      <FileImagePreview serverId={serverId} path={previewing} onClose={() => setPreviewing(undefined)} />
       {draft.dialog}
-      <AlertDialog open={Boolean(replaceUpload)} onOpenChange={(open) => !open && setReplaceUpload(undefined)}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Replace {replaceUpload?.name}?</AlertDialogTitle><AlertDialogDescription>The existing file will be overwritten by this upload.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => { if (replaceUpload) mutate.mutate(() => api.uploadFile(serverId, path, replaceUpload, true)); setReplaceUpload(undefined) }}>Replace file</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+      <ConfirmDialog
+        open={Boolean(deleting)}
+        onOpenChange={(open) => { if (!open) setDeleting(undefined) }}
+        title={`Delete ${shownDeleting?.name ?? "item"}?`}
+        description={`This permanently removes the ${shownDeleting?.isDirectory ? "folder and everything inside it" : "file"} from the server.`}
+        confirmLabel="Delete"
+        tone="danger"
+        onConfirm={() => { const target = deleting; if (target) mutate.mutate(() => api.deleteFile(serverId, target.path)) }}
+      />
+      <ConfirmDialog
+        open={Boolean(replaceUpload)}
+        onOpenChange={(open) => { if (!open) setReplaceUpload(undefined) }}
+        title={`Replace ${shownReplaceUpload?.name ?? "file"}?`}
+        description="The existing file will be overwritten by this upload."
+        confirmLabel="Replace file"
+        onConfirm={() => { const file = replaceUpload; if (file) mutate.mutate(() => api.uploadFile(serverId, path, file, true)) }}
+      />
     </Page>
   )
 }
 
+type PlayerListAction = Parameters<typeof api.playerAction>[2]
+
 export function PlayersPage() {
   const { serverId = "" } = useParams()
   const queryClient = useQueryClient()
+  const [tab, setTab] = useState("players")
   const [inventoryPlayer, setInventoryPlayer] = useState<PlayerDto>()
   const server = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
   const players = useQuery({ queryKey: ["players", serverId], queryFn: () => api.players(serverId), refetchInterval: 5_000 })
@@ -577,7 +562,7 @@ export function PlayersPage() {
   const running = server.data?.state === "Running"
   const manageHint = server.isLoading ? "Player actions are unavailable while the server state loads." : canManage ? undefined : `Player lists cannot be changed while the server is ${server.data?.state.toLowerCase() ?? "unavailable"}.`
   const action = useMutation({
-    mutationFn: ({ name, action }: { name: string; action: Parameters<typeof api.playerAction>[2] }) => api.playerAction(serverId, name, action),
+    mutationFn: ({ name, action }: { name: string; action: PlayerListAction }) => api.playerAction(serverId, name, action),
     onSuccess: (updated) => {
       queryClient.setQueryData<PlayerDto[]>(["players", serverId], (current = []) => {
         const index = current.findIndex((player) =>
@@ -590,36 +575,52 @@ export function PlayersPage() {
     },
     onError: (error) => toast.error(error.message),
   })
-  const mutate = (name: string, nextAction: Parameters<typeof api.playerAction>[2]) => action.mutate({ name, action: nextAction })
+  const mutate = (name: string, nextAction: PlayerListAction) => action.mutate({ name, action: nextAction })
   const data = players.data ?? []
+  const tabs = [
+    { value: "players", label: "Players", count: data.length },
+    { value: "whitelist", label: "Whitelist", count: data.filter((player) => player.whitelisted).length },
+    { value: "operators", label: "Operators", count: data.filter((player) => player.operator).length },
+    { value: "banned", label: "Banned", count: data.filter((player) => player.banned).length },
+  ]
+  const activeLabel = tabs.find((item) => item.value === tab)?.label
 
   return (
     <Page title="Players" description="Observed players and Minecraft’s authoritative whitelist, operator, and ban lists.">
-      <Tabs defaultValue="players">
-        <TabsList className="w-full justify-start overflow-x-auto"><TabsTrigger value="players">Players</TabsTrigger><TabsTrigger value="whitelist">Whitelist</TabsTrigger><TabsTrigger value="operators">Operators</TabsTrigger><TabsTrigger value="banned">Banned</TabsTrigger></TabsList>
-        <TabsContent value="players"><Card><CardHeader><CardTitle>Known players</CardTitle><CardDescription>List actions work while the server is running, stopped, or crashed. Kick requires a running server.</CardDescription></CardHeader><CardContent>
-          {players.isLoading ? <Skeleton className="h-72" /> : data.length ? <Table><TableHeader><TableRow><TableHead>Player</TableHead><TableHead>Status</TableHead><TableHead>Access</TableHead><TableHead><span className="sr-only">Actions</span></TableHead></TableRow></TableHeader><TableBody>{data.map((player) => <TableRow key={player.uuid ?? player.name}>
-            <TableCell><div className="flex flex-col gap-1"><span className="font-medium">{player.name}</span>{player.uuid && <span className="font-mono text-xs text-muted-foreground">{player.uuid}</span>}</div></TableCell>
-            <TableCell><Badge variant={player.online ? "success" : "secondary"}>{player.online ? "Online" : "Offline"}</Badge></TableCell>
-            <TableCell><div className="flex flex-wrap gap-1">{player.operator && <Badge>Operator</Badge>}{player.whitelisted && <Badge variant="outline">Whitelisted</Badge>}{player.banned && <Badge variant="destructive">Banned</Badge>}</div></TableCell>
-            <TableCell className="text-right"><div className="flex justify-end gap-2"><Button variant="outline" size="sm" disabled={!player.uuid} title={player.uuid ? "View saved inventory" : "A known UUID is required"} onClick={() => setInventoryPlayer(player)}><Edit3Icon data-icon="inline-start" />Inventory</Button><DropdownMenu><DropdownMenuTrigger render={<Button variant="outline" size="sm" disabled={!canManage || action.isPending} title={manageHint} />}><MoreHorizontalIcon data-icon="inline-start" />Manage</DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuGroup>
-              <DropdownMenuItem onClick={() => mutate(player.name, player.whitelisted ? "unwhitelist" : "whitelist")}>{player.whitelisted ? <UserMinusIcon /> : <UserRoundCheckIcon />}{player.whitelisted ? "Remove from whitelist" : "Whitelist"}</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => mutate(player.name, player.operator ? "deop" : "op")}><ShieldCheckIcon />{player.operator ? "Remove operator" : "Make operator"}</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => mutate(player.name, player.banned ? "pardon" : "ban")}>{player.banned ? <UserRoundCheckIcon /> : <BanIcon />}{player.banned ? "Pardon" : "Ban"}</DropdownMenuItem>
-              {player.online && <DropdownMenuItem disabled={!running} onClick={() => mutate(player.name, "kick")}><UserRoundXIcon />Kick</DropdownMenuItem>}
-            </DropdownMenuGroup></DropdownMenuContent></DropdownMenu></div></TableCell>
-          </TableRow>)}</TableBody></Table> : <PlayerEmpty title="No known players" description="Players appear after joining or being added to a server list." />}
-        </CardContent></Card></TabsContent>
-        <TabsContent value="whitelist"><PlayerListTab title="Whitelist" description="Players allowed to join when whitelist enforcement is enabled." players={data.filter((player) => player.whitelisted)} addLabel="Add to whitelist" removeLabel="Remove" addAction="whitelist" removeAction="unwhitelist" canManage={canManage} pending={action.isPending} hint={manageHint} onAction={mutate} /></TabsContent>
-        <TabsContent value="operators"><PlayerListTab title="Operators" description="Operators added here receive permission level 4 by default." players={data.filter((player) => player.operator)} addLabel="Add operator" removeLabel="Deop" addAction="op" removeAction="deop" canManage={canManage} pending={action.isPending} hint={manageHint} onAction={mutate} /></TabsContent>
-        <TabsContent value="banned"><PlayerListTab title="Banned players" description="Player bans have no expiry and use Minecraft’s default operator-ban reason." players={data.filter((player) => player.banned)} addLabel="Ban player" removeLabel="Pardon" addAction="ban" removeAction="pardon" canManage={canManage} pending={action.isPending} hint={manageHint} onAction={mutate} /></TabsContent>
-      </Tabs>
+      <Tabs variant="underline" value={tab} onValueChange={setTab} tabs={tabs.map((item) => ({ value: item.value, label: <span className="flex items-center gap-1.5" aria-label={item.label}>{item.label}{players.data && <span className="text-xs text-kumo-subtle tabular-nums">{item.count}</span>}</span> }))} />
+      {manageHint && !server.isLoading && <Banner variant="secondary" icon={<InfoIcon weight="fill" />} title="Player lists are read-only right now" description={manageHint} />}
+      <div role="tabpanel" aria-label={activeLabel}>
+        {tab === "players" && <Section title="Known players" description="List actions work while the server is running, stopped, or crashed. Kicking requires a running server." flush>
+          {players.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-10" />)}</div> : data.length ? <Table>
+            <Table.Header><Table.Row><Table.Head>Player</Table.Head><Table.Head>Status</Table.Head><Table.Head>Access</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
+            <Table.Body>{data.map((player) => <Table.Row key={player.uuid ?? player.name}>
+              <Table.Cell><div className="flex min-w-0 flex-col gap-0.5"><span className="font-medium">{player.name}</span>{player.uuid && <span className="truncate font-mono text-xs text-kumo-subtle">{player.uuid}</span>}</div></Table.Cell>
+              <Table.Cell><Badge variant={player.online ? "success" : "neutral"} appearance="dot">{player.online ? "Online" : "Offline"}</Badge></Table.Cell>
+              <Table.Cell><div className="flex flex-wrap gap-1">{player.operator && <Badge variant="purple">Operator</Badge>}{player.whitelisted && <Badge variant="info">Whitelisted</Badge>}{player.banned && <Badge variant="error">Banned</Badge>}{!player.operator && !player.whitelisted && !player.banned && <span className="text-sm text-kumo-subtle">—</span>}</div></Table.Cell>
+              <Table.Cell className="text-right"><div className="flex justify-end gap-2">
+                <HintButton size="sm" icon={ArchiveIcon} disabled={!player.uuid} hint={player.uuid ? "View the saved inventory" : "A known UUID is required"} onClick={() => setInventoryPlayer(player)}>Inventory</HintButton>
+                <DropdownMenu>
+                  <DropdownMenu.Trigger render={<HintButton size="sm" icon={DotsThreeIcon} disabled={!canManage || action.isPending} hint={manageHint}>Manage</HintButton>} />
+                  <DropdownMenu.Content align="end">
+                    <DropdownMenu.Item icon={player.whitelisted ? UserMinusIcon : UserCheckIcon} onClick={() => mutate(player.name, player.whitelisted ? "unwhitelist" : "whitelist")}>{player.whitelisted ? "Remove from whitelist" : "Whitelist"}</DropdownMenu.Item>
+                    <DropdownMenu.Item icon={ShieldCheckIcon} onClick={() => mutate(player.name, player.operator ? "deop" : "op")}>{player.operator ? "Remove operator" : "Make operator"}</DropdownMenu.Item>
+                    {player.online && <DropdownMenu.Item icon={UserSwitchIcon} disabled={!running} onClick={() => mutate(player.name, "kick")}>Kick</DropdownMenu.Item>}
+                    <DropdownMenu.Separator />
+                    <DropdownMenu.Item icon={player.banned ? UserCheckIcon : ProhibitIcon} variant={player.banned ? "default" : "danger"} onClick={() => mutate(player.name, player.banned ? "pardon" : "ban")}>{player.banned ? "Pardon" : "Ban"}</DropdownMenu.Item>
+                  </DropdownMenu.Content>
+                </DropdownMenu>
+              </div></Table.Cell>
+            </Table.Row>)}</Table.Body>
+          </Table> : <EmptyState inset size="sm" icon={<UsersIcon />} title="No known players" description="Players appear after joining or being added to a server list." />}
+        </Section>}
+        {tab === "whitelist" && <PlayerListTab title="Whitelist" description="Players allowed to join when whitelist enforcement is enabled." players={data.filter((player) => player.whitelisted)} addLabel="Add to whitelist" removeLabel="Remove" addAction="whitelist" removeAction="unwhitelist" canManage={canManage} pending={action.isPending} hint={manageHint} onAction={mutate} />}
+        {tab === "operators" && <PlayerListTab title="Operators" description="Operators added here receive permission level 4 by default." players={data.filter((player) => player.operator)} addLabel="Add operator" removeLabel="Deop" addAction="op" removeAction="deop" canManage={canManage} pending={action.isPending} hint={manageHint} onAction={mutate} />}
+        {tab === "banned" && <PlayerListTab title="Banned players" description="Bans have no expiry and use Minecraft’s default operator-ban reason." players={data.filter((player) => player.banned)} addLabel="Ban player" removeLabel="Pardon" addAction="ban" removeAction="pardon" canManage={canManage} pending={action.isPending} hint={manageHint} onAction={mutate} />}
+      </div>
       <PlayerInventorySheet serverId={serverId} player={inventoryPlayer} open={Boolean(inventoryPlayer)} onOpenChange={(open) => !open && setInventoryPlayer(undefined)} />
     </Page>
   )
 }
-
-type PlayerListAction = Parameters<typeof api.playerAction>[2]
 
 function PlayerListTab({ title, description, players, addLabel, removeLabel, addAction, removeAction, canManage, pending, hint, onAction }: { title: string; description: string; players: PlayerDto[]; addLabel: string; removeLabel: string; addAction: PlayerListAction; removeAction: PlayerListAction; canManage: boolean; pending: boolean; hint?: string; onAction: (name: string, action: PlayerListAction) => void }) {
   const [nickname, setNickname] = useState("")
@@ -630,14 +631,22 @@ function PlayerListTab({ title, description, players, addLabel, removeLabel, add
     onAction(nickname, addAction)
     setNickname("")
   }
-  return <Card><CardHeader><CardTitle>{title}</CardTitle><CardDescription>{description}</CardDescription></CardHeader><CardContent className="flex flex-col gap-6">
-    <form onSubmit={submit}><FieldGroup><Field><FieldLabel htmlFor={`nickname-${addAction}`}>Player nickname</FieldLabel><div className="flex flex-col gap-2 sm:flex-row"><Input id={`nickname-${addAction}`} value={nickname} onChange={(event) => setNickname(event.target.value)} minLength={1} maxLength={16} pattern="[A-Za-z0-9_]+" placeholder="Minecraft nickname" autoComplete="off" disabled={!canManage || pending} title={hint} /><Button type="submit" disabled={!canManage || pending || !valid} title={hint}>{pending && <Spinner data-icon="inline-start" />}{addLabel}</Button></div></Field></FieldGroup></form>
-    {players.length ? <Table><TableHeader><TableRow><TableHead>Player</TableHead><TableHead>UUID</TableHead><TableHead><span className="sr-only">Actions</span></TableHead></TableRow></TableHeader><TableBody>{players.map((player) => <TableRow key={player.uuid ?? player.name}><TableCell className="font-medium">{player.name}</TableCell><TableCell className="font-mono text-xs text-muted-foreground">{player.uuid ?? "Unknown"}</TableCell><TableCell className="text-right"><Button variant="outline" size="sm" disabled={!canManage || pending} title={hint} onClick={() => onAction(player.name, removeAction)}>{removeLabel}</Button></TableCell></TableRow>)}</TableBody></Table> : <PlayerEmpty title={`No ${title.toLowerCase()}`} description="Add a player by nickname to get started." />}
-  </CardContent></Card>
-}
-
-function PlayerEmpty({ title, description }: { title: string; description: string }) {
-  return <Empty><EmptyHeader><EmptyMedia variant="icon"><UserRoundXIcon /></EmptyMedia><EmptyTitle>{title}</EmptyTitle><EmptyDescription>{description}</EmptyDescription></EmptyHeader></Empty>
+  return <Section title={title} description={description} flush>
+    <form onSubmit={submit} className="flex flex-col gap-2 border-b border-kumo-hairline p-4 sm:flex-row sm:items-end">
+      <div className="flex-1 sm:max-w-sm">
+        <Input label="Player nickname" value={nickname} onChange={(event) => setNickname(event.target.value)} minLength={1} maxLength={16} pattern="[A-Za-z0-9_]+" placeholder="Minecraft nickname" autoComplete="off" disabled={!canManage || pending} />
+      </div>
+      <HintButton type="submit" variant="primary" loading={pending} disabled={!canManage || !valid} hint={hint}>{addLabel}</HintButton>
+    </form>
+    {players.length ? <Table>
+      <Table.Header><Table.Row><Table.Head>Player</Table.Head><Table.Head>UUID</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
+      <Table.Body>{players.map((player) => <Table.Row key={player.uuid ?? player.name}>
+        <Table.Cell className="font-medium">{player.name}</Table.Cell>
+        <Table.Cell className="font-mono text-xs text-kumo-subtle">{player.uuid ?? "Unknown"}</Table.Cell>
+        <Table.Cell className="text-right"><HintButton size="sm" variant="secondary-destructive" disabled={!canManage || pending} hint={hint} onClick={() => onAction(player.name, removeAction)}>{removeLabel}</HintButton></Table.Cell>
+      </Table.Row>)}</Table.Body>
+    </Table> : <EmptyState inset size="sm" icon={<UsersIcon />} title={`No ${title.toLowerCase()}`} description="Add a player by nickname to get started." />}
+  </Section>
 }
 
 export function BackupsPage() {
@@ -645,6 +654,8 @@ export function BackupsPage() {
   const queryClient = useQueryClient()
   const server = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 5_000 })
   const backups = useQuery({ queryKey: ["backups", serverId], queryFn: () => api.backups(serverId), refetchInterval: 10_000 })
+  const [deleting, setDeleting] = useState<{ id: string; fileName: string }>()
+  const shownDeleting = useRetained(deleting)
   const canCreate = server.data?.state === "Stopped" || server.data?.state === "Running"
   const createHint = server.isLoading
     ? "Backup creation is unavailable while the server state loads."
@@ -656,7 +667,7 @@ export function BackupsPage() {
     ? "Restore is unavailable while the server state loads."
     : "Stop the server before restoring a backup."
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["backups", serverId] })
-  const exportServer = useMutation({ mutationFn: () => api.exportServer(serverId), onSuccess: () => toast.message("Export queued. Open Activity to follow progress and download it."), onError: (error) => toast.error(error.message) })
+  const exportServer = useMutation({ mutationFn: () => api.exportServer(serverId), onSuccess: () => toast.message("Export queued", { description: "Open Activity to follow progress and download it." }), onError: (error) => toast.error(error.message) })
   const create = useMutation({
     mutationFn: () => api.createBackup(serverId),
     onSuccess: (job) => { toast.message("Backup queued", { description: `Operation ${job.id.slice(0, 8)}` }); void refresh() },
@@ -664,7 +675,7 @@ export function BackupsPage() {
   })
   const restore = useMutation({
     mutationFn: (id: string) => api.restoreBackup(serverId, id),
-    onSuccess: () => toast.message("Restore queued", { description: "A safety backup will be created first." }),
+    onSuccess: () => toast.message("Restore queued", { description: "A safety backup is created first." }),
     onError: (error) => toast.error(error.message),
   })
   const pin = useMutation({ mutationFn: ({ id, pinned }: { id: string; pinned: boolean }) => api.pinBackup(serverId, id, pinned), onSuccess: refresh, onError: (error) => toast.error(error.message) })
@@ -675,17 +686,51 @@ export function BackupsPage() {
   })
 
   return (
-    <Page title="Backups" description="Consistent world backups with automatic save-off, flush, and save-on handling." actions={<><Button variant="outline" disabled={exportServer.isPending || !canCreate} onClick={() => exportServer.mutate()}>Export server</Button><Button disabled={create.isPending || !canCreate} title={createHint} onClick={() => create.mutate()}>{create.isPending ? <Spinner data-icon="inline-start" /> : <PlusIcon data-icon="inline-start" />}Create backup</Button></>}>
-      <Card>
-        <CardHeader><CardTitle>Backup archive</CardTitle><CardDescription>Restores require the server to be stopped and always create a safety backup first.</CardDescription></CardHeader>
-        <CardContent>
-          <QueryFeedback query={backups} />
-          {backups.isLoading ? <Skeleton className="h-64" /> : backups.isError && !backups.data ? null : backups.data?.length ? <Table>
-            <TableHeader><TableRow><TableHead>Created</TableHead><TableHead>Reason</TableHead><TableHead>Size</TableHead><TableHead>Status</TableHead><TableHead><span className="sr-only">Actions</span></TableHead></TableRow></TableHeader>
-            <TableBody>{backups.data.map((backup) => <TableRow key={backup.id}><TableCell>{formatDate(backup.createdAt)}</TableCell><TableCell>{backup.reason}{backup.pinned && <Badge variant="outline">Pinned</Badge>}</TableCell><TableCell>{formatBytes(backup.size)}</TableCell><TableCell><Badge variant={backup.state === "Completed" ? "success" : "outline"}>{backup.state}</Badge></TableCell><TableCell className="text-right"><Button size="sm" variant="ghost" disabled={pin.isPending} onClick={() => pin.mutate({ id: backup.id, pinned: !backup.pinned })}>{backup.pinned ? "Unpin" : "Pin"}</Button><a className={buttonVariants({ variant: "ghost", size: "icon-sm" })} href={api.backupDownloadUrl(serverId, backup.id)}><DownloadIcon /><span className="sr-only">Download {backup.fileName}</span></a><AlertDialog><AlertDialogTrigger render={<Button variant="ghost" size="icon-sm" disabled={!canRestore} title={canRestore ? undefined : restoreHint} />}><ArchiveRestoreIcon /><span className="sr-only">Restore {backup.fileName}</span></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Restore this backup?</AlertDialogTitle><AlertDialogDescription>The server must be stopped. Current data is protected with a safety backup before files are replaced.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => restore.mutate(backup.id)}>Restore backup</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog><AlertDialog><AlertDialogTrigger render={<Button variant="ghost" size="icon-sm" />}><Trash2Icon /><span className="sr-only">Delete {backup.fileName}</span></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete this backup?</AlertDialogTitle><AlertDialogDescription>{backup.fileName} will be permanently removed.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => remove.mutate(backup.id)}>Delete</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog></TableCell></TableRow>)}</TableBody>
-          </Table> : <Empty><EmptyHeader><EmptyMedia variant="icon"><RefreshCwIcon /></EmptyMedia><EmptyTitle>No backups yet</EmptyTitle><EmptyDescription>Create a manual backup or add one to a schedule.</EmptyDescription></EmptyHeader></Empty>}
-        </CardContent>
-      </Card>
+    <Page title="Backups" description="Consistent world backups with automatic save-off, flush, and save-on handling." actions={<>
+      <HintButton icon={ExportIcon} loading={exportServer.isPending} disabled={!canCreate} hint={createHint} onClick={() => exportServer.mutate()}>Export server</HintButton>
+      <HintButton variant="primary" icon={PlusIcon} loading={create.isPending} disabled={!canCreate} hint={createHint} onClick={() => create.mutate()}>Create backup</HintButton>
+    </>}>
+      {createHint && !server.isLoading && <Banner variant="secondary" icon={<InfoIcon weight="fill" />} title="Backups are paused" description={createHint} />}
+      <Section title="Backup archive" description={canRestore ? "Restoring always creates a safety backup first." : "Stop the server to restore a backup. Restoring always creates a safety backup first."} flush>
+        <QueryFeedback query={backups} />
+        {backups.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-10" />)}</div> : backups.isError && !backups.data ? null : backups.data?.length ? <Table>
+          <Table.Header><Table.Row><Table.Head>Created</Table.Head><Table.Head>Reason</Table.Head><Table.Head>Size</Table.Head><Table.Head>Status</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
+          <Table.Body>{backups.data.map((backup) => <Table.Row key={backup.id}>
+            <Table.Cell className="whitespace-nowrap">{formatDate(backup.createdAt)}</Table.Cell>
+            <Table.Cell><span className="flex flex-wrap items-center gap-1.5">{backup.reason}{backup.pinned && <Badge variant="outline" icon={<PushPinIcon size={12} />}>Pinned</Badge>}</span></Table.Cell>
+            <Table.Cell className="tabular-nums">{formatBytes(backup.size)}</Table.Cell>
+            <Table.Cell><Badge variant={backup.state === "Completed" ? "success" : backup.state === "Failed" ? "error" : "neutral"} appearance="dot">{backup.state}</Badge></Table.Cell>
+            <Table.Cell className="text-right"><div className="flex justify-end gap-1">
+              <LinkButton variant="ghost" size="sm" shape="square" icon={<DownloadSimpleIcon size={16} />} aria-label={`Download ${backup.fileName}`} href={api.backupDownloadUrl(serverId, backup.id)} />
+              <ConfirmDialog
+                trigger={<HintButton size="sm" icon={ClockCounterClockwiseIcon} disabled={!canRestore} hint={canRestore ? undefined : restoreHint} aria-label={`Restore ${backup.fileName}`}>Restore</HintButton>}
+                title="Restore this backup?"
+                description="The server must be stopped. Current data is protected with a safety backup before files are replaced."
+                confirmLabel="Restore backup"
+                onConfirm={() => restore.mutate(backup.id)}
+              />
+              <DropdownMenu>
+                <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsThreeIcon size={18} weight="bold" />} aria-label={`More actions for ${backup.fileName}`} />} />
+                <DropdownMenu.Content align="end">
+                  <DropdownMenu.Item icon={backup.pinned ? PushPinSlashIcon : PushPinIcon} disabled={pin.isPending} onClick={() => pin.mutate({ id: backup.id, pinned: !backup.pinned })}>{backup.pinned ? "Unpin" : "Pin"}</DropdownMenu.Item>
+                  <DropdownMenu.Separator />
+                  <DropdownMenu.Item icon={TrashIcon} variant="danger" onClick={() => setDeleting({ id: backup.id, fileName: backup.fileName })}>Delete</DropdownMenu.Item>
+                </DropdownMenu.Content>
+              </DropdownMenu>
+            </div></Table.Cell>
+          </Table.Row>)}</Table.Body>
+        </Table> : <EmptyState inset size="sm" icon={<ArchiveIcon />} title="No backups yet" description="Create a manual backup or add one to a schedule." />}
+      </Section>
+      <ConfirmDialog
+        open={Boolean(deleting)}
+        onOpenChange={(open) => { if (!open) setDeleting(undefined) }}
+        title="Delete this backup?"
+        description={`${shownDeleting?.fileName ?? "The backup"} will be permanently removed.`}
+        confirmLabel="Delete"
+        tone="danger"
+        onConfirm={() => { const target = deleting; if (target) remove.mutate(target.id) }}
+      />
     </Page>
   )
 }
+
