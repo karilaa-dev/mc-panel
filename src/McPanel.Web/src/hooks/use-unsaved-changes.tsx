@@ -1,24 +1,39 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useBlocker } from "react-router-dom"
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
+import { ConfirmDialog } from "@/components/modal"
 
 export function useUnsavedChanges(dirty: boolean) {
   const blocker = useBlocker(dirty)
   const [pending, setPending] = useState<{ proceed: () => void }>()
+  // Closing the dialog after a discard must not reset the navigation that discard just resumed.
+  const discarded = useRef(false)
   useEffect(() => {
     if (!dirty) return
     const beforeUnload = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = "" }
     window.addEventListener("beforeunload", beforeUnload)
     return () => window.removeEventListener("beforeunload", beforeUnload)
   }, [dirty])
-  const cancel = () => { if (blocker.state === "blocked") blocker.reset(); setPending(undefined) }
-  const discard = () => { if (blocker.state === "blocked") blocker.proceed(); else pending?.proceed(); setPending(undefined) }
+  const cancel = () => {
+    if (!discarded.current && blocker.state === "blocked") blocker.reset()
+    discarded.current = false
+    setPending(undefined)
+  }
+  const discard = () => {
+    discarded.current = true
+    if (blocker.state === "blocked") blocker.proceed(); else pending?.proceed()
+    setPending(undefined)
+  }
   return {
     confirmDiscard: (proceed: () => void) => dirty ? setPending({ proceed }) : proceed(),
-    dialog: <AlertDialog open={Boolean(pending) || blocker.state === "blocked"} onOpenChange={(open) => !open && cancel()}>
-      <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle><AlertDialogDescription>Your edits have not been saved to the server.</AlertDialogDescription></AlertDialogHeader>
-        <AlertDialogFooter><AlertDialogCancel>Keep editing</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={discard}>Discard changes</AlertDialogAction></AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>,
+    dialog: <ConfirmDialog
+      open={Boolean(pending) || blocker.state === "blocked"}
+      onOpenChange={(open) => { if (!open) cancel() }}
+      title="Discard unsaved changes?"
+      description="Your edits have not been saved to the server."
+      cancelLabel="Keep editing"
+      confirmLabel="Discard changes"
+      tone="danger"
+      onConfirm={discard}
+    />,
   }
 }

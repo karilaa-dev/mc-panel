@@ -1,28 +1,18 @@
 import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useParams } from "react-router-dom"
-import { AlertTriangleIcon, BoxIcon, CheckIcon, UploadIcon } from "lucide-react"
-import { toast } from "sonner"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Checkbox } from "@/components/ui/checkbox"
-import {
-  Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
-} from "@/components/ui/dialog"
-import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Skeleton } from "@/components/ui/skeleton"
-import { Spinner } from "@/components/ui/spinner"
-import { Switch } from "@/components/ui/switch"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { Banner, Button, Checkbox, Input, Label, Select, Tabs } from "@cloudflare/kumo"
+import { CheckCircleIcon, CubeIcon, InfoIcon, SwapIcon, WarningIcon } from "@phosphor-icons/react"
 import { api } from "@/lib/api"
 import { createClientRequestId } from "@/lib/client-request-id"
 import type { ChangeServerSoftwareRequest, CustomJarImportDto, ServerKind } from "@/lib/contracts"
 import { recommendedJavaMajor } from "@/lib/java-version"
 import { serverKindLabel } from "@/lib/server-kind"
+import { toast } from "@/lib/toast"
+import { FileInput, SegmentedControl, SwitchField } from "@/components/controls"
+import { ErrorBanner, SectionSkeleton } from "@/components/feedback"
+import { Modal, ModalClose } from "@/components/modal"
+import { DetailList, Section } from "@/components/section"
 
 type OfficialKind = "Vanilla" | "Paper" | "Fabric" | "Forge" | "NeoForge"
 
@@ -148,8 +138,7 @@ export function ServerCoreSettingsSection() {
     onError: (error) => toast.error(error.message),
   })
 
-  async function upload(file?: File) {
-    if (!file) return
+  async function upload(file: File) {
     setUploading(true)
     try {
       const result = await api.uploadCustomJar(file)
@@ -162,30 +151,88 @@ export function ServerCoreSettingsSection() {
     } finally { setUploading(false) }
   }
 
-  if (server.isLoading || software.isLoading) return <Skeleton className="h-96" />
-  if (!server.data || !software.data) return <Alert variant="destructive"><AlertTitle>Server core details unavailable</AlertTitle><AlertDescription>{software.error instanceof Error ? software.error.message : "The server could not be loaded."}</AlertDescription></Alert>
+  if (server.isLoading || software.isLoading) return <SectionSkeleton rows={5} />
+  if (!server.data || !software.data) return <ErrorBanner title="Server core details unavailable" description={software.error instanceof Error ? software.error.message : "The server could not be loaded."} />
 
+  const javaLabel = (major: number, vendor: string) => `Java ${major} · ${vendor}`
   return <>
-    {!stopped && <Alert variant="destructive"><AlertTriangleIcon /><AlertTitle>Stop the server first</AlertTitle><AlertDescription>Server core changes are disabled until the server is fully stopped.</AlertDescription></Alert>}
-    <Card><CardHeader><CardTitle>Current server core</CardTitle><CardDescription>The active launcher recorded by MC Panel.</CardDescription></CardHeader><CardContent className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4"><div><p className="text-xs text-muted-foreground">Core</p><p className="font-medium">{serverKindLabel(software.data.kind)}</p></div><div><p className="text-xs text-muted-foreground">Minecraft</p><p className="font-medium">{software.data.version}</p></div><div><p className="text-xs text-muted-foreground">Launcher</p><p className="break-all font-mono text-sm">{software.data.launchTarget}</p></div><div><p className="text-xs text-muted-foreground">Java</p><p className="font-medium">{java.data?.find((item) => item.id === software.data?.javaRuntimeId)?.version ?? software.data.javaRuntimeId}</p></div></CardContent></Card>
-    <Card><CardHeader><CardTitle>Choose a replacement server core</CardTitle><CardDescription>Official cores are downloaded from verified catalogs. Custom JARs must contain an executable manifest.</CardDescription></CardHeader><CardContent><FieldGroup>
-      <Field><FieldLabel>Source</FieldLabel><ToggleGroup value={[mode]} onValueChange={(values) => values[0] && setMode(values[0] as "Official" | "CustomJar")} variant="outline" spacing={0}><ToggleGroupItem value="Official">Official server core</ToggleGroupItem><ToggleGroupItem value="CustomJar">Custom JAR</ToggleGroupItem></ToggleGroup></Field>
-      {mode === "Official" ? <><Field orientation="horizontal"><FieldContent><FieldLabel htmlFor="software-experimental">Show experimental choices</FieldLabel><FieldDescription>Allow snapshots and unstable loader builds.</FieldDescription></FieldContent><Switch id="software-experimental" checked={experimental} onCheckedChange={setExperimental} /></Field><Field><FieldLabel>Server core</FieldLabel><ToggleGroup value={[kind]} onValueChange={(values) => values[0] && setKind(values[0] as OfficialKind)} variant="outline" spacing={0}>{(["Vanilla", "Paper", "Fabric", "Forge", "NeoForge"] as OfficialKind[]).map((item) => <ToggleGroupItem key={item} value={item}>{item}</ToggleGroupItem>)}</ToggleGroup></Field><Field><FieldLabel>Minecraft version</FieldLabel><Select items={versions.map((item) => ({ value: item, label: item }))} value={selectedVersion} onValueChange={(value) => value && setVersion(value)}><SelectTrigger className="w-full" aria-label="Minecraft version"><SelectValue placeholder="Choose version" /></SelectTrigger><SelectContent><SelectGroup>{versions.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>{kind === "Paper" && <Choice label="Paper build" value={selectedBuild} choices={paperBuilds.map((item) => ({ value: item.id, label: `${item.id} · ${item.channel}` }))} onChange={setBuild} />}{kind === "Fabric" && <><Choice label="Fabric loader" value={selectedLoader} choices={fabricLoaders.map((item) => ({ value: item.version, label: item.version }))} onChange={setLoader} /><Choice label="Fabric installer" value={selectedInstaller} choices={fabricInstallers.map((item) => ({ value: item.version, label: item.version }))} onChange={setInstaller} /></>}{(kind === "Forge" || kind === "NeoForge") && <Choice label={`${kind} loader`} value={selectedLoader} choices={loaderBuilds.map((item) => ({ value: item.version, label: `${item.version} · ${item.channel}` }))} onChange={setLoader} />}</> : <><Field><FieldLabel htmlFor="software-custom-version">Minecraft version</FieldLabel><Input id="software-custom-version" value={version} onChange={(event) => setVersion(event.target.value)} placeholder="For example, 1.21.8" /></Field><Tabs value={customSource} onValueChange={(value) => setCustomSource(value as "upload" | "existing")}><TabsList><TabsTrigger value="upload">Upload new JAR</TabsTrigger><TabsTrigger value="existing">Use existing JAR</TabsTrigger></TabsList><TabsContent value="upload"><Field><FieldLabel htmlFor="software-custom-jar">Executable JAR</FieldLabel><Input key={customJarConsumed ? consumingCustomJarJobId : "custom-jar-input"} id="software-custom-jar" type="file" accept=".jar,application/java-archive" disabled={uploading} onChange={(event) => void upload(event.target.files?.[0])} /><FieldDescription>The token expires after one hour and is consumed by this change.</FieldDescription></Field>{uploading && <Alert><Spinner /><AlertTitle>Uploading and validating</AlertTitle></Alert>}{availableCustomJar && <Alert><CheckIcon /><AlertTitle>{availableCustomJar.fileName}</AlertTitle><AlertDescription>Ready to activate as custom-server.jar.</AlertDescription></Alert>}</TabsContent><TabsContent value="existing"><Choice label="Existing executable JAR" value={existingJar} choices={software.data.jarCandidates.map((item) => ({ value: item.path, label: item.path }))} onChange={setExistingJar} placeholder="Choose a JAR inside this server" /></TabsContent></Tabs></>}
-      <Choice label="Java runtime" value={selectedJava} choices={compatibleJava.map((item) => ({ value: item.id, label: `Java ${item.major} · ${item.vendor}` }))} onChange={setJavaRuntimeId} placeholder={`Choose Java ${requiredJava}+`} />
-      <Field orientation="horizontal"><Checkbox id="software-backup" checked={createBackup} onCheckedChange={(checked) => setCreateBackup(checked === true)} /><FieldContent><FieldLabel htmlFor="software-backup">Create a backup before changing the server core</FieldLabel><FieldDescription>Enabled by default. A backup failure cancels the server core change.</FieldDescription></FieldContent></Field>
-      <Alert><BoxIcon /><AlertTitle>Existing server content stays in place</AlertTitle><AlertDescription>Worlds, properties, plugins, mods, and unused launch files are preserved. A manual change clears the Modrinth pack link.</AlertDescription></Alert>
-      <Button className="self-start" disabled={!stopped || !selectionsReady || uploading} onClick={() => setConfirmOpen(true)}>Review server core change</Button>
-    </FieldGroup></CardContent></Card>
-    <Dialog open={confirmOpen} onOpenChange={(open) => !change.isPending && setConfirmOpen(open)}><DialogContent className="sm:max-w-lg"><DialogHeader><DialogTitle>Change to {serverKindLabel(targetKind)}?</DialogTitle><DialogDescription>Minecraft {selectedVersion} · Java {compatibleJava.find((item) => item.id === selectedJava)?.major ?? requiredJava}{targetDetail ? ` · ${targetDetail}` : ""}</DialogDescription></DialogHeader><div className="flex flex-col gap-3"><Alert><AlertTitle>{createBackup ? "Backup required before activation" : "No backup selected"}</AlertTitle><AlertDescription>{createBackup ? "The backup must complete successfully before any launch files change." : "The change will start without creating a new recovery point."}</AlertDescription></Alert><p className="text-sm text-muted-foreground">MC Panel stages new launch files outside the instance, rolls activation back on failure, and preserves worlds and other existing content.</p></div><DialogFooter><DialogClose render={<Button variant="outline" disabled={change.isPending} />}>Cancel</DialogClose><Button disabled={change.isPending} onClick={() => change.mutate()}>{change.isPending ? <Spinner data-icon="inline-start" /> : <UploadIcon data-icon="inline-start" />}Change server core</Button></DialogFooter></DialogContent></Dialog>
+    <Section title="Current server core" description="The active launcher recorded by MC Panel.">
+      <DetailList className="lg:grid-cols-4" items={[
+        { label: "Core", value: serverKindLabel(software.data.kind) },
+        { label: "Minecraft", value: software.data.version },
+        { label: "Launcher", value: software.data.launchTarget, mono: true },
+        { label: "Java", value: java.data?.find((item) => item.id === software.data?.javaRuntimeId)?.version ?? software.data.javaRuntimeId },
+      ]} />
+    </Section>
+    <Section
+      title="Change server core"
+      description="Official cores are downloaded from verified catalogs. Custom JARs need an executable manifest."
+      footer={<div className="flex w-full items-center justify-between gap-3">
+        <p className="text-sm text-kumo-subtle">{stopped ? "Worlds, properties, plugins, and mods stay in place." : "Stop the server to change its core."}</p>
+        <Button variant="primary" icon={SwapIcon} disabled={!stopped || !selectionsReady || uploading} onClick={() => setConfirmOpen(true)}>Review server core change</Button>
+      </div>}
+    >
+      {!stopped && <Banner variant="alert" icon={<WarningIcon weight="fill" />} title="Stop the server first" description="Server core changes are disabled until the server is fully stopped." />}
+      <div className="flex flex-col gap-5">
+        <div className="flex flex-col gap-2">
+          <Label>Source</Label>
+          <SegmentedControl aria-label="Source" value={mode} onValueChange={(values) => values[0] && setMode(values[0])} options={[
+            { value: "Official", label: "Official server core" },
+            { value: "CustomJar", label: "Custom JAR" },
+          ]} />
+        </div>
+        {mode === "Official" ? <>
+          <SwitchField id="software-experimental" label="Show experimental choices" description="Allow snapshots and unstable loader builds." checked={experimental} onCheckedChange={setExperimental} />
+          <div className="flex flex-col gap-2">
+            <Label>Server core</Label>
+            <SegmentedControl aria-label="Server core" value={kind} onValueChange={(values) => values[0] && setKind(values[0])} options={(["Vanilla", "Paper", "Fabric", "Forge", "NeoForge"] as OfficialKind[]).map((item) => ({ value: item, label: item }))} />
+          </div>
+          <div className="grid gap-5 sm:grid-cols-2">
+            <Choice label="Minecraft version" value={selectedVersion} loading={catalog.isLoading} choices={versions.map((item) => ({ value: item, label: item }))} onChange={setVersion} placeholder="Choose version" />
+            {kind === "Paper" && <Choice label="Paper build" value={selectedBuild} choices={paperBuilds.map((item) => ({ value: item.id, label: `${item.id} · ${item.channel}` }))} onChange={setBuild} />}
+            {kind === "Fabric" && <>
+              <Choice label="Fabric loader" value={selectedLoader} choices={fabricLoaders.map((item) => ({ value: item.version, label: item.version }))} onChange={setLoader} />
+              <Choice label="Fabric installer" value={selectedInstaller} choices={fabricInstallers.map((item) => ({ value: item.version, label: item.version }))} onChange={setInstaller} />
+            </>}
+            {(kind === "Forge" || kind === "NeoForge") && <Choice label={`${kind} loader`} value={selectedLoader} choices={loaderBuilds.map((item) => ({ value: item.version, label: `${item.version} · ${item.channel}` }))} onChange={setLoader} />}
+          </div>
+        </> : <>
+          <Input label="Minecraft version" value={version} onChange={(event) => setVersion(event.target.value)} placeholder="For example, 1.21.8" />
+          <Tabs variant="segmented" value={customSource} onValueChange={(value) => setCustomSource(value as "upload" | "existing")} tabs={[{ value: "upload", label: "Upload new JAR" }, { value: "existing", label: "Use existing JAR" }]} />
+          {customSource === "upload" ? <div className="flex flex-col gap-3">
+            <FileInput key={customJarConsumed ? consumingCustomJarJobId : "custom-jar-input"} label="Executable JAR" accept=".jar,application/java-archive" pending={uploading} fileName={availableCustomJar?.fileName} onFile={(file) => void upload(file)} description="The upload token expires after one hour and is consumed by this change." />
+            {availableCustomJar && <Banner icon={<CheckCircleIcon weight="fill" />} title={availableCustomJar.fileName} description="Ready to activate as custom-server.jar." />}
+          </div> : <Choice label="Existing executable JAR" value={existingJar} choices={software.data.jarCandidates.map((item) => ({ value: item.path, label: item.path }))} onChange={setExistingJar} placeholder="Choose a JAR inside this server" />}
+        </>}
+        <Choice label="Java runtime" value={selectedJava} choices={compatibleJava.map((item) => ({ value: item.id, label: javaLabel(item.major, item.vendor) }))} onChange={setJavaRuntimeId} placeholder={`Choose Java ${requiredJava}+`} />
+        <div className="flex flex-col gap-1 rounded-lg bg-kumo-elevated p-4 ring ring-kumo-hairline">
+          <Checkbox label="Create a backup before changing the server core" checked={createBackup} onCheckedChange={(checked) => setCreateBackup(checked === true)} />
+          <p className="pl-6 text-sm text-kumo-subtle">Enabled by default. A backup failure cancels the change.</p>
+        </div>
+        <Banner variant="secondary" icon={<CubeIcon weight="fill" />} title="Existing server content stays in place" description="Worlds, properties, plugins, mods, and unused launch files are preserved. A manual change clears the Modrinth pack link." />
+      </div>
+    </Section>
+    <Modal
+      open={confirmOpen}
+      onOpenChange={(open) => { if (!change.isPending) setConfirmOpen(open) }}
+      dismissible={!change.isPending}
+      title={`Change to ${serverKindLabel(targetKind)}?`}
+      description={`Minecraft ${selectedVersion} · Java ${compatibleJava.find((item) => item.id === selectedJava)?.major ?? requiredJava}${targetDetail ? ` · ${targetDetail}` : ""}`}
+      footer={<><ModalClose disabled={change.isPending} /><Button variant="primary" icon={SwapIcon} loading={change.isPending} onClick={() => change.mutate()}>Change server core</Button></>}
+    >
+      <Banner variant={createBackup ? "default" : "alert"} icon={<InfoIcon weight="fill" />} title={createBackup ? "Backup required before activation" : "No backup selected"} description={createBackup ? "The backup must complete successfully before any launch files change." : "The change starts without creating a new recovery point."} />
+      <p className="text-sm text-kumo-subtle">MC Panel stages new launch files outside the instance, rolls activation back on failure, and preserves worlds and other existing content.</p>
+    </Modal>
   </>
 }
 
-function Choice({ label, value, choices, onChange, placeholder = "Choose a value" }: {
+function Choice({ label, value, choices, onChange, placeholder = "Choose a value", loading }: {
   label: string
   value: string
   choices: Array<{ value: string; label: string }>
   onChange: (value: string) => void
   placeholder?: string
+  loading?: boolean
 }) {
-  return <Field><FieldLabel>{label}</FieldLabel><Select items={choices} value={value} onValueChange={(next) => next && onChange(next)}><SelectTrigger className="w-full" aria-label={label}><SelectValue placeholder={placeholder} /></SelectTrigger><SelectContent><SelectGroup>{choices.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectGroup></SelectContent></Select></Field>
+  return <Select label={label} className="w-full" loading={loading} placeholder={placeholder} items={choices} value={value} onValueChange={(next) => next && onChange(next as string)} />
 }

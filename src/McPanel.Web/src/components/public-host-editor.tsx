@@ -1,13 +1,9 @@
 import { useState, type FormEvent } from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
-import { CheckIcon } from "lucide-react"
-import { toast } from "sonner"
+import { Button, Input, InputGroup } from "@cloudflare/kumo"
+import { CheckIcon } from "@phosphor-icons/react"
 import { api } from "@/lib/api"
-import { Button } from "@/components/ui/button"
-import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group"
-import { Spinner } from "@/components/ui/spinner"
+import { toast } from "@/lib/toast"
 
 export function PublicHostEditor({ serverId, value, addressRevision, inheritedPreview, compact = false }: {
   serverId: string
@@ -28,6 +24,7 @@ function PublicHostEditorForm({ serverId, value, addressRevision, inheritedPrevi
 }) {
   const [address, setAddress] = useState(value ?? "")
   const queryClient = useQueryClient()
+  const changed = address.trim() !== (value ?? "")
   const save = useMutation({
     mutationFn: () => api.setServerPublicAddress(serverId, address.trim() || null, addressRevision),
     onSuccess: (server) => {
@@ -40,8 +37,20 @@ function PublicHostEditorForm({ serverId, value, addressRevision, inheritedPrevi
   })
   function submit(event: FormEvent) {
     event.preventDefault()
-    if (address.trim() !== (value ?? "")) save.mutate()
+    if (changed) save.mutate()
   }
-  if (compact) return <form className="max-w-xl" onSubmit={submit}><InputGroup><InputGroupInput aria-label="Advertised connection address" placeholder="play.example.com:25570" value={address} onChange={(event) => setAddress(event.target.value)} /><InputGroupAddon align="inline-end"><InputGroupButton type="submit" disabled={save.isPending || address.trim() === (value ?? "")}>{save.isPending ? <Spinner /> : <CheckIcon />}<span className="sr-only">Save advertised connection address</span></InputGroupButton></InputGroupAddon></InputGroup></form>
-  return <form onSubmit={submit}><Field><FieldLabel htmlFor={`advertised-address-${serverId}`}>Advertised connection address</FieldLabel><div className="flex flex-col gap-2 sm:flex-row"><Input id={`advertised-address-${serverId}`} placeholder="play.example.com:25570" value={address} onChange={(event) => setAddress(event.target.value)} /><Button type="submit" variant="outline" disabled={save.isPending || address.trim() === (value ?? "")}>{save.isPending && <Spinner data-icon="inline-start" />}Save address</Button></div><FieldDescription>Use a hostname, IPv4 address, or bracketed IPv6 address. A custom host without a port means 25565. Leave blank to inherit {inheritedPreview ?? "the global server address and this server’s real port"}; advertised ports may be external NAT, SRV, or proxy mappings.</FieldDescription></Field></form>
+  const description = `Use a hostname, IPv4 address, or bracketed IPv6 address. A host without a port means 25565. Leave blank to inherit ${inheritedPreview ?? "the global server address and this server’s real port"}.`
+  if (compact) return <form onSubmit={submit} className="flex flex-col gap-2">
+    <InputGroup label="Advertised connection address">
+      <InputGroup.Input placeholder={inheritedPreview ?? "play.example.com:25570"} value={address} onChange={(event) => setAddress(event.target.value)} />
+      <InputGroup.Addon align="end">
+        <InputGroup.Button type="submit" shape="square" icon={CheckIcon} aria-label="Save advertised connection address" loading={save.isPending} disabled={!changed} />
+      </InputGroup.Addon>
+    </InputGroup>
+    <p className="text-sm text-kumo-subtle">{description}</p>
+  </form>
+  return <form onSubmit={submit} className="flex flex-col gap-3 sm:flex-row sm:items-start">
+    <div className="flex-1"><Input label="Advertised connection address" placeholder="play.example.com:25570" value={address} onChange={(event) => setAddress(event.target.value)} description={`${description} Advertised ports may be external NAT, SRV, or proxy mappings.`} /></div>
+    <Button type="submit" className="sm:mt-7" loading={save.isPending} disabled={!changed}>Save address</Button>
+  </form>
 }

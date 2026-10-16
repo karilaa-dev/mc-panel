@@ -1,16 +1,26 @@
-import { AlertCircleIcon, CheckCircle2Icon } from "lucide-react"
-import { Link } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { toast } from "sonner"
+import { Badge, Banner, Button, LinkButton, Table } from "@cloudflare/kumo"
+import { CheckCircleIcon, ClockCounterClockwiseIcon, DownloadSimpleIcon, ListChecksIcon, TerminalWindowIcon, WarningCircleIcon } from "@phosphor-icons/react"
 import { api } from "@/lib/api"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import type { JobDto } from "@/lib/contracts"
+import { toast } from "@/lib/toast"
+import { ProgressBar } from "@/components/controls"
+import { EmptyState, QueryFeedback, Skeleton } from "@/components/feedback"
 import { Page } from "@/components/page"
-import { QueryFeedback } from "@/components/query-feedback"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Skeleton } from "@/components/ui/skeleton"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Section } from "@/components/section"
+
+const formatTime = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value))
+
+function JobStateBadge({ job }: { job: JobDto }) {
+  if (job.state === "Failed" || job.state === "Interrupted") return <Badge variant="error" appearance="dot">{job.state}</Badge>
+  if (job.state === "Completed") return <Badge variant="success" appearance="dot">{job.state}</Badge>
+  if (job.state === "Running") return <Badge variant="info" appearance="dot">{job.state}</Badge>
+  return <Badge variant="neutral" appearance="dot">{job.state}</Badge>
+}
+
+function TableSkeleton() {
+  return <div className="flex flex-col gap-3 p-4">{Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-9" />)}</div>
+}
 
 export function ActivityPage() {
   const client = useQueryClient()
@@ -24,56 +34,78 @@ export function ActivityPage() {
     onError: (error) => toast.error(error.message),
   })
   const open = incidents.data?.filter((incident) => !incident.resolvedAt) ?? []
+  const serverName = (id?: string | null) => servers.data?.find((server) => server.id === id)?.name
+
   return <Page title="Activity" description="Recent operations, issues to resolve, and administrator actions.">
     <section aria-labelledby="attention-title" className="flex flex-col gap-3">
       <div className="flex items-center gap-2">
-        <h2 id="attention-title" className="text-base font-semibold">Needs attention</h2>
-        {open.length > 0 && <Badge variant="secondary">{open.length}</Badge>}
+        <h2 id="attention-title" className="text-lg font-semibold text-kumo-strong">Needs attention</h2>
+        {open.length > 0 && <Badge variant="error">{open.length}</Badge>}
       </div>
       <QueryFeedback query={incidents} />
-      {incidents.isLoading ? <Skeleton className="h-24" /> : open.map((incident) => {
-        const server = servers.data?.find((server) => server.id === incident.serverId)
+      {incidents.isLoading ? <Skeleton className="h-20" /> : open.map((incident) => {
         const backup = incident.code === "BACKUP_FAILED" || incident.code === "BACKUP_OVERDUE"
-        return <Alert key={incident.id}>
-          <AlertCircleIcon className="text-destructive" />
-          <AlertTitle>{incidentTitle(incident.code)}</AlertTitle>
-          <AlertDescription className="min-w-0">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex min-w-0 flex-col gap-1">
-                <span className="[overflow-wrap:anywhere]">{incident.message}</span>
-                <span className="text-xs">{server?.name ?? (incident.serverId ? "Server" : "Panel")} · Since <time dateTime={incident.openedAt}>{new Date(incident.openedAt).toLocaleString()}</time></span>
-              </div>
-              <div className="flex shrink-0 flex-wrap gap-2">
-                {incident.serverId && <Button size="sm" variant="outline" nativeButton={false} role="link" render={<Link to={`/servers/${incident.serverId}/${backup ? "backups" : "console"}`} />}>{backup ? "View backups" : "Open console"}</Button>}
-                {incident.code === "RECOVERY_REQUIRED" && incident.serverId && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ id: incident.serverId!, operation: "recover" })}>Retry recovery</Button>}
-                {(incident.code === "RECOVERY_BUNDLE_FAILED" || incident.code === "OFF_HOST_RECOVERY_OVERDUE") && <Button size="sm" variant="outline" nativeButton={false} role="link" render={<Link to="/panel-settings?tab=backups" />}>Panel backups</Button>}
-              </div>
-            </div>
-          </AlertDescription>
-        </Alert>
+        return <Banner
+          key={incident.id}
+          variant="error"
+          icon={<WarningCircleIcon weight="fill" />}
+          title={incidentTitle(incident.code)}
+          description={<span className="flex flex-col gap-1">
+            <span className="[overflow-wrap:anywhere]">{incident.message}</span>
+            <span className="text-sm opacity-80">{serverName(incident.serverId) ?? (incident.serverId ? "Server" : "Panel")} · Since <time dateTime={incident.openedAt}>{formatTime(incident.openedAt)}</time></span>
+          </span>}
+          action={<>
+            {incident.serverId && <LinkButton size="sm" variant="secondary" href={`/servers/${incident.serverId}/${backup ? "backups" : "console"}`}>{backup ? "View backups" : "Open console"}</LinkButton>}
+            {incident.code === "RECOVERY_REQUIRED" && incident.serverId && <Banner.Action loading={action.isPending} onClick={() => action.mutate({ id: incident.serverId!, operation: "recover" })}>Retry recovery</Banner.Action>}
+            {(incident.code === "RECOVERY_BUNDLE_FAILED" || incident.code === "OFF_HOST_RECOVERY_OVERDUE") && <LinkButton size="sm" variant="secondary" href="/panel-settings?tab=backups">Panel backups</LinkButton>}
+          </>}
+        />
       })}
-      {!incidents.isLoading && !incidents.isError && !open.length && <Alert role="status"><CheckCircle2Icon /><AlertTitle>Nothing needs attention</AlertTitle><AlertDescription>New issues will appear here when they need a fix.</AlertDescription></Alert>}
+      {!incidents.isLoading && !incidents.isError && !open.length && <Banner role="status" variant="secondary" icon={<CheckCircleIcon weight="fill" className="text-kumo-success" />} title="Nothing needs attention" description="New issues appear here when they need a fix." />}
     </section>
-    <Card><CardHeader><CardTitle>Operations</CardTitle><CardDescription>Track progress and review completed or failed tasks.</CardDescription></CardHeader><CardContent>
+    <Section title="Operations" description="Track progress and review completed or failed tasks." flush>
       <QueryFeedback query={jobs} />
-      {jobs.isLoading ? <Skeleton className="h-48" /> : <Table><TableHeader><TableRow><TableHead>Operation</TableHead><TableHead>Outcome</TableHead><TableHead>Details</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader><TableBody>
-        {jobs.data?.map((job) => <TableRow key={job.id}><TableCell>{operationTitle(job.type)}<p className="text-muted-foreground">{job.createdAt ? new Date(job.createdAt).toLocaleString() : ""}</p></TableCell>
-          <TableCell><Badge variant={job.state === "Failed" || job.state === "Interrupted" ? "destructive" : "secondary"}>{job.state}</Badge>{job.state === "Running" && <p>{job.progress}%</p>}</TableCell>
-          <TableCell>{job.message}{job.error && <p>{job.error}</p>}</TableCell><TableCell><div className="flex flex-wrap gap-2">
-            {job.serverId && <Button size="sm" variant="ghost" nativeButton={false} role="link" render={<Link to={`/servers/${job.serverId}/console`} />}>Console</Button>}
-            {(job.type === "ServerExport" || job.type === "InstancesExport") && job.state === "Completed" && <a href={api.exportDownloadUrl(job.id)} download>Download export</a>}
-            {job.canCancel && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ id: job.id, operation: "cancel" })}>Cancel</Button>}
-            {job.canRetry && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ id: job.id, operation: "retry" })}>Retry</Button>}
-          </div></TableCell></TableRow>)}
-      </TableBody></Table>}
-      {!jobs.isLoading && !jobs.isError && !jobs.data?.length && <p>No operations have been recorded.</p>}
-    </CardContent></Card>
-    <Card><CardHeader><CardTitle>Administrative history</CardTitle><CardDescription>A record of changes made through the panel.</CardDescription></CardHeader><CardContent>
+      {jobs.isLoading ? <TableSkeleton /> : jobs.data?.length ? <Table>
+        <Table.Header><Table.Row><Table.Head>Operation</Table.Head><Table.Head>Outcome</Table.Head><Table.Head>Details</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
+        <Table.Body>{jobs.data.map((job) => <Table.Row key={job.id}>
+          <Table.Cell className="min-w-44">
+            <div className="flex flex-col gap-0.5">
+              <span className="font-medium">{operationTitle(job.type)}</span>
+              <span className="text-xs text-kumo-subtle">{[serverName(job.serverId), job.createdAt ? formatTime(job.createdAt) : undefined].filter(Boolean).join(" · ")}</span>
+            </div>
+          </Table.Cell>
+          <Table.Cell className="min-w-36">
+            <div className="flex flex-col gap-2">
+              <JobStateBadge job={job} />
+              {job.state === "Running" && <ProgressBar label="Progress" value={job.progress} className="w-36" />}
+            </div>
+          </Table.Cell>
+          <Table.Cell className="max-w-md whitespace-normal">
+            {job.message && <p className="text-sm">{job.message}</p>}
+            {job.error && <p className="text-sm text-kumo-danger [overflow-wrap:anywhere]">{job.error}</p>}
+            {!job.message && !job.error && <span className="text-sm text-kumo-subtle">—</span>}
+          </Table.Cell>
+          <Table.Cell className="text-right"><div className="flex flex-wrap justify-end gap-1.5">
+            {job.serverId && <LinkButton size="sm" variant="ghost" icon={TerminalWindowIcon} href={`/servers/${job.serverId}/console`}>Console</LinkButton>}
+            {(job.type === "ServerExport" || job.type === "InstancesExport") && job.state === "Completed" && <LinkButton size="sm" variant="secondary" icon={DownloadSimpleIcon} href={api.exportDownloadUrl(job.id)} download>Download export</LinkButton>}
+            {job.canCancel && <Button size="sm" variant="secondary-destructive" disabled={action.isPending} onClick={() => action.mutate({ id: job.id, operation: "cancel" })}>Cancel</Button>}
+            {job.canRetry && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ id: job.id, operation: "retry" })}>Retry</Button>}
+          </div></Table.Cell>
+        </Table.Row>)}</Table.Body>
+      </Table> : !jobs.isError && <EmptyState inset size="sm" icon={<ListChecksIcon />} title="No operations yet" description="Installs, backups, updates, and exports appear here." />}
+    </Section>
+    <Section title="Administrative history" description="A record of changes made through the panel." flush>
       <QueryFeedback query={audit} />
-      {audit.isLoading ? <Skeleton className="h-24" /> : <Table><TableHeader><TableRow><TableHead>Time</TableHead><TableHead>Actor</TableHead><TableHead>Action</TableHead><TableHead>Outcome</TableHead></TableRow></TableHeader><TableBody>
-        {audit.data?.map((event) => <TableRow key={event.id}><TableCell>{new Date(event.timestamp).toLocaleString()}</TableCell><TableCell>{event.actor}</TableCell><TableCell>{event.action} {event.target}</TableCell><TableCell>{event.outcome}</TableCell></TableRow>)}
-      </TableBody></Table>}
-    </CardContent></Card>
+      {audit.isLoading ? <TableSkeleton /> : audit.data?.length ? <Table>
+        <Table.Header><Table.Row><Table.Head>Time</Table.Head><Table.Head>Actor</Table.Head><Table.Head>Action</Table.Head><Table.Head>Outcome</Table.Head></Table.Row></Table.Header>
+        <Table.Body>{audit.data.map((event) => <Table.Row key={event.id}>
+          <Table.Cell className="whitespace-nowrap text-kumo-subtle">{formatTime(event.timestamp)}</Table.Cell>
+          <Table.Cell>{event.actor}</Table.Cell>
+          <Table.Cell className="whitespace-normal"><span className="font-medium">{event.action}</span>{event.target && <span className="ml-1.5 font-mono text-xs text-kumo-subtle [overflow-wrap:anywhere]">{event.target}</span>}</Table.Cell>
+          <Table.Cell><Badge variant={/fail|denied|error/i.test(event.outcome) ? "error" : "neutral"}>{event.outcome}</Badge></Table.Cell>
+        </Table.Row>)}</Table.Body>
+      </Table> : !audit.isError && <EmptyState inset size="sm" icon={<ClockCounterClockwiseIcon />} title="No administrative history" description="Changes made through the panel are recorded here." />}
+    </Section>
   </Page>
 }
 

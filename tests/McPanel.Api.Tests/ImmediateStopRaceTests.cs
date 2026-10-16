@@ -90,6 +90,112 @@ public sealed partial class ApiValidationRegressionTests
     }
 
     [Fact]
+    public async Task Immediate_stop_cancels_a_claimed_start_before_it_takes_the_server_lock()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        await using var runtimeServer = new StartupGapRuntime(_paths!.RuntimeSocket, fresh: false);
+        var claim = new StartClaimPause();
+        var factory = RaceStateFactory(claim);
+        var services = _factory!.Services;
+        var runtime = new PersistentRuntimeClient(_paths, new ProductionRuntimeEnvironment(), NullLogger<PersistentRuntimeClient>.Instance);
+        using var queue = ActivatorUtilities.CreateInstance<OperationQueue>(services, factory);
+        using var supervisor = ActivatorUtilities.CreateInstance<ProcessSupervisor>(services, factory, queue, runtime);
+        await queue.StartAsync(default);
+        try
+        {
+            var start = await supervisor.QueueActionAsync(_serverId, "start", false, default);
+            // The worker has marked the job Running but has not reached the server lock.
+            await claim.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(JobState.Running, (await queue.GetAsync(start.Id, default))!.State);
+            var kill = await supervisor.QueueActionAsync(_serverId, "kill", true, default).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(JobState.Completed, kill.State);
+            claim.Release.TrySetResult();
+            for (var attempt = 0; attempt < 100 && !OperationQueue.IsTerminal((await queue.GetAsync(start.Id, default))!.State); attempt++)
+                await Task.Delay(20);
+            Assert.Equal(JobState.Canceled, (await queue.GetAsync(start.Id, default))!.State);
+            Assert.False(runtimeServer.LaunchReceived.Task.IsCompleted);
+            Assert.False(runtimeServer.Running);
+            Assert.Equal(ServerState.Stopped, (await ReadServerAsync()).State);
+
+            // A deliberate start requested after the immediate stop is admitted normally.
+            var restart = await supervisor.QueueActionAsync(_serverId, "start", false, default);
+            for (var attempt = 0; attempt < 100 && !OperationQueue.IsTerminal((await queue.GetAsync(restart.Id, default))!.State); attempt++)
+                await Task.Delay(20);
+            Assert.Equal(JobState.Completed, (await queue.GetAsync(restart.Id, default))!.State);
+            Assert.True(runtimeServer.Running);
+        }
+        finally
+        {
+            claim.Release.TrySetResult();
+            await queue.StopAsync(default);
+        }
+    }
+
+    [Fact]
+    public async Task Immediate_stop_supersedes_panel_crash_recovery_that_already_checked_state()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        await using var runtimeServer = new StartupGapRuntime(_paths!.RuntimeSocket, fresh: false);
+        // Hold the kill's Stopped write until the scheduled recovery has read the Crashed state.
+        var pause = new LifecycleSavePause(afterCommit: false,
+            db => db.ChangeTracker.Entries<ServerEntity>().Any(x => x.State == EntityState.Modified && x.Entity.State == ServerState.Stopped));
+        var recoveryCheck = new ServerReadObserver();
+        var factory = RaceStateFactory(pause, recoveryCheck);
+        var services = _factory!.Services;
+        var runtime = new PersistentRuntimeClient(_paths, new ProductionRuntimeEnvironment(), NullLogger<PersistentRuntimeClient>.Instance);
+        using var supervisor = ActivatorUtilities.CreateInstance<ProcessSupervisor>(services, factory, runtime);
+        try
+        {
+            await using (var db = await factory.CreateDbContextAsync())
+                await db.Servers.Where(x => x.Id == _serverId).ExecuteUpdateAsync(x => x.SetProperty(s => s.CrashRecovery, true));
+            await supervisor.StartAsync(_serverId, false, default);
+            Assert.True(runtimeServer.Running);
+            // An older runtime without runtime-recovery leaves crash recovery to the panel.
+            runtimeServer.Crash();
+            await supervisor.ReconcilePersistentAsync(await runtime.RefreshAsync(default), false, default);
+            Assert.Equal(ServerState.Crashed, (await ReadServerAsync()).State);
+
+            var kill = supervisor.QueueActionAsync(_serverId, "kill", true, default);
+            await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            recoveryCheck.Arm();
+            await recoveryCheck.Observed.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            pause.Release.TrySetResult();
+            Assert.Equal(JobState.Completed, (await kill.WaitAsync(TimeSpan.FromSeconds(5))).State);
+
+            // Give a stale recovery the chance to take the released server lock and launch.
+            for (var attempt = 0; attempt < 25 && !runtimeServer.Running; attempt++) await Task.Delay(20);
+            Assert.False(runtimeServer.Running);
+            Assert.Equal(ServerState.Stopped, (await ReadServerAsync()).State);
+
+            // A deliberate start after the immediate stop is still admitted.
+            await supervisor.StartAsync(_serverId, false, default);
+            Assert.True(runtimeServer.Running);
+        }
+        finally { pause.Release.TrySetResult(); }
+    }
+
+    [Fact]
+    public async Task Panel_crash_recovery_restarts_a_crashed_server_without_a_stop()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        await using var runtimeServer = new StartupGapRuntime(_paths!.RuntimeSocket, fresh: false);
+        var services = _factory!.Services;
+        var runtime = new PersistentRuntimeClient(_paths, new ProductionRuntimeEnvironment(), NullLogger<PersistentRuntimeClient>.Instance);
+        using var supervisor = ActivatorUtilities.CreateInstance<ProcessSupervisor>(services, runtime);
+        await using (var db = await services.GetRequiredService<IDbContextFactory<StateDbContext>>().CreateDbContextAsync())
+            await db.Servers.Where(x => x.Id == _serverId).ExecuteUpdateAsync(x => x.SetProperty(s => s.CrashRecovery, true));
+        await supervisor.StartAsync(_serverId, false, default);
+        runtimeServer.Crash();
+        await supervisor.ReconcilePersistentAsync(await runtime.RefreshAsync(default), false, default);
+        Assert.Equal(ServerState.Crashed, (await ReadServerAsync()).State);
+        for (var attempt = 0; attempt < 500 && (await ReadServerAsync()).State != ServerState.Running; attempt++) await Task.Delay(20);
+        var server = await ReadServerAsync();
+        Assert.Equal(ServerState.Running, server.State);
+        Assert.Equal(1, server.CrashAttempts);
+        Assert.True(runtimeServer.Running);
+    }
+
+    [Fact]
     public async Task Immediate_stop_waits_for_a_dispatched_restart_after_cancellation()
     {
         if (!OperatingSystem.IsLinux()) return;
@@ -185,6 +291,40 @@ public sealed partial class ApiValidationRegressionTests
         {
             if (afterCommit) await PauseAsync(eventData.Context, cancellationToken);
             return result;
+        }
+    }
+
+    // Pauses the queue worker right after it claims a job, before its action runs.
+    private sealed class StartClaimPause : DbCommandInterceptor
+    {
+        private int _paused;
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override async ValueTask<int> NonQueryExecutedAsync(DbCommand command, CommandExecutedEventData eventData,
+            int result, CancellationToken cancellationToken = default)
+        {
+            if (result > 0 && command.CommandText.StartsWith("UPDATE \"Jobs\"", StringComparison.Ordinal) &&
+                command.CommandText.Contains("\"Progress\" =") && command.CommandText.Contains("\"CancellationRequested\"") &&
+                Interlocked.Exchange(ref _paused, 1) == 0)
+            {
+                Entered.TrySetResult();
+                await Release.Task;
+            }
+            return result;
+        }
+    }
+
+    private sealed class ServerReadObserver : DbCommandInterceptor
+    {
+        private int _armed;
+        public TaskCompletionSource Observed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public void Arm() => Volatile.Write(ref _armed, 1);
+        public override ValueTask<DbDataReader> ReaderExecutedAsync(DbCommand command, CommandExecutedEventData eventData,
+            DbDataReader result, CancellationToken cancellationToken = default)
+        {
+            if (Volatile.Read(ref _armed) == 1 && command.CommandText.Contains("FROM \"Servers\"", StringComparison.Ordinal))
+                Observed.TrySetResult();
+            return ValueTask.FromResult(result);
         }
     }
 
@@ -285,6 +425,15 @@ public sealed partial class ApiValidationRegressionTests
             }
             catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
             catch (IOException) { /* A canceled client cannot retract a runtime launch. */ }
+        }
+
+        public void Crash()
+        {
+            lock (_stateGate)
+            {
+                _running = false;
+                _lastSnapshot = _lastSnapshot! with { State = RuntimeProcessState.Crashed, ProcessId = null };
+            }
         }
 
         public async ValueTask DisposeAsync()

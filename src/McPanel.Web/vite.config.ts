@@ -4,9 +4,19 @@ import tailwindcss from "@tailwindcss/vite"
 import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
 
+// The dev server forwards API and SignalR traffic to a local backend (see start-local.sh).
+const devApi = process.env.MCPANEL_DEV_API ?? "http://127.0.0.1:8080"
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  server: {
+    proxy: {
+      "/api": { target: devApi, changeOrigin: false },
+      "/hubs": { target: devApi, ws: true },
+      "/health": { target: devApi },
+    },
+  },
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "./src"),
@@ -23,7 +33,7 @@ export default defineConfig({
             },
             {
               name: "ui-vendor",
-              test: /node_modules\/(?:@base-ui|lucide-react|sonner|cmdk)\//,
+              test: /node_modules\/(?:@cloudflare\/kumo|@base-ui|@floating-ui)\//,
             },
             {
               name: "data-vendor",

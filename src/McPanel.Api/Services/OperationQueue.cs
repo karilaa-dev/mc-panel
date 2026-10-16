@@ -115,9 +115,11 @@ public sealed class OperationQueue(
     public async Task CancelPendingLifecycleAsync(Guid serverId, CancellationToken token)
     {
         await using var db = await stateFactory.CreateDbContextAsync(token);
+        // A claimed start may not hold the server lock yet. Canceling it before the kill takes
+        // that lock guarantees it cannot launch after the kill reports the server stopped.
         var pending = db.Jobs.Where(x => x.ServerId == serverId &&
             (x.State == JobState.Queued && (x.Type == "Start" || x.Type == "Stop" || x.Type == "Restart") ||
-             x.State == JobState.Running && x.Type == "Restart"));
+             x.State == JobState.Running && (x.Type == "Start" || x.Type == "Restart")));
         var ids = await pending.Select(x => x.Id).ToListAsync(token);
         await pending.ExecuteUpdateAsync(setters => setters
             .SetProperty(x => x.CancellationRequested, true)

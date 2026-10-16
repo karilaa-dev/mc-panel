@@ -93,6 +93,24 @@ describe("CreateServerPage", () => {
     await waitFor(() => expect(screen.getByTestId("current-location")).toHaveTextContent("/servers/gate-server/creating/job-gate"))
   })
 
+  it("drops a previously chosen modpack source when switching to Gate", async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByRole("button", { name: "Modrinth modpack" }))
+    await user.click(screen.getByRole("button", { name: "Proxy" }))
+    await user.click(screen.getByRole("button", { name: /continue/i }))
+
+    expect(await screen.findByText("Create Gate Proxy")).toBeInTheDocument()
+    expect(screen.queryByRole("searchbox")).not.toBeInTheDocument()
+    expect(screen.queryByText(/\.mrpack/)).not.toBeInTheDocument()
+    expect(mockedApi.modrinthSearch).not.toHaveBeenCalled()
+    await user.click(await screen.findByRole("combobox", { name: "Gate version" }))
+    await user.click(screen.getByRole("option", { name: "0.72.6" }))
+    await user.click(screen.getByRole("button", { name: "Create Gate server" }))
+    await waitFor(() => expect(mockedApi.createGateServer).toHaveBeenCalledWith(expect.objectContaining({ version: "0.72.6" })))
+    expect(mockedApi.createModpackServer).not.toHaveBeenCalled()
+  })
+
   it("creates a regular Custom JAR server from a single-use upload", async () => {
     const user = userEvent.setup()
     renderPage()

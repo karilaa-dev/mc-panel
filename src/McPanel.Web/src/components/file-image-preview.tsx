@@ -1,16 +1,15 @@
 import { useEffect, useState } from "react"
-import { DownloadIcon, ImageIcon } from "lucide-react"
+import { LinkButton } from "@cloudflare/kumo"
+import { DownloadSimpleIcon, ImageIcon } from "@phosphor-icons/react"
 import { api } from "@/lib/api"
 import { imageFileType } from "@/lib/image-file"
-import { Button } from "@/components/ui/button"
-import { DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
-import { Spinner } from "@/components/ui/spinner"
+import { useRetained } from "@/hooks/use-retained"
+import { EmptyState, InlineLoading } from "@/components/feedback"
+import { Modal, ModalClose } from "@/components/modal"
 
-export function FileImagePreview({ serverId, path }: { serverId: string; path: string }) {
+function ImagePreview({ serverId, path, onDimensions }: { serverId: string; path: string; onDimensions: (value: string) => void }) {
   const [source, setSource] = useState<string>()
   const [problem, setProblem] = useState<string>()
-  const [dimensions, setDimensions] = useState<{ width: number; height: number }>()
   const name = path.split("/").at(-1) ?? path
 
   useEffect(() => {
@@ -27,17 +26,32 @@ export function FileImagePreview({ serverId, path }: { serverId: string; path: s
   }, [serverId, path])
 
   return (
-    <DialogContent className="grid h-[min(90dvh,56rem)] min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)_auto] sm:max-w-5xl">
-      <DialogHeader className="min-w-0 pr-8">
-        <DialogTitle className="truncate" title={name}>{name}</DialogTitle>
-        <DialogDescription>{dimensions ? `${dimensions.width} × ${dimensions.height} pixels` : "Image preview"}</DialogDescription>
-      </DialogHeader>
-      <div className="image-preview flex min-h-0 min-w-0 items-center justify-center overflow-hidden rounded-lg border p-4">
-        {problem ? <Empty><EmptyHeader><EmptyMedia variant="icon"><ImageIcon /></EmptyMedia><EmptyTitle>Could not preview image</EmptyTitle><EmptyDescription>{problem} You can still download the file.</EmptyDescription></EmptyHeader></Empty>
-          : source ? <img src={source} alt={name} className="max-h-full max-w-full object-contain" onLoad={(event) => setDimensions({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })} onError={() => setProblem("This file is not a supported or readable image.")} />
-          : <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner />Loading image…</div>}
-      </div>
-      <DialogFooter showCloseButton><Button variant="outline" nativeButton={false} render={<a href={api.fileDownloadUrl(serverId, path)} />}><DownloadIcon data-icon="inline-start" />Download image</Button></DialogFooter>
-    </DialogContent>
+    <div className="image-preview flex min-h-64 flex-1 items-center justify-center overflow-hidden rounded-lg p-4 ring ring-kumo-line">
+      {problem ? <EmptyState inset size="sm" icon={<ImageIcon />} title="Could not preview image" description={`${problem} You can still download the file.`} />
+        : source ? <img src={source} alt={name} className="max-h-[60dvh] max-w-full object-contain [image-rendering:auto]" onLoad={(event) => onDimensions(`${event.currentTarget.naturalWidth} × ${event.currentTarget.naturalHeight} pixels`)} onError={() => setProblem("This file is not a supported or readable image.")} />
+          : <InlineLoading>Loading image…</InlineLoading>}
+    </div>
+  )
+}
+
+/** Previews an image file from the server directory. Open while `path` is set. */
+export function FileImagePreview({ serverId, path, onClose }: { serverId: string; path?: string; onClose: () => void }) {
+  const shownPath = useRetained(path)
+  const [dimensions, setDimensions] = useState<{ path: string; text: string }>()
+  const name = shownPath?.split("/").at(-1) ?? shownPath ?? "Image"
+  return (
+    <Modal
+      open={Boolean(path)}
+      onOpenChange={(open) => { if (!open) onClose() }}
+      size="xl"
+      title={name}
+      description={dimensions && dimensions.path === shownPath ? dimensions.text : "Image preview"}
+      footer={<>
+        <ModalClose>Close</ModalClose>
+        {shownPath && <LinkButton variant="primary" icon={DownloadSimpleIcon} href={api.fileDownloadUrl(serverId, shownPath)}>Download image</LinkButton>}
+      </>}
+    >
+      {shownPath && <ImagePreview key={shownPath} serverId={serverId} path={shownPath} onDimensions={(text) => setDimensions({ path: shownPath, text })} />}
+    </Modal>
   )
 }

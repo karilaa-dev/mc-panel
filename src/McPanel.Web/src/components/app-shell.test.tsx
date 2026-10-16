@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen, waitFor } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { MemoryRouter, Route, Routes } from "react-router-dom"
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AppShell } from "@/components/app-shell"
 import { Page } from "@/components/page"
@@ -30,7 +30,7 @@ function renderShell(initialEntry = "/") {
               <Route index element={<Page title="Dashboard destination"><p>Dashboard content</p></Page>} />
               <Route path="create" element={<h1>Create destination</h1>} />
               <Route path="servers/:serverId" element={<h1>Server destination</h1>} />
-              <Route path="servers/:serverId/console" element={<h1>Console destination</h1>} />
+              <Route path="servers/:serverId/console" element={<><h1>Console destination</h1><Link to="/servers/server-2/console">Second console</Link></>} />
             </Route>
           </Routes>
         </ThemeProvider>
@@ -70,21 +70,38 @@ describe("AppShell", () => {
   })
 
   it("closes the mobile sidebar after route navigation", async () => {
-    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: 390 })
-    const user = userEvent.setup()
-    renderShell()
+    const defaultMatchMedia = window.matchMedia
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({
+        matches: query.includes("max-width"),
+        media: query,
+        onchange: null,
+        addListener: () => undefined,
+        removeListener: () => undefined,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+        dispatchEvent: () => false,
+      }),
+    })
+    try {
+      const user = userEvent.setup()
+      renderShell()
 
-    await user.click(screen.getByRole("button", { name: "Toggle Sidebar" }))
-    expect(await screen.findByRole("dialog", { name: "Sidebar" })).toBeVisible()
-    await user.click(screen.getByRole("link", { name: "Create server" }))
+      await user.click(screen.getByRole("button", { name: "Open navigation" }))
+      const navigation = await screen.findByRole("navigation", { name: "Application sidebar" })
+      await user.click(within(navigation).getByRole("link", { name: "Create server" }))
 
-    expect(await screen.findByRole("heading", { name: "Create destination" })).toBeVisible()
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sidebar" })).not.toBeInTheDocument())
+      expect(await screen.findByRole("heading", { name: "Create destination" })).toBeVisible()
+      await waitFor(() => expect(screen.queryByRole("navigation", { name: "Application sidebar" })).not.toBeInTheDocument())
 
-    await user.click(screen.getByRole("button", { name: "Toggle Sidebar" }))
-    expect(await screen.findByRole("dialog", { name: "Sidebar" })).toBeVisible()
-    await user.click(screen.getByRole("link", { name: "Create server" }))
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sidebar" })).not.toBeInTheDocument())
+      await user.click(screen.getByRole("button", { name: "Open navigation" }))
+      const reopened = await screen.findByRole("navigation", { name: "Application sidebar" })
+      await user.click(within(reopened).getByRole("link", { name: "Create server" }))
+      await waitFor(() => expect(screen.queryByRole("navigation", { name: "Application sidebar" })).not.toBeInTheDocument())
+    } finally {
+      Object.defineProperty(window, "matchMedia", { configurable: true, value: defaultMatchMedia })
+    }
   })
 
   it("runs the header lifecycle action through a handled mutation", async () => {
@@ -94,11 +111,48 @@ describe("AppShell", () => {
       restartRequired: false, startOnBoot: false,
     }])
     const user = userEvent.setup()
-    renderShell("/servers/server-1")
+    renderShell("/servers/server-1/console")
 
     await user.click(await screen.findByRole("button", { name: "Start" }))
 
     await waitFor(() => expect(mockedApi.lifecycle).toHaveBeenCalledWith("server-1", "start"))
+  })
+
+  it("keeps a pending lifecycle action with the server that requested it", async () => {
+    const stoppedServer = {
+      kind: "Paper", version: "1.21.8", state: "Stopped", port: 25565, memoryMb: 2048, playerCount: 0, maxPlayers: 20,
+      cpuPercent: 0, memoryUsedMb: 0, uptimeSeconds: 0, restartRequired: false, startOnBoot: false,
+    } as const
+    mockedApi.servers.mockResolvedValue([
+      { ...stoppedServer, id: "server-1", name: "First server" },
+      { ...stoppedServer, id: "server-2", name: "Second server" },
+    ])
+    let rejectFirst: (error: Error) => void = () => undefined
+    mockedApi.lifecycle.mockImplementationOnce(() => new Promise((_, reject) => { rejectFirst = reject }))
+    let resolveSecond: () => void = () => undefined
+    mockedApi.lifecycle.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveSecond = () => resolve({ id: "job-22222222", type: "Start", state: "Queued", progress: 0 })
+    }))
+    const user = userEvent.setup()
+    renderShell("/servers/server-1/console")
+    const header = within(screen.getByRole("banner"))
+
+    await user.click(await header.findByRole("button", { name: "Start" }))
+    expect(await header.findByText("Starting…")).toBeVisible()
+
+    await user.click(screen.getByRole("link", { name: "Second console" }))
+    await waitFor(() => expect(header.getAllByText("Second server")[0]).toBeVisible())
+    expect(header.queryByText("Starting…")).not.toBeInTheDocument()
+    await user.click(header.getByRole("button", { name: "Start" }))
+    expect(await header.findByText("Starting…")).toBeVisible()
+
+    rejectFirst(new Error("first start failed"))
+    await waitFor(() => expect(mockedApi.lifecycle).toHaveBeenCalledTimes(2))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(header.getByText("Starting…")).toBeVisible()
+    expect(mockedApi.lifecycle).toHaveBeenNthCalledWith(1, "server-1", "start")
+    expect(mockedApi.lifecycle).toHaveBeenNthCalledWith(2, "server-2", "start")
+    resolveSecond()
   })
 
   it("keeps immediate stop available in the console header while starting", async () => {
@@ -123,10 +177,11 @@ describe("AppShell", () => {
     const user = userEvent.setup()
     renderShell("/servers/server-1")
 
-    const dashboard = await screen.findByRole("link", { name: "Dashboard" })
-    const overview = screen.getAllByRole("link", { name: "Overview" }).find((item) => item.tagName === "A")!
-    const serverLink = await screen.findByRole("link", { name: "Test server" })
-    const java = screen.getByRole("link", { name: "Java" })
+    const sidebar = within(screen.getByRole("complementary", { name: "Application sidebar" }))
+    const dashboard = await sidebar.findByRole("link", { name: "Dashboard" })
+    const overview = sidebar.getByRole("link", { name: "Overview" })
+    const serverLink = await sidebar.findByRole("link", { name: "Test server" })
+    const java = sidebar.getByRole("link", { name: "Java" })
     expect(dashboard.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(overview.compareDocumentPosition(serverLink) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(serverLink.compareDocumentPosition(java) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
@@ -140,8 +195,10 @@ describe("AppShell", () => {
     expect(screen.queryByRole("link", { name: "Mods" })).not.toBeInTheDocument()
     expect(screen.getByRole("link", { name: "Plugins" })).toHaveAttribute("href", "/servers/server-1/plugins")
 
-    await user.click(screen.getByRole("button", { name: "Servers" }))
-    expect(serverLink).not.toBeVisible()
+    const servers = sidebar.getByRole("button", { name: "Servers" })
+    expect(servers).toHaveAttribute("aria-expanded", "true")
+    await user.click(servers)
+    expect(servers).toHaveAttribute("aria-expanded", "false")
   })
 
   it("shows Mods navigation for Fabric, Forge, and NeoForge servers", async () => {

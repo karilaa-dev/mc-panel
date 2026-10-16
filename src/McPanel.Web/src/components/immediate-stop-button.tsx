@@ -1,14 +1,13 @@
 import { useIsMutating, useMutation, useQueryClient } from "@tanstack/react-query"
-import { OctagonXIcon } from "lucide-react"
-import { toast } from "sonner"
-import { Button } from "@/components/ui/button"
-import { Spinner } from "@/components/ui/spinner"
+import { Button } from "@cloudflare/kumo"
+import { LightningSlashIcon } from "@phosphor-icons/react"
 import { api } from "@/lib/api"
 import type { ServerSummaryDto } from "@/lib/contracts"
+import { toast } from "@/lib/toast"
 
-export function ImmediateStopButton({ server, size = "default" }: {
+export function ImmediateStopButton({ server, size = "base" }: {
   server: Pick<ServerSummaryDto, "id" | "state">
-  size?: "default" | "sm"
+  size?: "base" | "sm"
 }) {
   const queryClient = useQueryClient()
   const mutationKey = ["immediate-stop", server.id]
@@ -27,13 +26,13 @@ export function ImmediateStopButton({ server, size = "default" }: {
   if (!["Starting", "Running", "Stopping"].includes(server.state)) return null
 
   return <Button
-    variant="destructive"
+    variant="secondary-destructive"
     size={size}
-    disabled={pending}
-    title="Stops the process immediately. Unsaved changes may be lost."
+    loading={pending}
+    icon={LightningSlashIcon}
+    title="Ends the process right away. Unsaved world changes may be lost."
     onClick={() => stop.mutate()}
   >
-    {pending ? <Spinner data-icon="inline-start" /> : <OctagonXIcon data-icon="inline-start" />}
     {pending ? "Stopping now…" : "Stop immediately"}
   </Button>
 }

@@ -62,7 +62,7 @@ describe("FilesPage mutation availability", () => {
     const create = await screen.findByRole("button", { name: "New file" })
     await waitFor(() => {
       expect(create).toBeDisabled()
-      expect(create).toHaveAttribute("title", "Files cannot be changed while the server is updating.")
+      expect(screen.getByText("Files cannot be changed while the server is updating.")).toBeVisible()
       expect(screen.getByRole("button", { name: "Upload" })).toBeDisabled()
       expect(screen.getByRole("button", { name: "New folder" })).toBeDisabled()
     })
@@ -124,6 +124,6 @@ describe("File image preview", () => {
     renderPage()
     await user.click(await screen.findByRole("button", { name: "server-icon.PNG" }))
     expect(await screen.findByText("Could not preview image")).toBeVisible()
-    expect(screen.getByRole("button", { name: "Download image" })).toHaveAttribute("href", "/download-image")
+    expect(screen.getByRole("link", { name: "Download image" })).toHaveAttribute("href", "/download-image")
   })
 })

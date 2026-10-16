@@ -31,7 +31,7 @@ it("explains local backups and keeps capture disabled while its job is active", 
   expect(screen.queryByText(/include the current server files/)).not.toBeInTheDocument()
   await user.click(await screen.findByRole("button", { name: "Create panel backup" }))
   await waitFor(() => expect(api.createRecovery).toHaveBeenCalledTimes(1))
-  expect(await screen.findByRole("button", { name: "Backup in progress" })).toBeDisabled()
+  expect(await screen.findByRole("button", { name: /Backup in progress/ })).toBeDisabled()
   expect(screen.getByRole("link", { name: "View activity" })).toHaveAttribute("href", "/activity")
 })
 

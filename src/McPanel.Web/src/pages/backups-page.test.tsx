@@ -67,7 +67,7 @@ describe("BackupsPage restore availability", () => {
 
     const restore = await screen.findByRole("button", { name: "Restore archive.zip" })
     expect(restore).toBeDisabled()
-    expect(restore).toHaveAttribute("title", "Stop the server before restoring a backup.")
+    expect(screen.getByText(/Stop the server to restore a backup/)).toBeVisible()
     expect(screen.getByRole("link", { name: "Download archive.zip" })).toHaveAttribute("href", "/download/archive.zip")
   })
 
@@ -78,7 +78,7 @@ describe("BackupsPage restore availability", () => {
     const create = await screen.findByRole("button", { name: "Create backup" })
     await waitFor(() => {
       expect(create).toBeDisabled()
-      expect(create).toHaveAttribute("title", "A backup cannot be created while the server is starting.")
+      expect(screen.getByText("A backup cannot be created while the server is starting.")).toBeVisible()
     })
   })
 
