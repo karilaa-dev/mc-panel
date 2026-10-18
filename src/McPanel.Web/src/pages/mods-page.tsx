@@ -2,7 +2,7 @@ import { useState } from "react"
 import { Navigate, useParams } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import { Badge, Banner, Button, Table, Tabs, cn } from "@cloudflare/kumo"
-import { ArrowClockwiseIcon, CubeIcon, PackageIcon, WarningIcon } from "@phosphor-icons/react"
+import { AlertTriangleFilledIcon, CubeIcon, PackageIcon, RefreshIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import type { ModFileDto, ModParseStatus, ServerKind } from "@/lib/contracts"
 import { useIsMobile } from "@/hooks/use-mobile"
@@ -47,7 +47,7 @@ function DetailsContent({ file, kind }: { file: ModFileDto; kind: ExtensionKind 
       { label: "Metadata", value: file.metadataFormat ?? "Not recognized" },
       { label: "License", value: file.license || "Not specified" },
     ]} />
-    {file.message && <Banner variant={file.status === "Invalid" ? "error" : "alert"} icon={<WarningIcon weight="fill" />} title={`${file.status} metadata`} description={file.message} />}
+    {file.message && <Banner variant={file.status === "Invalid" ? "error" : "alert"} icon={<AlertTriangleFilledIcon />} title={`${file.status} metadata`} description={file.message} />}
     {file.mods.map((declaration, index) => <section key={`${declaration.id ?? kind}-${index}`} aria-labelledby={`${kind}-declaration-${index}`} className="flex flex-col gap-3 border-t border-kumo-hairline pt-4">
       <div className="flex flex-wrap items-center gap-2">
         <h3 id={`${kind}-declaration-${index}`} className="font-semibold text-kumo-default">{declaration.name || declaration.id || `${title} ${index + 1}`}</h3>
@@ -71,7 +71,7 @@ function ChangesTab({ serverId }: { serverId: string }) {
     <Section
       title={data.modpack ? `${data.modpack.name} ${data.modpack.version}` : "Modpack changes"}
       description={data.message ?? `Compared with the original installation at ${new Date(data.scannedAt).toLocaleString()}.`}
-      actions={<Button size="sm" icon={ArrowClockwiseIcon} loading={changes.isFetching} onClick={() => void changes.refetch()}>Rescan</Button>}
+      actions={<Button size="sm" icon={RefreshIcon} loading={changes.isFetching} onClick={() => void changes.refetch()}>Rescan</Button>}
     >
       <div className="flex flex-wrap gap-2"><Badge variant="warning">{data.modified} modified</Badge><Badge variant="error">{data.removed} removed</Badge><Badge variant="info">{data.added} added mods</Badge></div>
     </Section>
@@ -82,8 +82,8 @@ function ChangesTab({ serverId }: { serverId: string }) {
           <Table.Body>{data.changes.map((change) => <Table.Row key={`${change.status}-${change.path}`}>
             <Table.Cell><Badge variant={change.status === "Modified" ? "warning" : change.status === "Added" ? "info" : "error"}>{change.status}</Badge></Table.Cell>
             <Table.Cell className="font-mono text-xs">{change.path}</Table.Cell>
-            <Table.Cell className="tabular-nums">{change.expectedSize == null ? "—" : fileSize(change.expectedSize)}</Table.Cell>
-            <Table.Cell className="tabular-nums">{change.currentSize == null ? "—" : fileSize(change.currentSize)}</Table.Cell>
+            <Table.Cell className="whitespace-nowrap tabular-nums">{change.expectedSize == null ? "—" : fileSize(change.expectedSize)}</Table.Cell>
+            <Table.Cell className="whitespace-nowrap tabular-nums">{change.currentSize == null ? "—" : fileSize(change.currentSize)}</Table.Cell>
           </Table.Row>)}</Table.Body>
         </Table>
       </Section>
@@ -134,7 +134,7 @@ function ExtensionsPage({ kind }: { kind: ExtensionKind }) {
         ? <Section
           title={`Installed ${plural}`}
           description={`${inventory.data.length} ${kind} ${inventory.data.length === 1 ? "file" : "files"} found. Select one to inspect its metadata.`}
-          actions={<Button size="sm" variant="ghost" icon={ArrowClockwiseIcon} loading={inventory.isFetching} onClick={() => void inventory.refetch()}>Refresh</Button>}
+          actions={<Button size="sm" variant="ghost" icon={RefreshIcon} loading={inventory.isFetching} onClick={() => void inventory.refetch()}>Refresh</Button>}
           flush
         >
           <Table>

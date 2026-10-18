@@ -1,7 +1,7 @@
 import { useState, type ComponentProps, type ReactElement, type ReactNode } from "react"
 import { Button, Dialog, cn } from "@cloudflare/kumo"
 import { Dialog as DialogPrimitive } from "@cloudflare/kumo/primitives/dialog"
-import { WarningIcon, XIcon } from "@phosphor-icons/react"
+import { AlertTriangleFilledIcon, XIcon } from "@/components/icons"
 
 type DialogSize = "sm" | "base" | "lg" | "xl"
 type RootProps = ComponentProps<typeof Dialog.Root>
@@ -114,7 +114,7 @@ export function ConfirmDialog({
         <div className="flex items-start gap-4">
           {tone === "danger" && (
             <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-kumo-danger-tint text-kumo-danger">
-              <WarningIcon size={20} weight="fill" />
+              <AlertTriangleFilledIcon size={20} />
             </div>
           )}
           <div className="flex min-w-0 flex-col gap-1.5">

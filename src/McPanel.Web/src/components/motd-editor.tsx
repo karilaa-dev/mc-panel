@@ -1,9 +1,6 @@
 import { useRef, useState, type CSSProperties, type ReactNode } from "react"
 import { Banner, Button, InputArea, Label, LayerCard, Tooltip } from "@cloudflare/kumo"
-import {
-  ArrowCounterClockwiseIcon, BracketsCurlyIcon, DiceFiveIcon, EraserIcon, InfoIcon, PaletteIcon, PencilSimpleIcon,
-  TextBIcon, TextItalicIcon, TextStrikethroughIcon, TextUnderlineIcon,
-} from "@phosphor-icons/react"
+import { BoldIcon, BracesIcon, Dice5Icon, EraserIcon, InfoCircleFilledIcon, ItalicIcon, PaletteIcon, PencilIcon, RotateIcon, StrikethroughIcon, UnderlineIcon } from "@/components/icons"
 import { Modal, ModalClose } from "@/components/modal"
 import { minecraftColors, parseMotd, visibleMotdText, type MotdSegment } from "@/lib/motd"
 
@@ -29,7 +26,7 @@ export function MotdEditor({ value, onChange, serverName = "Minecraft Server" }:
   return <div className="flex flex-col gap-2">
     <div className="flex items-center justify-between gap-3">
       <Label tooltip="Message displayed below this Gate instance in the Java multiplayer server list.">MOTD</Label>
-      <Button size="sm" icon={PencilSimpleIcon} onClick={() => changeOpen(true)}>Edit MOTD</Button>
+      <Button size="sm" icon={PencilIcon} onClick={() => changeOpen(true)}>Edit MOTD</Button>
     </div>
     <MotdPreview parsed={parsed} serverName={serverName} compact />
     <p className="text-sm text-kumo-subtle">Edit the message, then save Gate settings to apply it to the running proxy.</p>
@@ -86,7 +83,7 @@ function MotdComposer({ value, onChange, serverName }: { value: string; onChange
 
     {parsed.json ? <Banner
       variant={parsed.jsonError ? "error" : "default"}
-      icon={<BracketsCurlyIcon weight="fill" />}
+      icon={<BracesIcon />}
       title={parsed.jsonError ? "Invalid JSON text component" : "Raw JSON text component"}
       description={parsed.jsonError ?? "The preview understands text, extra, colors, and formatting. Visual formatting controls are disabled to avoid corrupting the JSON structure."}
     /> : <div className="flex flex-col gap-2 rounded-lg bg-kumo-elevated p-3 ring ring-kumo-hairline" role="toolbar" aria-label="MOTD formatting toolbar">
@@ -96,12 +93,12 @@ function MotdComposer({ value, onChange, serverName }: { value: string; onChange
         } />)}
       </div>
       <div className="flex flex-wrap items-center gap-1">
-        <FormatButton label="Bold" code="§l" onApply={insertFormatting}><TextBIcon size={16} weight="bold" /></FormatButton>
-        <FormatButton label="Italic" code="§o" onApply={insertFormatting}><TextItalicIcon size={16} /></FormatButton>
-        <FormatButton label="Underline" code="§n" onApply={insertFormatting}><TextUnderlineIcon size={16} /></FormatButton>
-        <FormatButton label="Strikethrough" code="§m" onApply={insertFormatting}><TextStrikethroughIcon size={16} /></FormatButton>
-        <FormatButton label="Obfuscated" code="§k" onApply={insertFormatting}><DiceFiveIcon size={16} /></FormatButton>
-        <FormatButton label="Reset formatting" code="§r" onApply={insertFormatting}><ArrowCounterClockwiseIcon size={16} /></FormatButton>
+        <FormatButton label="Bold" code="§l" onApply={insertFormatting}><BoldIcon size={16} stroke={2} /></FormatButton>
+        <FormatButton label="Italic" code="§o" onApply={insertFormatting}><ItalicIcon size={16} /></FormatButton>
+        <FormatButton label="Underline" code="§n" onApply={insertFormatting}><UnderlineIcon size={16} /></FormatButton>
+        <FormatButton label="Strikethrough" code="§m" onApply={insertFormatting}><StrikethroughIcon size={16} /></FormatButton>
+        <FormatButton label="Obfuscated" code="§k" onApply={insertFormatting}><Dice5Icon size={16} /></FormatButton>
+        <FormatButton label="Reset formatting" code="§r" onApply={insertFormatting}><RotateIcon size={16} /></FormatButton>
         <span className="mx-1 h-6 w-px bg-kumo-line" aria-hidden="true" />
         <input type="color" className="h-7 w-9 cursor-pointer rounded-md border-0 bg-transparent p-0.5 ring ring-kumo-line" aria-label="Custom MOTD color" value={customColor} onChange={(event) => setCustomColor(event.target.value)} />
         <Button size="sm" icon={PaletteIcon} onClick={() => insertFormatting(hexFormattingCode(customColor))}>Apply custom color</Button>
@@ -125,7 +122,7 @@ function MotdComposer({ value, onChange, serverName }: { value: string; onChange
       }}
       description={`${parsed.json ? "Editing raw JSON" : "Select text before choosing a color or style to format only that selection. Minecraft uses § formatting codes."} · ${plainText.length} visible characters · ${parsed.lines.length} line${parsed.lines.length === 1 ? "" : "s"}`}
     />
-    {parsed.lines.length > 2 && <Banner variant="alert" icon={<InfoIcon weight="fill" />} title="Only two lines are normally visible" description="Java clients usually show only the first two MOTD lines in the multiplayer list." />}
+    {parsed.lines.length > 2 && <Banner variant="alert" icon={<InfoCircleFilledIcon />} title="Only two lines are normally visible" description="Java clients usually show only the first two MOTD lines in the multiplayer list." />}
   </div>
 }
 

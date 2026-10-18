@@ -8,11 +8,7 @@ import {
   Badge, Banner, Button, Checkbox, ClipboardText, CommandPalette, Input, InputArea, InputGroup, Label, LayerCard,
   LinkButton, Select, Tabs, cn,
 } from "@cloudflare/kumo"
-import {
-  ArrowClockwiseIcon, ArrowRightIcon, CheckCircleIcon, CheckIcon, CpuIcon, CubeIcon, EyeIcon, EyeSlashIcon, GaugeIcon,
-  HardDriveIcon, InfoIcon, MagnifyingGlassIcon, MemoryIcon, PlayIcon, PlusIcon, ShareNetworkIcon, StopIcon,
-  TrashIcon, UsersIcon, WarningCircleIcon, WarningIcon,
-} from "@phosphor-icons/react"
+import { AlertCircleFilledIcon, AlertTriangleFilledIcon, ArrowRightIcon, CheckIcon, CircleCheckFilledIcon, CpuIcon, CubeIcon, DatabaseIcon, EyeIcon, EyeOffIcon, GaugeIcon, InfoCircleFilledIcon, MemoryIcon, PlayerPlayIcon, PlayerStopIcon, PlusIcon, RefreshIcon, SearchIcon, ShareIcon, TrashIcon, UsersIcon } from "@/components/icons"
 import { ApiError, api } from "@/lib/api"
 import { createClientRequestId } from "@/lib/client-request-id"
 import { recommendedJavaMajor } from "@/lib/java-version"
@@ -108,21 +104,26 @@ export function DashboardPage() {
           : servers?.length ? <div className={grid}>{servers.map((server) => <ServerCard key={server.id} server={server} />)}</div>
             : <EmptyState icon={<CubeIcon />} title="No servers yet" description="Create a Vanilla, Paper, Fabric, Forge, or NeoForge server, or a Gate proxy, without leaving the panel." action={<LinkButton href="/create" variant="primary" icon={PlusIcon}>Create your first server</LinkButton>} />}
     </section>
-    <section aria-label="Host metrics" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      {hostQuery.isError && !host ? <div className="col-span-full"><QueryFeedback query={hostQuery} /></div> : hostLoading ? Array.from({ length: 4 }, (_, index) => <Skeleton key={index} className="h-[7.5rem]" />) : <>
-        <StatTile label="Host CPU" value={`${host?.cpuPercent.toFixed(0) ?? 0}%`} icon={CpuIcon} progress={host?.cpuPercent ?? 0} />
-        <StatTile label="Host memory" value={usage(host?.memoryUsedBytes ?? 0, host?.memoryTotalBytes ?? 0)} icon={MemoryIcon} progress={(host?.memoryUsedBytes ?? 0) / Math.max(host?.memoryTotalBytes ?? 1, 1) * 100} />
-        <StatTile label="Panel disk" value={usage(host?.diskUsedBytes ?? 0, host?.diskTotalBytes ?? 0)} icon={HardDriveIcon} progress={(host?.diskUsedBytes ?? 0) / Math.max(host?.diskTotalBytes ?? 1, 1) * 100} />
-        <StatTile label="Running servers" value={`${running} / ${servers?.length ?? 0}`} icon={CubeIcon} />
-      </>}
+    <section aria-labelledby="host-heading" className="flex flex-col gap-3">
+      <h2 id="host-heading" className="text-lg font-semibold text-kumo-strong">Host</h2>
+      <div className="flex flex-col gap-4">
+        <div aria-label="Host metrics" role="group" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {hostQuery.isError && !host ? <div className="col-span-full"><QueryFeedback query={hostQuery} /></div> : hostLoading ? Array.from({ length: 4 }, (_, index) => <Skeleton key={index} className="h-[7.5rem]" />) : <>
+            <StatTile label="Host CPU" value={`${host?.cpuPercent.toFixed(0) ?? 0}%`} icon={CpuIcon} progress={host?.cpuPercent ?? 0} />
+            <StatTile label="Host memory" value={usage(host?.memoryUsedBytes ?? 0, host?.memoryTotalBytes ?? 0)} icon={MemoryIcon} progress={(host?.memoryUsedBytes ?? 0) / Math.max(host?.memoryTotalBytes ?? 1, 1) * 100} />
+            <StatTile label="Panel disk" value={usage(host?.diskUsedBytes ?? 0, host?.diskTotalBytes ?? 0)} icon={DatabaseIcon} progress={(host?.diskUsedBytes ?? 0) / Math.max(host?.diskTotalBytes ?? 1, 1) * 100} />
+            <StatTile label="Running servers" value={`${running} / ${servers?.length ?? 0}`} icon={CubeIcon} />
+          </>}
+        </div>
+        {host && <QueryFeedback query={hostQuery} />}
+        <Section title="Host activity" description="CPU and memory over the last 15 minutes. History is kept in memory and resets when the panel restarts.">
+          <Suspense fallback={<Skeleton className="h-[260px]" />}>
+            {hostLoading ? <Skeleton className="h-[260px]" /> : <HostActivityChart samples={host?.samples ?? []} />}
+          </Suspense>
+        </Section>
+      </div>
     </section>
-    {host && <QueryFeedback query={hostQuery} />}
-    <Section title="Host activity" description="CPU and memory over the last 15 minutes. History is kept in memory and resets when the panel restarts.">
-      <Suspense fallback={<Skeleton className="h-[260px]" />}>
-        {hostLoading ? <Skeleton className="h-[260px]" /> : <HostActivityChart samples={host?.samples ?? []} />}
-      </Suspense>
-    </Section>
-    <Banner role="note" variant="secondary" icon={<WarningIcon weight="fill" />} title="Trusted networks only" description="Keep this panel on a private network and use the documented private HTTPS setup for encrypted administration. Never expose the panel port to the Internet." />
+    <Banner role="note" variant="secondary" icon={<AlertTriangleFilledIcon />} title="Trusted networks only" description="Keep this panel on a private network and use the documented private HTTPS setup for encrypted administration. Never expose the panel port to the Internet." />
   </Page>
 }
 
@@ -137,7 +138,7 @@ type InstallSource = "Official" | "CustomJar" | "Modpack"
 
 const categoryOptions = [
   { value: "Regular", title: "Regular server", description: "Runs a Minecraft world players join directly.", icon: <CubeIcon size={16} /> },
-  { value: "Proxy", title: "Proxy", description: "Minekube Gate routes players to one or more servers.", icon: <ShareNetworkIcon size={16} /> },
+  { value: "Proxy", title: "Proxy", description: "Minekube Gate routes players to one or more servers.", icon: <ShareIcon size={16} /> },
 ] as const
 const sourceOptions = [
   { value: "Official", title: "Official server core", description: "Verified Vanilla, Paper, Fabric, Forge, or NeoForge downloads." },
@@ -154,7 +155,7 @@ const coreOptions = [
 
 function Stepper({ steps, current }: { steps: string[]; current: number }) {
   return (
-    <ol className="flex items-center gap-2 overflow-x-auto pb-1" aria-label="Setup progress">
+    <ol className="flex items-center gap-2 overflow-x-auto p-0.5 pb-1" aria-label="Setup progress">
       {steps.map((label, index) => {
         const number = index + 1
         const done = number < current
@@ -166,7 +167,7 @@ function Stepper({ steps, current }: { steps: string[]; current: number }) {
               done && "bg-kumo-brand text-white ring-kumo-brand",
               active && "bg-kumo-base text-kumo-default ring-2 ring-kumo-brand",
               !done && !active && "bg-kumo-base text-kumo-subtle ring-kumo-line",
-            )}>{done ? <CheckIcon size={12} weight="bold" /> : number}</span>
+            )}>{done ? <CheckIcon size={12} stroke={2} /> : number}</span>
             <span className={cn("text-sm whitespace-nowrap", active ? "font-medium text-kumo-default" : "text-kumo-subtle")}>{label}</span>
             {number < steps.length && <span aria-hidden="true" className={cn("mx-1 h-px w-6 sm:w-10", done ? "bg-kumo-brand" : "bg-kumo-line")} />}
           </li>
@@ -351,7 +352,7 @@ export function CreateServerPage() {
     title={isGate && step === 2 ? "Create Gate Proxy" : "Create server"}
     description={isGate ? "Install a verified Minekube Gate proxy as a managed server." : "Install a verified server core, a custom JAR, or a Modrinth modpack."}
   >
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
+    <div className="flex w-full max-w-3xl flex-col gap-5">
       <Stepper steps={steps} current={step} />
       <Section title={steps[step - 1]} description={stepDescriptions[step - 1]} footer={<div className="flex w-full items-center justify-between gap-3">{footer}</div>}>
         <div>
@@ -360,7 +361,7 @@ export function CreateServerPage() {
             {category === "Regular" ? <>
               <ChoiceField label="Installation source">{(labelId) => <ChoiceCards aria-labelledby={labelId} className="sm:grid-cols-3" value={source} options={sourceOptions} onValueChange={setSource} />}</ChoiceField>
               {source === "Official" && <ChoiceField label="Server core">{(labelId) => <ChoiceCards aria-labelledby={labelId} className="sm:grid-cols-3" value={kind as (typeof coreOptions)[number]["value"]} options={coreOptions} onValueChange={setKind} />}</ChoiceField>}
-            </> : <Banner icon={<InfoIcon weight="fill" />} title="Minekube Gate" description="Gate uses a separate two-step setup and keeps its files and forwarding secrets private." />}
+            </> : <Banner icon={<InfoCircleFilledIcon />} title="Minekube Gate" description="Gate uses a separate two-step setup and keeps its files and forwarding secrets private." />}
           </FormStack>}
 
           {step === 2 && isGate && <FormStack>
@@ -385,12 +386,12 @@ export function CreateServerPage() {
           {step === 2 && !isGate && source === "CustomJar" && <FormStack>
             <Input label="Minecraft version" placeholder="For example, 1.21.8" value={selectedVersion} onChange={(event) => setSelectedVersion(event.target.value)} description="Required for Java compatibility and server metadata." />
             <FileInput label="Executable server JAR" accept=".jar,application/java-archive" pending={customJarUploading} fileName={customJar?.fileName} onFile={(file) => void uploadCustomJar(file)} description="A readable ZIP-format JAR with a Main-Class manifest. Uploads expire after one hour and can only be used once." />
-            {customJar && <Banner icon={<CheckCircleIcon weight="fill" />} title={customJar.fileName} description="Ready to install as Custom JAR." />}
+            {customJar && <Banner icon={<CircleCheckFilledIcon />} title={customJar.fileName} description="Ready to install as Custom JAR." />}
           </FormStack>}
 
           {step === 2 && !isGate && source === "Official" && <FormStack>
             <SwitchField id="experimental" label="Show experimental versions" description="Includes snapshots, unstable loader tools, and non-recommended builds." checked={showExperimental} onCheckedChange={setShowExperimental} />
-            {showExperimental && <Banner variant="alert" icon={<WarningIcon weight="fill" />} title="Experimental server core" description="Snapshots and unstable builds can corrupt worlds or break plugins. Back up important data before using them." />}
+            {showExperimental && <Banner variant="alert" icon={<AlertTriangleFilledIcon />} title="Experimental server core" description="Snapshots and unstable builds can corrupt worlds or break plugins. Back up important data before using them." />}
             {!catalogLoading && !versions.length
               ? <ErrorBanner title="Catalog unavailable" description="Check the panel’s network connection and retry." />
               : <Select label="Minecraft version" className="w-full" loading={catalogLoading} placeholder="Choose a release" items={versions.map((item) => ({ value: item, label: item }))} value={version} onValueChange={(value) => value && setSelectedVersion(value as string)} />}
@@ -406,7 +407,7 @@ export function CreateServerPage() {
             {compatibleJava.length
               ? <Select label="Java runtime" className="w-full" placeholder="Choose Java" items={compatibleJava.map((item) => ({ value: item.id, label: `Java ${item.major} · ${item.vendor}` }))} value={javaId} onValueChange={(value) => value && setSelectedJavaId(value as string)} />
               : <ErrorBanner title={`Java ${requiredJava}+ is required`} description="Install a compatible Java runtime on the host, then rescan from the Java page." />}
-            {selectedRuntime && <Banner icon={<CheckCircleIcon weight="fill" />} title="Compatible runtime found" description={<span className="font-mono text-sm [overflow-wrap:anywhere]">{selectedRuntime.path} · Java {selectedRuntime.major}</span>} />}
+            {selectedRuntime && <Banner icon={<CircleCheckFilledIcon />} title="Compatible runtime found" description={<span className="font-mono text-sm [overflow-wrap:anywhere]">{selectedRuntime.path} · Java {selectedRuntime.major}</span>} />}
             {memoryCapacityAvailable ? <MemoryField valueMb={effectiveMemoryMb} limitMb={supportedMemoryLimitMb} onChange={(value) => setMemoryMb(clampMemoryMb(value, supportedMemoryLimitMb, MEMORY_MIN_MB))} description={`Sets both Xms and Xmx to this exact value. MC Panel privately reserves JVM overhead. Maximum selectable RAM: ${gib(supportedMemoryLimitMb)}.`} />
               : <ErrorBanner title="Not enough allocatable host RAM" description={`A server needs room for a 0.5 GiB heap plus JVM overhead, but the host allocation ceiling is ${gib(hostTotalMemoryLimitMb)}.`} />}
           </FormStack>}
@@ -476,7 +477,7 @@ export function ServerCreationPage() {
   const serverName = server.data?.name ?? "your server"
 
   return <Page size="narrow" title={`Creating ${serverName}`} description="MC Panel is downloading, verifying, and configuring the server. This page updates automatically.">
-    <div className="mx-auto w-full max-w-3xl">
+    <div className="w-full max-w-3xl">
       <Section
         title={failed ? "Installation stopped" : "Installation in progress"}
         description={server.data ? `${kindDescription(server.data)} · Port ${server.data.port}` : `Installation job ${jobId.slice(0, 8)}`}
@@ -545,11 +546,11 @@ export function ServerOverviewPage() {
         : server.kind === "CustomJar"
           ? <LinkButton href={`/servers/${server.id}/runtime`} variant="ghost">Change server core</LinkButton>
           : <HintButton disabled={lifecycle.busy || !stopped} hint={stopped ? undefined : "Updates require a stopped server."} onClick={() => lifecycle.run("update")}>Update</HintButton>}
-      <HintButton icon={ArrowClockwiseIcon} disabled={lifecycle.busy || !running} hint={running ? undefined : "Restart is available while the server is running."} onClick={() => lifecycle.run("restart")}>Restart</HintButton>
+      <HintButton icon={RefreshIcon} disabled={lifecycle.busy || !running} hint={running ? undefined : "Restart is available while the server is running."} onClick={() => lifecycle.run("restart")}>Restart</HintButton>
       <HintButton
         aria-label={primaryLabel}
         variant={running && !pending ? "secondary" : "primary"}
-        icon={pending || transitional ? undefined : running ? StopIcon : canStart ? PlayIcon : undefined}
+        icon={pending || transitional ? undefined : running ? PlayerStopIcon : canStart ? PlayerPlayIcon : undefined}
         loading={Boolean(pending) || transitional}
         disabled={lifecycle.busy || !lifecycleAction}
         hint={lifecycleAction || pending ? undefined : `No lifecycle action is available while the server is ${server.state.toLowerCase()}.`}
@@ -560,14 +561,14 @@ export function ServerOverviewPage() {
       <ImmediateStopButton server={server} />
     </>}
   >
-    {server.restartRequired && <Banner variant="alert" icon={<WarningIcon weight="fill" />} title="Restart required" description="Saved settings take effect after the next graceful restart." />}
+    {server.restartRequired && <Banner variant="alert" icon={<AlertTriangleFilledIcon />} title="Restart required" description="Saved settings take effect after the next graceful restart." />}
     <section aria-label="Server metrics" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <StatTile label="State" value={server.state === "BackingUp" ? "Backing up" : server.state} icon={GaugeIcon} detail={server.state === "Running" ? `Up ${duration(server.uptimeSeconds)}` : undefined} />
       <StatTile label={server.kind === "Gate" ? "Connections" : "Players"} value={server.kind === "Gate" ? String(server.playerCount) : `${server.playerCount} / ${server.maxPlayers}`} icon={UsersIcon} />
       <StatTile label="CPU" value={`${server.cpuPercent.toFixed(0)}%`} icon={CpuIcon} progress={server.cpuPercent} />
       <StatTile label="Memory" value={`${server.memoryUsedMb.toFixed(0)} / ${server.memoryMb} MiB`} icon={MemoryIcon} progress={server.memoryUsedMb / Math.max(server.memoryMb, 1) * 100} />
     </section>
-    <div className="grid items-start gap-6 lg:grid-cols-2">
+    <div className="grid gap-x-4 gap-y-6 lg:grid-cols-2">
       <Section
         title="Connection"
         description="The address players use to join. Leave the override empty to inherit the global server address."
@@ -603,7 +604,7 @@ export function ServerOverviewPage() {
           closeOnConfirm={false}
           onConfirm={() => remove.mutate()}
         >
-          {deleteError && <Banner variant="error" size="sm" icon={<WarningCircleIcon weight="fill" />} title="Deletion was blocked" description={deleteError} />}
+          {deleteError && <Banner variant="error" size="sm" icon={<AlertCircleFilledIcon />} title="Deletion was blocked" description={deleteError} />}
         </ConfirmDialog>
       </div>
     </Section>}
@@ -617,7 +618,7 @@ export function ServerIconPage() {
   const editable = (["Running", "Stopped", "Crashed"] as ServerState[]).includes(server.state)
   return <Page title="Server icon" description="Choose the icon shown throughout the panel and advertised to Minecraft clients.">
     <Section title={server.name} description="Uploaded icons are saved to the panel library, so any server can reuse them.">
-      {!editable && <Banner variant="secondary" icon={<InfoIcon weight="fill" />} title="Icon changes are paused" description={`The icon cannot be changed while the server is ${server.state.toLowerCase()}.`} />}
+      {!editable && <Banner variant="secondary" icon={<InfoCircleFilledIcon />} title="Icon changes are paused" description={`The icon cannot be changed while the server is ${server.state.toLowerCase()}.`} />}
       <ServerIconEditor server={server} disabled={!editable} />
     </Section>
   </Page>
@@ -756,7 +757,7 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
       {entry.sensitive
         ? <InputGroup>
           <InputGroup.Input id={id} aria-label={label} type={isRevealed ? "text" : "password"} value={values[entry.key] ?? ""} onChange={(event) => update(entry.key, event.target.value)} />
-          <InputGroup.Addon align="end"><InputGroup.Button shape="square" className="text-kumo-subtle" icon={isRevealed ? EyeSlashIcon : EyeIcon} aria-label={`${isRevealed ? "Hide" : "Reveal"} ${label}`} onClick={() => toggleReveal(entry.key)} /></InputGroup.Addon>
+          <InputGroup.Addon align="end"><InputGroup.Button shape="square" className="text-kumo-subtle" icon={isRevealed ? EyeOffIcon : EyeIcon} aria-label={`${isRevealed ? "Hide" : "Reveal"} ${label}`} onClick={() => toggleReveal(entry.key)} /></InputGroup.Addon>
         </InputGroup>
         : <Input id={id} aria-label={label} inputMode={entry.type === "integer" ? "numeric" : undefined} value={values[entry.key] ?? ""} onChange={(event) => update(entry.key, event.target.value)} />}
     </div>
@@ -770,7 +771,7 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
     {draft.dialog}
     {conflict && <Banner
       variant="error"
-      icon={<WarningCircleIcon weight="fill" />}
+      icon={<AlertCircleFilledIcon />}
       title="Properties changed on the server"
       description="Your draft is kept. Reapply only your edited keys to the latest revision, then review and save."
       action={<Banner.Action variant="secondary" onClick={() => {
@@ -787,7 +788,7 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
         tabs={tabGroups.map((tab) => ({ value: tab.value, label: <span className="flex items-center gap-1.5">{tab.label}{normalizedSearch && <span className="text-xs text-kumo-subtle tabular-nums">{tab.entries.length}</span>}</span> }))}
       />
       <InputGroup className="md:max-w-xs">
-        <InputGroup.Addon><MagnifyingGlassIcon className="text-kumo-subtle" /></InputGroup.Addon>
+        <InputGroup.Addon><SearchIcon className="text-kumo-subtle" /></InputGroup.Addon>
         <InputGroup.Input aria-label="Search server properties" placeholder="Search properties" value={search} onChange={(event) => changeSearch(event.target.value)} />
       </InputGroup>
     </div>

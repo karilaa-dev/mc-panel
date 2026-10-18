@@ -1,13 +1,8 @@
 import { Suspense, useCallback, useEffect, useRef, useState, type ComponentType } from "react"
 import { Link, Outlet, useLocation } from "react-router-dom"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { Breadcrumbs, Button, DropdownMenu, LinkProvider, Sidebar, useSidebar } from "@cloudflare/kumo"
-import {
-  ArchiveIcon, CalendarCheckIcon, CaretUpDownIcon, CoffeeIcon, CpuIcon, DesktopIcon, FolderSimpleIcon, GaugeIcon,
-  GearSixIcon, HardDrivesIcon, ImageIcon, ListIcon, MoonIcon, PackageIcon, PlayIcon, PlugIcon, PlusIcon, PulseIcon,
-  ArrowClockwiseIcon, ShareNetworkIcon, SignOutIcon, SignpostIcon, SlidersHorizontalIcon, SquaresFourIcon, SunIcon,
-  TerminalWindowIcon, UserCircleIcon, UsersIcon,
-} from "@phosphor-icons/react"
+import { Breadcrumbs, Button, DropdownMenu, LinkProvider, Sidebar, cn, useSidebar } from "@cloudflare/kumo"
+import { ActivityIcon, AdjustmentsHorizontalIcon, ArchiveIcon, CalendarCheckIcon, CoffeeIcon, CpuIcon, DeviceDesktopIcon, FolderIcon, GaugeIcon, LayoutDashboardIcon, LogoutIcon, MenuIcon, MoonIcon, PackageIcon, PhotoIcon, PlayerPlayIcon, PlugIcon, PlusIcon, RefreshIcon, SelectorIcon, ServersIcon, SettingsIcon, ShareIcon, SignRightIcon, SunIcon, Terminal2Icon, UserCircleIcon, UsersIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import type { ServerSummaryDto } from "@/lib/contracts"
 import { toast } from "@/lib/toast"
@@ -18,6 +13,7 @@ import { ImmediateStopButton } from "@/components/immediate-stop-button"
 import { RouterLink } from "@/components/router-link"
 import { pendingLifecycleLabels, useServerLifecycle } from "@/hooks/use-server-lifecycle"
 import { PageFallback } from "@/components/page-fallback"
+import { contentFrame } from "@/components/page"
 
 type IconComponent = ComponentType<{ className?: string }>
 type NavigationItem = {
@@ -30,26 +26,26 @@ type NavigationItem = {
   paperOnly?: boolean
 }
 
-const dashboardItem: NavigationItem = { label: "Dashboard", path: "/", icon: SquaresFourIcon }
+const dashboardItem: NavigationItem = { label: "Dashboard", path: "/", icon: LayoutDashboardIcon }
 const serverItems: NavigationItem[] = [
   { label: "Overview", path: "", icon: GaugeIcon },
-  { label: "Console", path: "/console", icon: TerminalWindowIcon },
-  { label: "Backends", path: "/backends", icon: SignpostIcon, gateOnly: true },
-  { label: "Gate settings", path: "/gate", icon: ShareNetworkIcon, gateOnly: true },
-  { label: "Server properties", path: "/properties", icon: SlidersHorizontalIcon, minecraftOnly: true },
-  { label: "Server icon", path: "/icon", icon: ImageIcon, minecraftOnly: true },
+  { label: "Console", path: "/console", icon: Terminal2Icon },
+  { label: "Backends", path: "/backends", icon: SignRightIcon, gateOnly: true },
+  { label: "Gate settings", path: "/gate", icon: ShareIcon, gateOnly: true },
+  { label: "Server properties", path: "/properties", icon: AdjustmentsHorizontalIcon, minecraftOnly: true },
+  { label: "Server icon", path: "/icon", icon: PhotoIcon, minecraftOnly: true },
   { label: "Runtime", path: "/runtime", icon: CpuIcon, minecraftOnly: true },
   { label: "Mods", path: "/mods", icon: PackageIcon, moddedOnly: true, minecraftOnly: true },
   { label: "Plugins", path: "/plugins", icon: PlugIcon, paperOnly: true, minecraftOnly: true },
-  { label: "Files", path: "/files", icon: FolderSimpleIcon },
+  { label: "Files", path: "/files", icon: FolderIcon },
   { label: "Players", path: "/players", icon: UsersIcon, minecraftOnly: true },
   { label: "Backups", path: "/backups", icon: ArchiveIcon, minecraftOnly: true },
   { label: "Schedules", path: "/schedules", icon: CalendarCheckIcon, minecraftOnly: true },
 ]
 const systemItems: NavigationItem[] = [
-  { label: "Activity", path: "/activity", icon: PulseIcon },
+  { label: "Activity", path: "/activity", icon: ActivityIcon },
   { label: "Java", path: "/java", icon: CoffeeIcon },
-  { label: "Panel settings", path: "/panel-settings", icon: GearSixIcon },
+  { label: "Panel settings", path: "/panel-settings", icon: SettingsIcon },
 ]
 const sidebarStorageKey = "sidebar-collapsed"
 
@@ -88,7 +84,7 @@ function AccountMenu() {
     }
   }
   const themes = [
-    { value: "system", label: "System", icon: DesktopIcon },
+    { value: "system", label: "System", icon: DeviceDesktopIcon },
     { value: "light", label: "Light", icon: SunIcon },
     { value: "dark", label: "Dark", icon: MoonIcon },
   ] as const
@@ -99,7 +95,7 @@ function AccountMenu() {
       }>
         <UserCircleIcon size={18} className="shrink-0 text-kumo-subtle" />
         <span className="truncate">Administrator</span>
-        <CaretUpDownIcon size={14} className="ml-auto shrink-0 text-kumo-subtle" />
+        <SelectorIcon size={14} className="ml-auto shrink-0 text-kumo-subtle" />
       </DropdownMenu.Trigger>
       <DropdownMenu.Content side="top" align="end" className="min-w-52">
         <DropdownMenu.Group>
@@ -107,7 +103,7 @@ function AccountMenu() {
           {themes.map((option) => <DropdownMenu.Item key={option.value} icon={option.icon} selected={theme === option.value} onClick={() => setTheme(option.value)}>{option.label}</DropdownMenu.Item>)}
         </DropdownMenu.Group>
         <DropdownMenu.Separator />
-        <DropdownMenu.Item icon={SignOutIcon} variant="danger" onClick={() => void logout()}>Log out</DropdownMenu.Item>
+        <DropdownMenu.Item icon={LogoutIcon} variant="danger" onClick={() => void logout()}>Log out</DropdownMenu.Item>
       </DropdownMenu.Content>
     </DropdownMenu>
   )
@@ -160,7 +156,7 @@ function AppSidebar({ servers, currentServer, serverId }: { servers: ServerSumma
                 if (state === "collapsed") { setOpen(true); setServersOpen(true) }
                 else setServersOpen(next)
               }}>
-                <Sidebar.CollapsibleTrigger render={<Sidebar.MenuButton icon={HardDrivesIcon} tooltip="Servers">Servers<Sidebar.MenuChevron /></Sidebar.MenuButton>} />
+                <Sidebar.CollapsibleTrigger render={<Sidebar.MenuButton icon={ServersIcon} tooltip="Servers">Servers<Sidebar.MenuChevron /></Sidebar.MenuButton>} />
                 <Sidebar.CollapsibleContent>
                   <Sidebar.MenuSub>
                     {servers.map((server) => {
@@ -196,16 +192,25 @@ function AppSidebar({ servers, currentServer, serverId }: { servers: ServerSumma
   )
 }
 
-function ServerHeaderActions({ server, onOverview }: { server: ServerSummaryDto; onOverview: boolean }) {
+/** Lifecycle shortcuts for server sub-pages. On phones they collapse to icon buttons so the breadcrumb keeps its room. */
+function ServerHeaderActions({ server, onOverview, compact }: { server: ServerSummaryDto; onOverview: boolean; compact: boolean }) {
   const lifecycle = useServerLifecycle(server)
   const pending = lifecycle.pendingAction
+  const restart = () => lifecycle.run("restart")
+  const start = () => lifecycle.run("start")
   return (
     <div className="flex shrink-0 items-center gap-2">
       <span className="hidden sm:inline-flex"><StatusBadge state={server.state} /></span>
-      {!onOverview && pending && <Button size="sm" loading>{pendingLifecycleLabels[pending]}</Button>}
-      {!onOverview && !pending && server.state === "Running" && <Button size="sm" icon={ArrowClockwiseIcon} disabled={lifecycle.busy} onClick={() => lifecycle.run("restart")}>Restart</Button>}
-      {!onOverview && !pending && (server.state === "Stopped" || server.state === "Crashed") && <Button size="sm" variant="primary" icon={PlayIcon} disabled={lifecycle.busy} onClick={() => lifecycle.run("start")}>Start</Button>}
-      {!onOverview && <ImmediateStopButton server={server} size="sm" />}
+      {!onOverview && pending && (compact
+        ? <Button size="sm" shape="square" loading aria-label={pendingLifecycleLabels[pending]} />
+        : <Button size="sm" loading>{pendingLifecycleLabels[pending]}</Button>)}
+      {!onOverview && !pending && server.state === "Running" && (compact
+        ? <Button size="sm" shape="square" icon={RefreshIcon} aria-label="Restart" disabled={lifecycle.busy} onClick={restart} />
+        : <Button size="sm" icon={RefreshIcon} disabled={lifecycle.busy} onClick={restart}>Restart</Button>)}
+      {!onOverview && !pending && (server.state === "Stopped" || server.state === "Crashed") && (compact
+        ? <Button size="sm" shape="square" variant="primary" icon={PlayerPlayIcon} aria-label="Start" disabled={lifecycle.busy} onClick={start} />
+        : <Button size="sm" variant="primary" icon={PlayerPlayIcon} disabled={lifecycle.busy} onClick={start}>Start</Button>)}
+      {!onOverview && <ImmediateStopButton server={server} size="sm" compact={compact} />}
     </div>
   )
 }
@@ -221,23 +226,25 @@ function AppHeader({ currentServer, serverId }: { currentServer?: ServerSummaryD
   const onOverview = Boolean(serverId && pathname === `/servers/${serverId}`)
 
   return (
-    <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-3 border-b border-kumo-line bg-kumo-canvas/85 px-4 backdrop-blur-md sm:px-6 lg:px-10">
-      {isMobile && <Button variant="ghost" shape="square" size="sm" icon={<ListIcon size={18} />} aria-label="Open navigation" onClick={() => setOpenMobile(true)} />}
-      <Breadcrumbs className="min-w-0 flex-1">
-        {currentServer && pathname !== `/servers/${currentServer.id}` ? <>
-          <Breadcrumbs.Link href={`/servers/${currentServer.id}`} icon={<ServerAvatar server={currentServer} className="size-4 rounded-[4px] ring-0" />}>
-            <span className="max-w-48 truncate">{currentServer.name}</span>
-          </Breadcrumbs.Link>
-          <Breadcrumbs.Separator />
-        </> : currentServer ? <>
-          <Breadcrumbs.Link href="/">Dashboard</Breadcrumbs.Link>
-          <Breadcrumbs.Separator />
-        </> : null}
-        <Breadcrumbs.Current icon={currentServer && onOverview ? <ServerAvatar server={currentServer} className="size-4 rounded-[4px] ring-0" /> : undefined}>
-          {onOverview && currentServer ? currentServer.name : pageName}
-        </Breadcrumbs.Current>
-      </Breadcrumbs>
-      {currentServer && <ServerHeaderActions server={currentServer} onOverview={onOverview} />}
+    <header className="sticky top-0 z-10 shrink-0 border-b border-kumo-line bg-kumo-canvas/85 backdrop-blur-md">
+      <div className={cn(contentFrame, "flex h-14 items-center gap-3")}>
+        {isMobile && <Button variant="ghost" shape="square" size="sm" className="-ml-1" icon={<MenuIcon size={18} />} aria-label="Open navigation" onClick={() => setOpenMobile(true)} />}
+        <Breadcrumbs className="min-w-0 flex-1">
+          {currentServer && pathname !== `/servers/${currentServer.id}` ? <>
+            <Breadcrumbs.Link href={`/servers/${currentServer.id}`} icon={<ServerAvatar server={currentServer} className="size-4 rounded-[4px] ring-0" />}>
+              <span className="max-w-48 truncate">{currentServer.name}</span>
+            </Breadcrumbs.Link>
+            <Breadcrumbs.Separator />
+          </> : currentServer ? <>
+            <Breadcrumbs.Link href="/">Dashboard</Breadcrumbs.Link>
+            <Breadcrumbs.Separator />
+          </> : null}
+          <Breadcrumbs.Current icon={currentServer && onOverview ? <ServerAvatar server={currentServer} className="size-4 rounded-[4px] ring-0" /> : undefined}>
+            {onOverview && currentServer ? currentServer.name : pageName}
+          </Breadcrumbs.Current>
+        </Breadcrumbs>
+        {currentServer && <ServerHeaderActions server={currentServer} onOverview={onOverview} compact={isMobile} />}
+      </div>
     </header>
   )
 }

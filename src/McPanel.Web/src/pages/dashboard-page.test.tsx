@@ -22,7 +22,7 @@ describe("DashboardPage", () => {
 
     const servers = await screen.findByRole("heading", { name: "Servers" })
     const notice = screen.getByRole("note")
-    const metrics = screen.getByRole("region", { name: "Host metrics" })
+    const metrics = screen.getByRole("group", { name: "Host metrics" })
     const activity = screen.getByText("Host activity")
     expect(servers.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(notice).toHaveTextContent("Trusted networks only")

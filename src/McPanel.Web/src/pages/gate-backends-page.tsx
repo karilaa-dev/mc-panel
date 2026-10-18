@@ -4,7 +4,7 @@ import { useParams } from "react-router-dom"
 import { Badge, Banner, Button, Input, LayerCard, Select, Table, Tabs, cn } from "@cloudflare/kumo"
 import { Radio } from "@cloudflare/kumo/primitives/radio"
 import { RadioGroup } from "@cloudflare/kumo/primitives/radio-group"
-import { CaretDownIcon, InfoIcon, PlusIcon, SignpostIcon, TrashIcon, XIcon } from "@phosphor-icons/react"
+import { ChevronDownIcon, InfoCircleFilledIcon, PlusIcon, SignRightIcon, TrashIcon, XIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import { createClientRequestId } from "@/lib/client-request-id"
 import { serverKindLabel } from "@/lib/server-kind"
@@ -21,7 +21,7 @@ export function GateBackendsPage() {
   const servers = useQuery({ queryKey: ["servers"], queryFn: api.servers })
   if (gate.isLoading || servers.isLoading) return <Page title="Backends" size="narrow"><SectionSkeleton rows={4} /><SectionSkeleton rows={2} /></Page>
   if (servers.isError) return <Page title="Backends" size="narrow"><ErrorBanner title="Servers unavailable" description={servers.error.message} onRetry={() => void servers.refetch()} /></Page>
-  if (!gate.data) return <Page title="Backends" size="narrow"><EmptyState icon={<SignpostIcon />} title="Gate is unavailable" description="This Gate server could not be loaded." /></Page>
+  if (!gate.data) return <Page title="Backends" size="narrow"><EmptyState icon={<SignRightIcon />} title="Gate is unavailable" description="This Gate server could not be loaded." /></Page>
   return <GateBackendsEditor key={gate.data.configuration.revision} gate={gate.data} servers={(servers.data ?? []).filter((server) => server.kind !== "Gate")} />
 }
 
@@ -190,7 +190,7 @@ function GateBackendsEditor({ gate, servers }: { gate: GateStatusDto; servers: S
               <p className="text-sm text-kumo-subtle">Point optional hostnames at Gate and connect using its public port.</p>
             </div>
           </fieldset>
-        ) : <EmptyState inset icon={<SignpostIcon />} title="No backends yet" description="Add a panel server or an external address. Your first backend becomes the default." />}
+        ) : <EmptyState inset icon={<SignRightIcon />} title="No backends yet" description="Add a panel server or an external address. Your first backend becomes the default." />}
         {adding && <div className="border-t border-kumo-hairline p-4">
           <LayerCard className="flex flex-col gap-4 bg-kumo-elevated p-4">
             <Tabs variant="segmented" value={backendSource} onValueChange={setBackendSource} tabs={[{ value: "managed", label: "Panel server" }, { value: "external", label: "External address" }]} />
@@ -223,7 +223,7 @@ function GateBackendsEditor({ gate, servers }: { gate: GateStatusDto; servers: S
         title="Saved routes"
         description="Routing from the last saved configuration. Save backend changes to update these routes."
         actions={<Button size="sm" variant="ghost" aria-expanded={routesOpen} onClick={() => setRoutesOpen(!routesOpen)}>
-          <CaretDownIcon size={14} className={routesOpen ? "rotate-180 transition-transform" : "transition-transform"} />
+          <ChevronDownIcon size={14} className={routesOpen ? "rotate-180 transition-transform" : "transition-transform"} />
           {routesOpen ? "Hide saved routes" : "View saved routes"}
         </Button>}
         flush
@@ -237,14 +237,14 @@ function GateBackendsEditor({ gate, servers }: { gate: GateStatusDto; servers: S
               <Table.Cell className="font-mono text-xs">{route.backendAddress}</Table.Cell>
               <Table.Cell className="font-mono text-xs">{route.publicHost ?? <span className="text-kumo-subtle">None</span>}</Table.Cell>
               <Table.Cell className="min-w-48 whitespace-normal">
-                <Badge variant="outline" icon={<SignpostIcon size={12} />}>{route.routeKind}</Badge>
+                <Badge variant="outline" icon={<SignRightIcon size={12} />}>{route.routeKind}</Badge>
                 {route.note && <p className="mt-1 text-xs text-kumo-subtle">{route.note}</p>}
               </Table.Cell>
             </Table.Row>)}</Table.Body>
           </Table>
-          : <EmptyState inset size="sm" icon={<SignpostIcon />} title="No saved routes" description="Save at least one backend to create a route." />)}
+          : <EmptyState inset size="sm" icon={<SignRightIcon />} title="No saved routes" description="Save at least one backend to create a route." />)}
       </Section>
-      {gate.warnings.length > 0 && <Banner variant="secondary" icon={<InfoIcon weight="fill" />} title="Routing guidance" description={<span className="flex flex-col gap-1">{gate.warnings.map((warning) => <span key={warning}>{warning}</span>)}</span>} />}
+      {gate.warnings.length > 0 && <Banner variant="secondary" icon={<InfoCircleFilledIcon />} title="Routing guidance" description={<span className="flex flex-col gap-1">{gate.warnings.map((warning) => <span key={warning}>{warning}</span>)}</span>} />}
     </Page>
   )
 }

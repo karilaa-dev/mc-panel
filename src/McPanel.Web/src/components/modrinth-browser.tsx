@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "react"
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Banner, Button, Checkbox, InputGroup, Label, LayerCard, Loader, Select, cn } from "@cloudflare/kumo"
-import { ArrowSquareOutIcon, GridFourIcon, ListIcon, MagnifyingGlassIcon, PackageIcon, WarningIcon } from "@phosphor-icons/react"
+import { AlertTriangleFilledIcon, ExternalLinkIcon, LayoutGridIcon, MenuIcon, PackageIcon, SearchIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import type { ModrinthProjectDto, ServerSummaryDto } from "@/lib/contracts"
 import { toast } from "@/lib/toast"
@@ -164,7 +164,7 @@ export function ModrinthBrowser({ serverId, server, kind }: { serverId: string; 
     <LayerCard data-modrinth-toolbar className="mx-auto w-full p-4 lg:w-2/3">
       <form className="flex flex-col gap-3" onSubmit={(event) => { event.preventDefault(); submitSearch() }}>
         <InputGroup aria-label={`Search Modrinth ${kind}s`}>
-          <InputGroup.Addon><MagnifyingGlassIcon className="text-kumo-subtle" /></InputGroup.Addon>
+          <InputGroup.Addon><SearchIcon className="text-kumo-subtle" /></InputGroup.Addon>
           <InputGroup.Input aria-label={`Search Modrinth ${kind}s`} placeholder={`Search Modrinth ${kind}s`} value={searchInput} onChange={(event) => setSearchInput(event.target.value)} />
           <InputGroup.Button type="submit" variant="secondary">Search</InputGroup.Button>
         </InputGroup>
@@ -192,8 +192,8 @@ export function ModrinthBrowser({ serverId, server, kind }: { serverId: string; 
               value={view}
               onValueChange={(values) => values[0] && setView(values[0])}
               options={[
-                { value: "list", label: <><ListIcon size={16} /><span className="sr-only">List view</span></> },
-                { value: "gallery", label: <><GridFourIcon size={16} /><span className="sr-only">Gallery view</span></> },
+                { value: "list", label: <><MenuIcon size={16} /><span className="sr-only">List view</span></> },
+                { value: "gallery", label: <><LayoutGridIcon size={16} /><span className="sr-only">Gallery view</span></> },
               ]}
             />
           </div>
@@ -236,7 +236,7 @@ export function ModrinthBrowser({ serverId, server, kind }: { serverId: string; 
       </>}
     >
       {versions.isSuccess && !versions.data.length
-        ? <Banner variant="error" icon={<WarningIcon weight="fill" />} title="No compatible versions" description="This project has no installable version for the selected filters." />
+        ? <Banner variant="error" icon={<AlertTriangleFilledIcon />} title="No compatible versions" description="This project has no installable version for the selected filters." />
         : versions.isError
           ? <ErrorBanner title="Could not load versions" description={versions.error.message} onRetry={() => void versions.refetch()} />
           : <Select
@@ -267,7 +267,7 @@ export function ModrinthBrowser({ serverId, server, kind }: { serverId: string; 
                 : <span className="mt-0.5 size-4 shrink-0" aria-hidden="true" />}
               <div className="flex min-w-0 flex-col gap-0.5">
                 {dependency.projectUrl
-                  ? <a className="flex w-fit items-center gap-1 font-medium text-kumo-link hover:underline" href={dependency.projectUrl} target="_blank" rel="noreferrer">{name}<ArrowSquareOutIcon size={12} aria-hidden="true" /></a>
+                  ? <a className="flex w-fit items-center gap-1 font-medium text-kumo-link hover:underline" href={dependency.projectUrl} target="_blank" rel="noreferrer">{name}<ExternalLinkIcon size={12} aria-hidden="true" /></a>
                   : <span className="font-medium text-kumo-default">{name}</span>}
                 {installed.length > 0 && <p className="text-sm text-kumo-subtle">{requestedVersionInstalled
                   ? `Already installed: ${installedSummary}.`

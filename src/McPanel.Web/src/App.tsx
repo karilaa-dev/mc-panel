@@ -2,7 +2,7 @@ import { lazy, useEffect } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { createBrowserRouter, RouterProvider, Navigate, Route, Routes } from "react-router-dom"
 import { Button, Loader, Toasty, TooltipProvider } from "@cloudflare/kumo"
-import { WifiSlashIcon } from "@phosphor-icons/react"
+import { WifiOffIcon } from "@/components/icons"
 import { AuthScreen } from "@/components/auth-screen"
 import { AppShell } from "@/components/app-shell"
 import { EmptyState } from "@/components/feedback"
@@ -68,7 +68,7 @@ function UnavailableScreen({ message, onRetry }: { message: string; onRetry: () 
     <main className="flex min-h-svh items-center justify-center p-6">
       <EmptyState
         className="max-w-lg"
-        icon={<WifiSlashIcon />}
+        icon={<WifiOffIcon />}
         title="Panel unavailable"
         description={message}
         action={<Button variant="primary" onClick={onRetry}>Try again</Button>}

@@ -4,7 +4,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
 import { Banner, Button, Input, LayerCard } from "@cloudflare/kumo"
 import { PasswordInput } from "@/components/controls"
-import { WarningCircleIcon } from "@phosphor-icons/react"
+import { AlertCircleFilledIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import type { AuthStatusDto } from "@/lib/contracts"
 
@@ -46,7 +46,7 @@ export function AuthScreen({ status }: { status: AuthStatusDto }) {
         </div>
         <LayerCard className="p-6">
           <form className="flex flex-col gap-5" onSubmit={handleSubmit(submit)} noValidate>
-            {problem && <Banner variant="error" size="sm" icon={<WarningCircleIcon weight="fill" />} title="Could not continue" description={problem} />}
+            {problem && <Banner variant="error" size="sm" icon={<AlertCircleFilledIcon />} title="Could not continue" description={problem} />}
             {setup && <Input
               label="One-time setup token"
               autoComplete="one-time-code"

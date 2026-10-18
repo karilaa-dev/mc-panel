@@ -2,7 +2,7 @@ import { useState, type CSSProperties } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import itemTextureManifest from "minecraft-textures/manifest/26.3.id.json"
 import { Badge, Banner, Button } from "@cloudflare/kumo"
-import { ArchiveIcon, ClockCounterClockwiseIcon, EyeIcon, InfoIcon } from "@phosphor-icons/react"
+import { ArchiveIcon, EyeIcon, HistoryIcon, InfoCircleFilledIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import type { InventoryItemDto, InventorySlotDto, PlayerDto } from "@/lib/contracts"
 import { toast } from "@/lib/toast"
@@ -71,7 +71,7 @@ export function PlayerInventorySheet({ serverId, player, open, onOpenChange }: {
               <span>Saved {formatDate(inventory.data.savedAt)}</span>
               {inventory.data.dataVersion && <span>· DataVersion {inventory.data.dataVersion}</span>}
             </div>
-            {inventory.data.snapshotMayBeStale && <Banner variant="secondary" icon={<InfoIcon weight="fill" />} title="Player is online" description="This is Minecraft’s latest on-disk save and may be stale. Viewing, backup, and preview remain available; restore requires the player to be offline." />}
+            {inventory.data.snapshotMayBeStale && <Banner variant="secondary" icon={<InfoCircleFilledIcon />} title="Player is online" description="This is Minecraft’s latest on-disk save and may be stale. Viewing, backup, and preview remain available; restore requires the player to be offline." />}
             <InventoryLayout items={currentItems} />
             <RecoveryPanel backups={backups.data ?? []} online={inventory.data.online} backupPending={createBackup.isPending} restorePending={restore.isPending} onBackup={() => createBackup.mutate()} onPreview={setPreviewId} onRestore={(backupId) => restore.mutate(backupId)} />
           </>}
@@ -143,7 +143,7 @@ function RecoveryPanel({ backups, online, backupPending, restorePending, onBacku
         <div className="flex gap-1">
           <Button size="sm" variant="ghost" icon={EyeIcon} onClick={() => onPreview(backup.id)}>Preview</Button>
           <ConfirmDialog
-            trigger={<HintButton size="sm" variant="ghost" icon={ClockCounterClockwiseIcon} disabled={online || restorePending} hint={online ? "The player must be offline to restore." : undefined}>Restore</HintButton>}
+            trigger={<HintButton size="sm" variant="ghost" icon={HistoryIcon} disabled={online || restorePending} hint={online ? "The player must be offline to restore." : undefined}>Restore</HintButton>}
             title="Restore this inventory backup?"
             description="The current inventory and Ender Chest are backed up first. The player must still be offline; position, health, and other player data are not changed."
             confirmLabel="Restore backup"

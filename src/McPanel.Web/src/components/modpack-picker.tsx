@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { keepPreviousData, useMutation, useQuery } from "@tanstack/react-query"
 import { Badge, Banner, Button, Checkbox, InputGroup, LayerCard, Select, cn } from "@cloudflare/kumo"
-import { MagnifyingGlassIcon, PackageIcon, WarningIcon } from "@phosphor-icons/react"
+import { AlertTriangleFilledIcon, PackageIcon, SearchIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import type { ModpackInspectionDto, ModrinthProjectDto } from "@/lib/contracts"
 import { toast } from "@/lib/toast"
@@ -112,7 +112,7 @@ export function ModpackPicker({ inspection, selectedOptionalFiles, onChange }: M
     />
     {/* No <form> here: the picker renders inside the create-server form. */}
     <InputGroup label="Browse Modrinth modpacks">
-      <InputGroup.Addon><MagnifyingGlassIcon className="text-kumo-subtle" /></InputGroup.Addon>
+      <InputGroup.Addon><SearchIcon className="text-kumo-subtle" /></InputGroup.Addon>
       <InputGroup.Input
         aria-label="Search Modrinth modpacks"
         placeholder="Search modpacks"
@@ -148,7 +148,7 @@ export function ModpackPicker({ inspection, selectedOptionalFiles, onChange }: M
       </>}
     >
       {versions.isSuccess && !versions.data.length
-        ? <Banner variant="error" icon={<WarningIcon weight="fill" />} title="No supported versions" description="This project has no Fabric, Forge, NeoForge, or Vanilla version." />
+        ? <Banner variant="error" icon={<AlertTriangleFilledIcon />} title="No supported versions" description="This project has no Fabric, Forge, NeoForge, or Vanilla version." />
         : versions.isError
           ? <ErrorBanner title="Could not load versions" description={versions.error.message} onRetry={() => void versions.refetch()} />
           : <Select

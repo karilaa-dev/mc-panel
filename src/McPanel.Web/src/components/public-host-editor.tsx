@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Button, Input, InputGroup } from "@cloudflare/kumo"
-import { CheckIcon } from "@phosphor-icons/react"
+import { CheckIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import { toast } from "@/lib/toast"
 

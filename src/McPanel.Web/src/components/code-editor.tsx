@@ -3,7 +3,7 @@ import CodeMirror from "@uiw/react-codemirror"
 import { json } from "@codemirror/lang-json"
 import { EditorView } from "@codemirror/view"
 import { Button } from "@cloudflare/kumo"
-import { TextAlignLeftIcon } from "@phosphor-icons/react"
+import { AlignLeftIcon } from "@/components/icons"
 import { useTheme } from "@/components/theme-provider"
 import { isLogFile, logExtensions } from "@/lib/log-language"
 
@@ -37,7 +37,7 @@ export function CodeEditor({ value, onChange, fileName }: { value: string; onCha
     <div className="flex h-full min-h-0 min-w-0 flex-col gap-2">
       <div className="flex shrink-0 items-center justify-between gap-3">
         <span className="text-sm text-kumo-subtle">{isLogFile(fileName) ? "Log highlighting" : fileName.toLowerCase().endsWith(".json") ? "JSON" : "Plain text"}</span>
-        <Button variant={wrapLines ? "secondary" : "ghost"} size="sm" icon={TextAlignLeftIcon} aria-pressed={wrapLines} onClick={() => setWrapLines(!wrapLines)}>Wrap lines</Button>
+        <Button variant={wrapLines ? "secondary" : "ghost"} size="sm" icon={AlignLeftIcon} aria-pressed={wrapLines} onClick={() => setWrapLines(!wrapLines)}>Wrap lines</Button>
       </div>
       <CodeMirror className="min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg ring ring-kumo-line focus-within:ring-kumo-focus/50" value={value} onChange={onChange} extensions={extensions} theme={resolvedTheme} height="100%" basicSetup={{ lineNumbers: true, foldGutter: true, highlightActiveLine: true }} aria-label={`Edit ${fileName}`} />
     </div>

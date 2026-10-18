@@ -1,7 +1,7 @@
 import { forwardRef, useId, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from "react"
 import { Button, InputGroup, Label, Switch, Tooltip, cn, type ButtonProps } from "@cloudflare/kumo"
 import { Progress } from "@cloudflare/kumo/primitives/progress"
-import { CheckCircleIcon, EyeIcon, EyeSlashIcon, InfoIcon, UploadSimpleIcon } from "@phosphor-icons/react"
+import { CircleCheckFilledIcon, EyeIcon, EyeOffIcon, InfoCircleIcon, UploadIcon } from "@/components/icons"
 import { Slider as SliderPrimitive } from "@cloudflare/kumo/primitives/slider"
 import { Toggle } from "@cloudflare/kumo/primitives/toggle"
 import { ToggleGroup } from "@cloudflare/kumo/primitives/toggle-group"
@@ -11,7 +11,7 @@ export function HelpTooltip({ label, children }: { label: string; children: Reac
   return <Tooltip
     side="right"
     content={<span className="block max-w-xs text-pretty">{children}</span>}
-    render={<Button type="button" variant="ghost" size="xs" shape="square" icon={<InfoIcon size={14} />} aria-label={`About ${label}`} className="text-kumo-subtle hover:text-kumo-default" />}
+    render={<Button type="button" variant="ghost" size="xs" shape="square" icon={<InfoCircleIcon size={14} />} aria-label={`About ${label}`} className="text-kumo-subtle hover:text-kumo-default" />}
   />
 }
 
@@ -139,7 +139,7 @@ export function ChoiceCards<T extends string>({ value, onValueChange, options, c
           >
             <span className="flex items-center gap-2 pr-6 text-base font-medium text-kumo-default">{option.icon}{option.title}</span>
             {option.description && <span id={descriptionId} className="text-sm text-pretty text-kumo-subtle">{option.description}</span>}
-            <CheckCircleIcon weight="fill" size={18} aria-hidden="true" className="absolute top-3 right-3 text-(--color-kumo-brand) opacity-0 transition-opacity group-data-[pressed]:opacity-100" />
+            <CircleCheckFilledIcon size={18} aria-hidden="true" className="absolute top-3 right-3 text-(--color-kumo-brand) opacity-0 transition-opacity group-data-[pressed]:opacity-100" />
           </Toggle>
         )
       })}
@@ -194,7 +194,7 @@ export const PasswordInput = forwardRef<HTMLInputElement, Omit<ComponentPropsWit
     <InputGroup label={label} description={description} error={error ? { message: error, match: true } : undefined} className={className}>
       <InputGroup.Input ref={ref} type={visible ? "text" : "password"} aria-label={typeof label === "string" ? label : undefined} {...props} />
       <InputGroup.Addon align="end">
-        <InputGroup.Button shape="square" className="text-kumo-subtle" icon={visible ? EyeSlashIcon : EyeIcon} aria-label={visible ? "Hide password" : "Show password"} onClick={() => setVisible(!visible)} />
+        <InputGroup.Button shape="square" className="text-kumo-subtle" icon={visible ? EyeOffIcon : EyeIcon} aria-label={visible ? "Hide password" : "Show password"} onClick={() => setVisible(!visible)} />
       </InputGroup.Addon>
     </InputGroup>
   )
@@ -220,7 +220,7 @@ export function FileInput({ id, label, description, accept, disabled, pending, f
     <div className="flex flex-col gap-2">
       <Label htmlFor={inputId} className="w-fit"><span id={labelId}>{label}</span></Label>
       <div className="flex min-w-0 items-center gap-3">
-        <Button icon={UploadSimpleIcon} loading={pending} disabled={disabled} aria-describedby={labelId} onClick={() => inputRef.current?.click()}>{buttonLabel}</Button>
+        <Button icon={UploadIcon} loading={pending} disabled={disabled} aria-describedby={labelId} onClick={() => inputRef.current?.click()}>{buttonLabel}</Button>
         <span className="min-w-0 truncate text-sm text-kumo-subtle">{fileName ?? "No file selected"}</span>
       </div>
       <input
