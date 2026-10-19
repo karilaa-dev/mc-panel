@@ -179,7 +179,9 @@ function AppSidebar({ servers, serversLoading, currentServer, serverId }: { serv
   const { pathname } = useLocation()
   const { isMobile, setOpenMobile, scrollItemIntoView } = useSidebar()
   // On a short screen the selected server's pages can sit below the fold; bring the current one into view.
-  useEffect(() => { scrollItemIntoView(pathname) }, [pathname, scrollItemIntoView])
+  // Type-specific pages only mount once the server's kind is known, so scroll again when it arrives.
+  const serverKind = currentServer?.kind
+  useEffect(() => { scrollItemIntoView(pathname) }, [pathname, serverKind, scrollItemIntoView])
 
   return (
     <Sidebar

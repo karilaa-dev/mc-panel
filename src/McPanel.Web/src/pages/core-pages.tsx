@@ -767,7 +767,7 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
     const name = <div className="flex min-w-0 flex-col gap-0.5">
       <Label htmlFor={id} className="w-fit">{label}</Label>
       <span id={metaId} className="flex flex-wrap items-center gap-1.5">
-        <code className="text-xs text-kumo-subtle">{entry.key}</code>
+        <code className="text-xs text-kumo-subtle [overflow-wrap:anywhere]">{entry.key}</code>
         {entry.compatibility !== "Supported" && entry.catalogued && <Badge variant={entry.compatibility === "UnknownVersion" ? "outline" : "warning"}>Supported {supportedRange(entry.supportedRanges)}</Badge>}
         {!entry.catalogued && <Badge variant="outline">Uncatalogued</Badge>}
         {values[entry.key] !== baseline[entry.key] && <Badge variant="info">Edited</Badge>}
