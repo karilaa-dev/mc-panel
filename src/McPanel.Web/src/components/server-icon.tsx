@@ -3,7 +3,7 @@ import Cropper, { type Area } from "react-easy-crop"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Button, Label, cn } from "@cloudflare/kumo"
 import { Avatar } from "@cloudflare/kumo/primitives/avatar"
-import { CheckIcon, CubeIcon, ImageIcon, ShareNetworkIcon, TrashIcon, UploadSimpleIcon } from "@phosphor-icons/react"
+import { CheckIcon, CubeIcon, PhotoIcon, ShareIcon, TrashIcon, UploadIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import type { ServerSummaryDto } from "@/lib/contracts"
 import { cropServerIcon, decodedImage } from "@/lib/server-icon-crop"
@@ -15,7 +15,7 @@ import { ConfirmDialog, Modal, ModalClose } from "@/components/modal"
 const acceptedTypes = new Set(["image/png", "image/jpeg", "image/webp"])
 
 export function ServerAvatar({ server, className }: { server: Pick<ServerSummaryDto, "id" | "name" | "iconRevision"> & { kind?: ServerSummaryDto["kind"] }; className?: string }) {
-  const Glyph = server.kind === "Gate" ? ShareNetworkIcon : CubeIcon
+  const Glyph = server.kind === "Gate" ? ShareIcon : CubeIcon
   return (
     <Avatar.Root data-slot="avatar" data-shape="square" className={cn("relative inline-flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-[22%] bg-kumo-recessed text-kumo-subtle ring ring-kumo-hairline select-none", className)}>
       {server.iconRevision && <Avatar.Image src={api.serverIconUrl(server.id, server.iconRevision)} alt={`${server.name} icon`} className="size-full object-cover [image-rendering:pixelated]" />}
@@ -62,7 +62,7 @@ function IconUploadControl({ label, pending, disabled = false, onUpload }: { lab
   }
 
   return <>
-    <Button icon={UploadSimpleIcon} loading={pending} disabled={disabled} onClick={() => inputRef.current?.click()}>{label}</Button>
+    <Button icon={UploadIcon} loading={pending} disabled={disabled} onClick={() => inputRef.current?.click()}>{label}</Button>
     <input ref={inputRef} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Choose panel icon" tabIndex={-1} onChange={(event) => void chooseFile(event.target.files?.[0])} />
     <Modal
       open={open}
@@ -167,11 +167,11 @@ export function ServerIconEditor({ server, disabled = false }: { server: ServerS
               onClick={() => select.mutate(icon.revision)}
             >
               <img className="size-full rounded-[18%] object-cover [image-rendering:pixelated]" src={api.panelIconUrl(icon.revision)} alt="" />
-              {current && <span className="absolute top-1 right-1 flex size-5 items-center justify-center rounded-full bg-kumo-brand text-white"><CheckIcon size={12} weight="bold" /></span>}
+              {current && <span className="absolute top-1 right-1 flex size-5 items-center justify-center rounded-full bg-kumo-brand text-white"><CheckIcon size={14} stroke={2} /></span>}
             </button>
           })}
         </div>
-      ) : <EmptyState size="sm" icon={<ImageIcon />} title="No saved icons yet" description="Upload an image above to add the first reusable panel icon." />}
+      ) : <EmptyState size="sm" icon={<PhotoIcon />} title="No saved icons yet" description="Upload an image above to add the first reusable panel icon." />}
     </div>
   </div>
 }
@@ -200,7 +200,7 @@ export function PanelIconExplorer() {
         {library.data.map((icon, index) => <div key={icon.revision} className="group relative aspect-square overflow-hidden rounded-lg bg-kumo-base p-1.5 ring ring-kumo-line">
           <img className="size-full rounded-[18%] object-cover [image-rendering:pixelated]" src={api.panelIconUrl(icon.revision)} alt={`Panel icon ${index + 1}`} />
           <ConfirmDialog
-            trigger={<Button variant="secondary" size="sm" shape="square" icon={<TrashIcon size={14} />} aria-label={`Delete panel icon ${index + 1}`} disabled={remove.isPending || upload.isPending} className="absolute top-1.5 right-1.5 opacity-100 shadow-sm sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100" />}
+            trigger={<Button variant="secondary" size="sm" shape="square" icon={<TrashIcon size={16} />} aria-label={`Delete panel icon ${index + 1}`} disabled={remove.isPending || upload.isPending} className="absolute top-1.5 right-1.5 opacity-100 shadow-sm sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100" />}
             title="Delete this panel icon?"
             description="It will no longer be available for future selection. Servers already using it keep their applied copy."
             confirmLabel="Delete icon"
@@ -209,6 +209,6 @@ export function PanelIconExplorer() {
           />
         </div>)}
       </div>
-    ) : <EmptyState size="sm" icon={<ImageIcon />} title="No saved icons yet" description="Upload an image to create the first reusable panel icon." />}
+    ) : <EmptyState size="sm" icon={<PhotoIcon />} title="No saved icons yet" description="Upload an image to create the first reusable panel icon." />}
   </div>
 }

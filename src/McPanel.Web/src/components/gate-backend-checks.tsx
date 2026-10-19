@@ -1,7 +1,7 @@
 import { Fragment } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Badge, Button, Table } from "@cloudflare/kumo"
-import { ArrowClockwiseIcon, CheckCircleIcon } from "@phosphor-icons/react"
+import { Badge, Button, Table, cn } from "@cloudflare/kumo"
+import { CircleCheckFilledIcon, RefreshIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import type { GateConfigurationWriteDto } from "@/lib/contracts"
 import { ErrorBanner, InlineLoading } from "@/components/feedback"
@@ -34,7 +34,7 @@ export function GateBackendChecks({ serverId, form }: { serverId: string; form: 
   return <Section
     title={<>Backend compatibility <Badge variant="outline">{mode}</Badge></>}
     description="Edit the listed settings on each backend manually, then restart the affected backends."
-    actions={hasBackends && <Button size="sm" icon={ArrowClockwiseIcon} loading={checks.isFetching} onClick={() => void checks.refetch()}>Check again</Button>}
+    actions={hasBackends && <Button size="sm" icon={RefreshIcon} loading={checks.isFetching} onClick={() => void checks.refetch()}>Check again</Button>}
     flush={visibleChecks.length > 0}
   >
     <div aria-live="polite">
@@ -52,7 +52,7 @@ export function GateBackendChecks({ serverId, form }: { serverId: string; form: 
                   return <Fragment key={`${check.backendKind}-${check.serverId}`}>
                     {check.settings.length ? check.settings.map((setting, index) => <Table.Row key={`${setting.file}-${setting.setting}`}>
                       {index === 0 && backendCell}
-                      <Table.Cell className="max-w-96 min-w-48 align-top whitespace-normal">
+                      <Table.Cell className={cn("max-w-96 min-w-48 align-top whitespace-normal", index > 0 && "pl-3!")}>
                         <code className="text-sm break-words">{setting.setting}</code>
                         <span className="ml-2 text-xs break-words text-kumo-subtle">{setting.file}</span>
                         <p className="mt-0.5 text-sm text-kumo-subtle">{setting.message}</p>
@@ -65,7 +65,7 @@ export function GateBackendChecks({ serverId, form }: { serverId: string; form: 
               </Table>
               {matchingCount > 0 && <p className="border-t border-kumo-hairline px-4 py-3 text-sm text-kumo-subtle">{matchingCount} other {matchingCount === 1 ? "backend has" : "backends have"} no mismatches.</p>}
             </>
-              : <p className="flex items-center gap-2 text-sm text-kumo-default"><CheckCircleIcon size={16} weight="fill" className="text-kumo-success" />No mismatches found in saved backend settings.</p>}
+              : <p className="flex items-center gap-2 text-sm text-kumo-default"><CircleCheckFilledIcon size={18} className="text-kumo-success" />No mismatches found in saved backend settings.</p>}
     </div>
   </Section>
 }

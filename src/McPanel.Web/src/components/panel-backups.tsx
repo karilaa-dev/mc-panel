@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Badge, Banner, Button, LinkButton } from "@cloudflare/kumo"
-import { CloudArrowUpIcon, DownloadSimpleIcon, HardDrivesIcon, PulseIcon } from "@phosphor-icons/react"
+import { ActivityIcon, CloudUploadIcon, DownloadIcon, ServersIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import { toast } from "@/lib/toast"
 import { QueryFeedback, Skeleton } from "@/components/feedback"
@@ -25,8 +25,8 @@ export function PanelBackups() {
     title="Panel backups"
     description="Export panel settings, the administrator account, shared icons, and encryption keys. Instance files and registrations are excluded."
     footer={<div className="flex w-full flex-wrap justify-end gap-2">
-      <LinkButton href="/activity" variant="secondary" icon={PulseIcon}>View activity</LinkButton>
-      <Button variant="primary" icon={HardDrivesIcon} loading={busy} disabled={jobs.isLoading || jobs.isError || recovery.isLoading || recovery.isError} onClick={() => capture.mutate()}>{busy ? "Backup in progress" : "Create panel backup"}</Button>
+      <LinkButton href="/activity" variant="secondary" icon={ActivityIcon}>View activity</LinkButton>
+      <Button variant="primary" icon={ServersIcon} loading={busy} disabled={jobs.isLoading || jobs.isError || recovery.isLoading || recovery.isError} onClick={() => capture.mutate()}>{busy ? "Backup in progress" : "Create panel backup"}</Button>
     </div>}
   >
     <div className="flex flex-col gap-1.5 text-sm text-kumo-subtle">
@@ -37,7 +37,7 @@ export function PanelBackups() {
     <QueryFeedback query={jobs} />
     {recovery.isLoading ? <Skeleton className="h-16" /> : recovery.data && <Banner
       variant={recovery.data.configured ? "default" : "secondary"}
-      icon={<CloudArrowUpIcon weight="fill" />}
+      icon={<CloudUploadIcon />}
       title={recovery.data.configured ? "Automatic remote copies enabled" : "Backups stay on this machine"}
       description={recovery.data.configured
         ? `A panel backup runs every ${recovery.data.intervalMinutes} minutes and is copied to your configured network storage. Export instance files separately.`
@@ -57,7 +57,7 @@ export function PanelBackups() {
               </div>
               {point.error && <p className="text-sm text-kumo-danger [overflow-wrap:anywhere]">Remote copy failed: {point.error}</p>}
             </div>
-            <LinkButton className="self-start sm:self-auto" size="sm" variant="secondary" icon={DownloadSimpleIcon} href={api.recoveryDownloadUrl(point.id)} download>Download</LinkButton>
+            <LinkButton className="self-start sm:self-auto" size="sm" variant="secondary" icon={DownloadIcon} href={api.recoveryDownloadUrl(point.id)} download>Download</LinkButton>
           </li>)}
         </ul>}
     </div>}

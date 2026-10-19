@@ -25,7 +25,13 @@ export function Section({ title, description, actions, footer, children, classNa
           {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
         </LayerCard.Secondary>
       )}
-      <LayerCard.Primary className={cn("min-w-0 gap-4", flush ? "p-0" : "p-4 sm:p-5", contentClassName)}>
+      {/* Body content shares the header's 16px inset. Flush bodies (tables) scroll sideways on narrow screens
+          instead of clipping, and their outer cells are padded to line up with the header text. */}
+      <LayerCard.Primary className={cn(
+        "min-w-0 flex-1 gap-4",
+        flush ? "overflow-x-auto p-0 [&_tr>:first-child]:pl-4 [&_tr>:last-child]:pr-4" : "p-4",
+        contentClassName,
+      )}>
         {children}
       </LayerCard.Primary>
       {footer && <LayerCard.Secondary className="flex-wrap justify-between gap-3 py-4 font-normal">{footer}</LayerCard.Secondary>}
@@ -44,7 +50,7 @@ export function StatTile({ label, value, icon: Icon, progress, detail }: {
     <LayerCard className="flex min-w-0 flex-col gap-3 p-4">
       <div className="flex items-center justify-between gap-3 text-sm text-kumo-subtle">
         <span className="truncate">{label}</span>
-        {Icon && <Icon size={16} className="shrink-0" />}
+        {Icon && <Icon size={18} className="shrink-0" />}
       </div>
       <p className="truncate text-xl leading-tight font-semibold tracking-tight text-kumo-strong tabular-nums">{value}</p>
       {detail && <p className="-mt-2 truncate text-sm text-kumo-subtle">{detail}</p>}

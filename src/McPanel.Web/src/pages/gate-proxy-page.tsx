@@ -2,16 +2,7 @@ import { useState, type ReactNode } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useParams } from "react-router-dom"
 import { Badge, Banner, Button, Checkbox, Input, InputArea, Label, Select, Tabs } from "@cloudflare/kumo"
-import {
-  ArrowClockwiseIcon,
-  CaretDownIcon,
-  CopyIcon,
-  InfoIcon,
-  KeyIcon,
-  SparkleIcon,
-  WarningCircleIcon,
-  WarningIcon,
-} from "@phosphor-icons/react"
+import { AlertCircleFilledIcon, AlertTriangleFilledIcon, ChevronDownIcon, CopyIcon, InfoCircleFilledIcon, KeyIcon, RefreshIcon, SparklesIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import { toast } from "@/lib/toast"
 import type {
@@ -179,7 +170,7 @@ function GateSettings({
       size="narrow"
       description={`Configure how ${server.name} accepts players, connects to backends, and runs.`}
       actions={<>
-        {gate.configuration.configurationDirty && <Badge variant="info" icon={<ArrowClockwiseIcon size={12} />}>Applying changes</Badge>}
+        {gate.configuration.configurationDirty && <Badge variant="info" icon={<RefreshIcon className="size-3.5!" />}>Applying changes</Badge>}
         <Button variant="primary" loading={save.isPending} disabled={!memoryValid} onClick={() => save.mutate()}>Save settings</Button>
       </>}
     >
@@ -187,7 +178,7 @@ function GateSettings({
         <Banner
           role="alert"
           variant="error"
-          icon={<WarningCircleIcon weight="fill" />}
+          icon={<AlertCircleFilledIcon />}
           title="Backend setup prevents joining"
           description={<span className="flex flex-col gap-1">{gate.connectionProblems?.map((warning) => <span key={warning}>{warning}</span>)}</span>}
         />
@@ -195,14 +186,14 @@ function GateSettings({
       {!memoryValid && activeTab !== "general" && (
         <Banner
           variant="error"
-          icon={<WarningIcon weight="fill" />}
+          icon={<AlertTriangleFilledIcon />}
           title="Increase the RAM limit"
           description={`The selected features need at least ${minimumMemoryMb} MiB.`}
           action={<Banner.Action variant="secondary" onClick={() => setTab("general")}>Review RAM limit</Banner.Action>}
         />
       )}
       {gate.configuration.lastApplyError && (
-        <Banner variant="error" icon={<WarningCircleIcon weight="fill" />} title="Last apply failed" description={gate.configuration.lastApplyError} />
+        <Banner variant="error" icon={<AlertCircleFilledIcon />} title="Last apply failed" description={gate.configuration.lastApplyError} />
       )}
       <Tabs variant="underline" value={activeTab} onValueChange={setTab} tabs={tabs} />
       <div role="tabpanel" aria-label={tabs.find((item) => item.value === activeTab)?.label} className="flex flex-col gap-6">
@@ -230,7 +221,7 @@ function GateSettings({
             </div>
           </Section>
           {form.mode === "Lite" && (
-            <Banner variant="secondary" icon={<InfoIcon weight="fill" />} title="Player features require Classic mode" description="Players, Server list, Compatibility, and Network settings become available in Classic mode. Their saved values are kept while Lite is active." />
+            <Banner variant="secondary" icon={<InfoCircleFilledIcon />} title="Player features require Classic mode" description="Players, Server list, Compatibility, and Network settings become available in Classic mode. Their saved values are kept while Lite is active." />
           )}
           <Section title="Resources and startup" description="Set Gate's memory budget and when it runs.">
             <div className="flex flex-col gap-5">
@@ -289,7 +280,7 @@ function GateSettings({
                   description="The current binary is retained for rollback. Older releases may not support every saved proxy setting or Minecraft version."
                 />}
               <ConfirmDialog
-                trigger={<Button className="self-start" icon={ArrowClockwiseIcon} disabled={!targetVersion || versions.isError || targetVersion === gate.installation.version || update.isPending}>Change Gate version</Button>}
+                trigger={<Button className="self-start" icon={RefreshIcon} disabled={!targetVersion || versions.isError || targetVersion === gate.installation.version || update.isPending}>Change Gate version</Button>}
                 title={`Install Gate ${targetVersion}?`}
                 description={`${gate.runtime.state === "Running" ? "Gate will restart. " : ""}${activeConnections > 0 ? `${activeConnections} active connection(s) will be disconnected. ` : ""}The verified release replaces this instance's binary. Track the result in Activity.`}
                 confirmLabel="Queue version change"
@@ -1185,7 +1176,7 @@ function AdvancedSettings({
         aria-label={`${open ? "Hide" : "Show"} ${title.toLowerCase()}`}
         onClick={() => setOpen(!open)}
       >
-        <CaretDownIcon size={14} className={open ? "rotate-180 transition-transform" : "transition-transform"} />
+        <ChevronDownIcon size={16} className={open ? "rotate-180 transition-transform" : "transition-transform"} />
         {open ? "Hide options" : "Show options"}
       </Button>}
       contentClassName={open ? undefined : "hidden"}
@@ -1446,14 +1437,14 @@ function SecretControls({
         }}>Copy</Button>}
         {secretPresent
           ? <ConfirmDialog
-            trigger={<Button icon={SparkleIcon}>Generate new secret</Button>}
+            trigger={<Button icon={SparklesIcon}>Generate new secret</Button>}
             title={`Replace the existing ${label} secret?`}
             description="Connections fail until every affected backend is updated to use the newly generated secret."
             confirmLabel="Generate new secret"
             tone="danger"
             onConfirm={() => generate.mutate(true)}
           />
-          : <Button icon={SparkleIcon} loading={generate.isPending} onClick={() => generate.mutate(false)}>Generate secret</Button>}
+          : <Button icon={SparklesIcon} loading={generate.isPending} onClick={() => generate.mutate(false)}>Generate secret</Button>}
       </div>
     </div>
   )

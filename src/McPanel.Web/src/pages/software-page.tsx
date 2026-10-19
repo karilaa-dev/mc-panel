@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useParams } from "react-router-dom"
 import { Banner, Button, Checkbox, Input, Label, Select, Tabs } from "@cloudflare/kumo"
-import { CheckCircleIcon, CubeIcon, InfoIcon, SwapIcon, WarningIcon } from "@phosphor-icons/react"
+import { AlertTriangleFilledIcon, ArrowsExchangeIcon, CircleCheckFilledIcon, CubeIcon, InfoCircleFilledIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import { createClientRequestId } from "@/lib/client-request-id"
 import type { ChangeServerSoftwareRequest, CustomJarImportDto, ServerKind } from "@/lib/contracts"
@@ -169,10 +169,10 @@ export function ServerCoreSettingsSection() {
       description="Official cores are downloaded from verified catalogs. Custom JARs need an executable manifest."
       footer={<div className="flex w-full items-center justify-between gap-3">
         <p className="text-sm text-kumo-subtle">{stopped ? "Worlds, properties, plugins, and mods stay in place." : "Stop the server to change its core."}</p>
-        <Button variant="primary" icon={SwapIcon} disabled={!stopped || !selectionsReady || uploading} onClick={() => setConfirmOpen(true)}>Review server core change</Button>
+        <Button variant="primary" icon={ArrowsExchangeIcon} disabled={!stopped || !selectionsReady || uploading} onClick={() => setConfirmOpen(true)}>Review server core change</Button>
       </div>}
     >
-      {!stopped && <Banner variant="alert" icon={<WarningIcon weight="fill" />} title="Stop the server first" description="Server core changes are disabled until the server is fully stopped." />}
+      {!stopped && <Banner variant="alert" icon={<AlertTriangleFilledIcon />} title="Stop the server first" description="Server core changes are disabled until the server is fully stopped." />}
       <div className="flex flex-col gap-5">
         <div className="flex flex-col gap-2">
           <Label>Source</Label>
@@ -201,7 +201,7 @@ export function ServerCoreSettingsSection() {
           <Tabs variant="segmented" value={customSource} onValueChange={(value) => setCustomSource(value as "upload" | "existing")} tabs={[{ value: "upload", label: "Upload new JAR" }, { value: "existing", label: "Use existing JAR" }]} />
           {customSource === "upload" ? <div className="flex flex-col gap-3">
             <FileInput key={customJarConsumed ? consumingCustomJarJobId : "custom-jar-input"} label="Executable JAR" accept=".jar,application/java-archive" pending={uploading} fileName={availableCustomJar?.fileName} onFile={(file) => void upload(file)} description="The upload token expires after one hour and is consumed by this change." />
-            {availableCustomJar && <Banner icon={<CheckCircleIcon weight="fill" />} title={availableCustomJar.fileName} description="Ready to activate as custom-server.jar." />}
+            {availableCustomJar && <Banner icon={<CircleCheckFilledIcon />} title={availableCustomJar.fileName} description="Ready to activate as custom-server.jar." />}
           </div> : <Choice label="Existing executable JAR" value={existingJar} choices={software.data.jarCandidates.map((item) => ({ value: item.path, label: item.path }))} onChange={setExistingJar} placeholder="Choose a JAR inside this server" />}
         </>}
         <Choice label="Java runtime" value={selectedJava} choices={compatibleJava.map((item) => ({ value: item.id, label: javaLabel(item.major, item.vendor) }))} onChange={setJavaRuntimeId} placeholder={`Choose Java ${requiredJava}+`} />
@@ -209,7 +209,7 @@ export function ServerCoreSettingsSection() {
           <Checkbox label="Create a backup before changing the server core" checked={createBackup} onCheckedChange={(checked) => setCreateBackup(checked === true)} />
           <p className="pl-6 text-sm text-kumo-subtle">Enabled by default. A backup failure cancels the change.</p>
         </div>
-        <Banner variant="secondary" icon={<CubeIcon weight="fill" />} title="Existing server content stays in place" description="Worlds, properties, plugins, mods, and unused launch files are preserved. A manual change clears the Modrinth pack link." />
+        <Banner variant="secondary" icon={<CubeIcon />} title="Existing server content stays in place" description="Worlds, properties, plugins, mods, and unused launch files are preserved. A manual change clears the Modrinth pack link." />
       </div>
     </Section>
     <Modal
@@ -218,9 +218,9 @@ export function ServerCoreSettingsSection() {
       dismissible={!change.isPending}
       title={`Change to ${serverKindLabel(targetKind)}?`}
       description={`Minecraft ${selectedVersion} · Java ${compatibleJava.find((item) => item.id === selectedJava)?.major ?? requiredJava}${targetDetail ? ` · ${targetDetail}` : ""}`}
-      footer={<><ModalClose disabled={change.isPending} /><Button variant="primary" icon={SwapIcon} loading={change.isPending} onClick={() => change.mutate()}>Change server core</Button></>}
+      footer={<><ModalClose disabled={change.isPending} /><Button variant="primary" icon={ArrowsExchangeIcon} loading={change.isPending} onClick={() => change.mutate()}>Change server core</Button></>}
     >
-      <Banner variant={createBackup ? "default" : "alert"} icon={<InfoIcon weight="fill" />} title={createBackup ? "Backup required before activation" : "No backup selected"} description={createBackup ? "The backup must complete successfully before any launch files change." : "The change starts without creating a new recovery point."} />
+      <Banner variant={createBackup ? "default" : "alert"} icon={<InfoCircleFilledIcon />} title={createBackup ? "Backup required before activation" : "No backup selected"} description={createBackup ? "The backup must complete successfully before any launch files change." : "The change starts without creating a new recovery point."} />
       <p className="text-sm text-kumo-subtle">MC Panel stages new launch files outside the instance, rolls activation back on failure, and preserves worlds and other existing content.</p>
     </Modal>
   </>

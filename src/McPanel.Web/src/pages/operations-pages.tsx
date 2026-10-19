@@ -11,41 +11,7 @@ import { HubConnectionBuilder, LogLevel } from "@microsoft/signalr"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useParams } from "react-router-dom"
 import { Badge, Banner, Button, DropdownMenu, Input, InputGroup, LinkButton, Switch, Table, Tabs } from "@cloudflare/kumo"
-import {
-  ArchiveIcon,
-  ArrowBendUpLeftIcon,
-  ArrowClockwiseIcon,
-  ArrowsLeftRightIcon,
-  CaretRightIcon,
-  ClockCounterClockwiseIcon,
-  CopyIcon,
-  DotsThreeIcon,
-  DownloadSimpleIcon,
-  ExportIcon,
-  FileArchiveIcon,
-  FileIcon,
-  FilePlusIcon,
-  FolderIcon,
-  FolderPlusIcon,
-  HouseIcon,
-  ImageIcon,
-  InfoIcon,
-  MagnifyingGlassIcon,
-  PaperPlaneRightIcon,
-  PencilSimpleIcon,
-  PlusIcon,
-  ProhibitIcon,
-  PushPinIcon,
-  PushPinSlashIcon,
-  ShieldCheckIcon,
-  TerminalWindowIcon,
-  TrashIcon,
-  UploadSimpleIcon,
-  UserCheckIcon,
-  UserMinusIcon,
-  UsersIcon,
-  UserSwitchIcon,
-} from "@phosphor-icons/react"
+import { ArchiveIcon, ArrowBackUpIcon, ArrowsLeftRightIcon, BanIcon, ChevronRightIcon, CopyIcon, DoorExitIcon, DotsIcon, DownloadIcon, FileExportIcon, FileIcon, FilePlusIcon, FileZipIcon, FolderFilledIcon, FolderIcon, FolderPlusIcon, HistoryIcon, HomeIcon, InfoCircleFilledIcon, PencilIcon, PhotoIcon, PinIcon, PinnedOffIcon, PlusIcon, RefreshIcon, SearchIcon, SendIcon, ShieldCheckIcon, Terminal2Icon, TrashIcon, UploadIcon, UserCheckIcon, UserMinusIcon, UsersIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import { imageFileType } from "@/lib/image-file"
 import { isConsoleError } from "@/lib/terminal-format"
@@ -286,11 +252,11 @@ function ConsoleSession({ serverId }: { serverId: string }) {
       <Section
         title={isGate ? "Gate output" : "Server output"}
         description="History is kept by the panel and resumes from the last received line. Warnings and errors are highlighted."
-        contentClassName="gap-3 p-3 sm:p-4"
+        contentClassName="gap-3"
       >
         <div className="flex flex-wrap items-center gap-2">
           <InputGroup className="min-w-56 flex-1 sm:max-w-sm" size="sm">
-            <InputGroup.Addon><MagnifyingGlassIcon className="text-kumo-subtle" /></InputGroup.Addon>
+            <InputGroup.Addon><SearchIcon className="text-kumo-subtle" /></InputGroup.Addon>
             <InputGroup.Input
               aria-label="Search console"
               placeholder="Search output"
@@ -320,7 +286,7 @@ function ConsoleSession({ serverId }: { serverId: string }) {
         </div>
         {!isGate && <form onSubmit={submit}>
           <InputGroup disabled={sendCommand.isPending || !canSendCommand}>
-            <InputGroup.Addon><TerminalWindowIcon className="text-kumo-subtle" /></InputGroup.Addon>
+            <InputGroup.Addon><Terminal2Icon className="text-kumo-subtle" /></InputGroup.Addon>
             <InputGroup.Input
               aria-label="Console command"
               className="font-mono"
@@ -335,7 +301,7 @@ function ConsoleSession({ serverId }: { serverId: string }) {
               }}
             />
             <InputGroup.Addon align="end">
-              <InputGroup.Button type="submit" shape="square" aria-label="Send command" disabled={!canSendCommand || !command.trim() || sendCommand.isPending} loading={sendCommand.isPending} icon={PaperPlaneRightIcon} />
+              <InputGroup.Button type="submit" shape="square" aria-label="Send command" disabled={!canSendCommand || !command.trim() || sendCommand.isPending} loading={sendCommand.isPending} icon={SendIcon} />
             </InputGroup.Addon>
           </InputGroup>
         </form>}
@@ -414,11 +380,11 @@ function ServerFiles({ serverId }: { serverId: string }) {
     setOperation(undefined)
   }
 
-  const breadcrumb = <nav className="flex min-w-0 flex-wrap items-center gap-0.5 text-sm" aria-label="File path">
-    <Button size="sm" variant="ghost" icon={HouseIcon} onClick={() => setPath("")} aria-current={segments.length ? undefined : "location"}>Root</Button>
+  const breadcrumb = <nav className="-ml-2 flex min-w-0 flex-wrap items-center gap-0.5 text-sm" aria-label="File path">
+    <Button size="sm" variant="ghost" icon={HomeIcon} onClick={() => setPath("")} aria-current={segments.length ? undefined : "location"}>Root</Button>
     {segments.map((segment, index) => (
       <span key={`${segment}-${index}`} className="flex min-w-0 items-center gap-0.5">
-        <CaretRightIcon size={12} className="shrink-0 text-kumo-subtle" aria-hidden="true" />
+        <ChevronRightIcon size={14} className="shrink-0 text-kumo-subtle" aria-hidden="true" />
         <Button size="sm" variant="ghost" className="max-w-48" onClick={() => setPath(segments.slice(0, index + 1).join("/"))} aria-current={index === segments.length - 1 ? "location" : undefined}><span className="truncate">{segment}</span></Button>
       </span>
     ))}
@@ -442,16 +408,16 @@ function ServerFiles({ serverId }: { serverId: string }) {
             event.target.value = ""
           }}
         />
-        <HintButton icon={UploadSimpleIcon} disabled={!canModify} hint={modifyHint} onClick={() => uploadRef.current?.click()}>Upload</HintButton>
+        <HintButton icon={UploadIcon} disabled={!canModify} hint={modifyHint} onClick={() => uploadRef.current?.click()}>Upload</HintButton>
         <HintButton icon={FolderPlusIcon} disabled={!canModify} hint={modifyHint} onClick={() => { setOperation({ type: "create-folder" }); setOperationValue("") }}>New folder</HintButton>
         <HintButton variant="primary" icon={FilePlusIcon} disabled={!canModify} hint={modifyHint} onClick={() => { setOperation({ type: "create-file" }); setOperationValue("") }}>New file</HintButton>
       </>}
     >
-      {modifyHint && !server.isLoading && <Banner variant="secondary" icon={<InfoIcon weight="fill" />} title="File changes are paused" description={modifyHint} />}
+      {modifyHint && !server.isLoading && <Banner variant="secondary" icon={<InfoCircleFilledIcon />} title="File changes are paused" description={modifyHint} />}
       <Section
         title={breadcrumb}
         description={isGate ? "Gate configuration, versions, rollback data, and logs are available here. The keys directory is intentionally hidden." : "Archives are extracted with traversal, symlink, size, and entry-count checks."}
-        actions={<Button size="sm" variant="ghost" shape="square" icon={ArrowClockwiseIcon} aria-label="Refresh files" loading={files.isFetching && !files.isLoading} onClick={() => void refresh()} />}
+        actions={<Button size="sm" variant="ghost" shape="square" icon={RefreshIcon} aria-label="Refresh files" loading={files.isFetching && !files.isLoading} onClick={() => void refresh()} />}
         flush
       >
         <QueryFeedback query={files} />
@@ -462,31 +428,31 @@ function ServerFiles({ serverId }: { serverId: string }) {
               <Table.Body>
                 {segments.length > 0 && <Table.Row>
                   <Table.Cell colSpan={4}>
-                    <Button size="sm" variant="ghost" icon={ArrowBendUpLeftIcon} onClick={() => setPath(segments.slice(0, -1).join("/"))}>Parent folder</Button>
+                    <Button size="sm" variant="ghost" className="-ml-2" icon={ArrowBackUpIcon} onClick={() => setPath(segments.slice(0, -1).join("/"))}>Parent folder</Button>
                   </Table.Cell>
                 </Table.Row>}
                 {files.data?.map((entry) => {
                   const image = imageFileType(entry.path)
-                  const EntryIcon = entry.isDirectory ? FolderIcon : image ? ImageIcon : FileIcon
+                  const EntryIcon = entry.isDirectory ? FolderFilledIcon : image ? PhotoIcon : FileIcon
                   return <Table.Row key={entry.path}>
                     <Table.Cell>
-                      <button type="button" className="flex max-w-md min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-base text-kumo-default hover:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:outline-none" onClick={() => openEntry(entry)}>
-                        <EntryIcon size={16} weight={entry.isDirectory ? "fill" : "regular"} className={entry.isDirectory ? "shrink-0 text-(--color-kumo-brand)" : "shrink-0 text-kumo-subtle"} aria-hidden="true" />
+                      <button type="button" className="-ml-2 flex max-w-md min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-base text-kumo-default hover:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:outline-none" onClick={() => openEntry(entry)}>
+                        <EntryIcon size={18} className={entry.isDirectory ? "shrink-0 text-(--color-kumo-brand)" : "shrink-0 text-kumo-subtle"} aria-hidden="true" />
                         <span className="truncate">{entry.name}</span>
                       </button>
                     </Table.Cell>
-                    <Table.Cell className="text-kumo-subtle tabular-nums">{entry.isDirectory ? "—" : formatBytes(entry.size)}</Table.Cell>
+                    <Table.Cell className="whitespace-nowrap text-kumo-subtle tabular-nums">{entry.isDirectory ? "—" : formatBytes(entry.size)}</Table.Cell>
                     <Table.Cell className="whitespace-nowrap text-kumo-subtle">{formatDate(entry.modifiedAt)}</Table.Cell>
                     <Table.Cell className="text-right">
                       <DropdownMenu>
-                        <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsThreeIcon size={18} weight="bold" />} aria-label={`Actions for ${entry.name}`} />} />
+                        <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsIcon size={20} stroke={2} />} aria-label={`Actions for ${entry.name}`} />} />
                         <DropdownMenu.Content align="end">
                           {entry.isDirectory && <DropdownMenu.Item icon={FolderIcon} onClick={() => setPath(entry.path)}>Open folder</DropdownMenu.Item>}
                           {!entry.isDirectory && (image
-                            ? <DropdownMenu.Item icon={ImageIcon} onClick={() => setPreviewing(entry.path)}>Preview image</DropdownMenu.Item>
-                            : <DropdownMenu.Item icon={PencilSimpleIcon} onClick={() => void openEditor(entry)}>Edit text</DropdownMenu.Item>)}
-                          {!entry.isDirectory && <DropdownMenu.LinkItem icon={DownloadSimpleIcon} href={api.fileDownloadUrl(serverId, entry.path)}>Download</DropdownMenu.LinkItem>}
-                          {!entry.isDirectory && entry.name.toLowerCase().endsWith(".zip") && <DropdownMenu.Item icon={FileArchiveIcon} disabled={!canModify} onClick={() => mutate.mutate(() => api.extractFile(serverId, entry.path, path))}>Extract here</DropdownMenu.Item>}
+                            ? <DropdownMenu.Item icon={PhotoIcon} onClick={() => setPreviewing(entry.path)}>Preview image</DropdownMenu.Item>
+                            : <DropdownMenu.Item icon={PencilIcon} onClick={() => void openEditor(entry)}>Edit text</DropdownMenu.Item>)}
+                          {!entry.isDirectory && <DropdownMenu.LinkItem icon={DownloadIcon} href={api.fileDownloadUrl(serverId, entry.path)}>Download</DropdownMenu.LinkItem>}
+                          {!entry.isDirectory && entry.name.toLowerCase().endsWith(".zip") && <DropdownMenu.Item icon={FileZipIcon} disabled={!canModify} onClick={() => mutate.mutate(() => api.extractFile(serverId, entry.path, path))}>Extract here</DropdownMenu.Item>}
                           <DropdownMenu.Item icon={ArrowsLeftRightIcon} disabled={!canModify} onClick={() => { setOperation({ type: "move", entry }); setOperationValue(entry.path) }}>Move or rename</DropdownMenu.Item>
                           <DropdownMenu.Separator />
                           <DropdownMenu.Item icon={TrashIcon} variant="danger" disabled={!canModify} onClick={() => setDeleting(entry)}>Delete</DropdownMenu.Item>
@@ -588,7 +554,7 @@ export function PlayersPage() {
   return (
     <Page title="Players" description="Observed players and Minecraft’s authoritative whitelist, operator, and ban lists.">
       <Tabs variant="underline" value={tab} onValueChange={setTab} tabs={tabs.map((item) => ({ value: item.value, label: <span className="flex items-center gap-1.5" aria-label={item.label}>{item.label}{players.data && <span className="text-xs text-kumo-subtle tabular-nums">{item.count}</span>}</span> }))} />
-      {manageHint && !server.isLoading && <Banner variant="secondary" icon={<InfoIcon weight="fill" />} title="Player lists are read-only right now" description={manageHint} />}
+      {manageHint && !server.isLoading && <Banner variant="secondary" icon={<InfoCircleFilledIcon />} title="Player lists are read-only right now" description={manageHint} />}
       <div role="tabpanel" aria-label={activeLabel}>
         {tab === "players" && <Section title="Known players" description="List actions work while the server is running, stopped, or crashed. Kicking requires a running server." flush>
           {players.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-10" />)}</div> : data.length ? <Table>
@@ -600,13 +566,13 @@ export function PlayersPage() {
               <Table.Cell className="text-right"><div className="flex justify-end gap-2">
                 <HintButton size="sm" icon={ArchiveIcon} disabled={!player.uuid} hint={player.uuid ? "View the saved inventory" : "A known UUID is required"} onClick={() => setInventoryPlayer(player)}>Inventory</HintButton>
                 <DropdownMenu>
-                  <DropdownMenu.Trigger render={<HintButton size="sm" icon={DotsThreeIcon} disabled={!canManage || action.isPending} hint={manageHint}>Manage</HintButton>} />
+                  <DropdownMenu.Trigger render={<HintButton size="sm" icon={DotsIcon} disabled={!canManage || action.isPending} hint={manageHint}>Manage</HintButton>} />
                   <DropdownMenu.Content align="end">
                     <DropdownMenu.Item icon={player.whitelisted ? UserMinusIcon : UserCheckIcon} onClick={() => mutate(player.name, player.whitelisted ? "unwhitelist" : "whitelist")}>{player.whitelisted ? "Remove from whitelist" : "Whitelist"}</DropdownMenu.Item>
                     <DropdownMenu.Item icon={ShieldCheckIcon} onClick={() => mutate(player.name, player.operator ? "deop" : "op")}>{player.operator ? "Remove operator" : "Make operator"}</DropdownMenu.Item>
-                    {player.online && <DropdownMenu.Item icon={UserSwitchIcon} disabled={!running} onClick={() => mutate(player.name, "kick")}>Kick</DropdownMenu.Item>}
+                    {player.online && <DropdownMenu.Item icon={DoorExitIcon} disabled={!running} onClick={() => mutate(player.name, "kick")}>Kick</DropdownMenu.Item>}
                     <DropdownMenu.Separator />
-                    <DropdownMenu.Item icon={player.banned ? UserCheckIcon : ProhibitIcon} variant={player.banned ? "default" : "danger"} onClick={() => mutate(player.name, player.banned ? "pardon" : "ban")}>{player.banned ? "Pardon" : "Ban"}</DropdownMenu.Item>
+                    <DropdownMenu.Item icon={player.banned ? UserCheckIcon : BanIcon} variant={player.banned ? "default" : "danger"} onClick={() => mutate(player.name, player.banned ? "pardon" : "ban")}>{player.banned ? "Pardon" : "Ban"}</DropdownMenu.Item>
                   </DropdownMenu.Content>
                 </DropdownMenu>
               </div></Table.Cell>
@@ -687,32 +653,32 @@ export function BackupsPage() {
 
   return (
     <Page title="Backups" description="Consistent world backups with automatic save-off, flush, and save-on handling." actions={<>
-      <HintButton icon={ExportIcon} loading={exportServer.isPending} disabled={!canCreate} hint={createHint} onClick={() => exportServer.mutate()}>Export server</HintButton>
+      <HintButton icon={FileExportIcon} loading={exportServer.isPending} disabled={!canCreate} hint={createHint} onClick={() => exportServer.mutate()}>Export server</HintButton>
       <HintButton variant="primary" icon={PlusIcon} loading={create.isPending} disabled={!canCreate} hint={createHint} onClick={() => create.mutate()}>Create backup</HintButton>
     </>}>
-      {createHint && !server.isLoading && <Banner variant="secondary" icon={<InfoIcon weight="fill" />} title="Backups are paused" description={createHint} />}
+      {createHint && !server.isLoading && <Banner variant="secondary" icon={<InfoCircleFilledIcon />} title="Backups are paused" description={createHint} />}
       <Section title="Backup archive" description={canRestore ? "Restoring always creates a safety backup first." : "Stop the server to restore a backup. Restoring always creates a safety backup first."} flush>
         <QueryFeedback query={backups} />
         {backups.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-10" />)}</div> : backups.isError && !backups.data ? null : backups.data?.length ? <Table>
           <Table.Header><Table.Row><Table.Head>Created</Table.Head><Table.Head>Reason</Table.Head><Table.Head>Size</Table.Head><Table.Head>Status</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
           <Table.Body>{backups.data.map((backup) => <Table.Row key={backup.id}>
             <Table.Cell className="whitespace-nowrap">{formatDate(backup.createdAt)}</Table.Cell>
-            <Table.Cell><span className="flex flex-wrap items-center gap-1.5">{backup.reason}{backup.pinned && <Badge variant="outline" icon={<PushPinIcon size={12} />}>Pinned</Badge>}</span></Table.Cell>
-            <Table.Cell className="tabular-nums">{formatBytes(backup.size)}</Table.Cell>
+            <Table.Cell><span className="flex flex-wrap items-center gap-1.5">{backup.reason}{backup.pinned && <Badge variant="outline" icon={<PinIcon className="size-3.5!" />}>Pinned</Badge>}</span></Table.Cell>
+            <Table.Cell className="whitespace-nowrap tabular-nums">{formatBytes(backup.size)}</Table.Cell>
             <Table.Cell><Badge variant={backup.state === "Completed" ? "success" : backup.state === "Failed" ? "error" : "neutral"} appearance="dot">{backup.state}</Badge></Table.Cell>
             <Table.Cell className="text-right"><div className="flex justify-end gap-1">
-              <LinkButton variant="ghost" size="sm" shape="square" icon={<DownloadSimpleIcon size={16} />} aria-label={`Download ${backup.fileName}`} href={api.backupDownloadUrl(serverId, backup.id)} />
+              <LinkButton variant="ghost" size="sm" shape="square" icon={<DownloadIcon size={18} />} aria-label={`Download ${backup.fileName}`} href={api.backupDownloadUrl(serverId, backup.id)} />
               <ConfirmDialog
-                trigger={<HintButton size="sm" icon={ClockCounterClockwiseIcon} disabled={!canRestore} hint={canRestore ? undefined : restoreHint} aria-label={`Restore ${backup.fileName}`}>Restore</HintButton>}
+                trigger={<HintButton size="sm" icon={HistoryIcon} disabled={!canRestore} hint={canRestore ? undefined : restoreHint} aria-label={`Restore ${backup.fileName}`}>Restore</HintButton>}
                 title="Restore this backup?"
                 description="The server must be stopped. Current data is protected with a safety backup before files are replaced."
                 confirmLabel="Restore backup"
                 onConfirm={() => restore.mutate(backup.id)}
               />
               <DropdownMenu>
-                <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsThreeIcon size={18} weight="bold" />} aria-label={`More actions for ${backup.fileName}`} />} />
+                <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsIcon size={20} stroke={2} />} aria-label={`More actions for ${backup.fileName}`} />} />
                 <DropdownMenu.Content align="end">
-                  <DropdownMenu.Item icon={backup.pinned ? PushPinSlashIcon : PushPinIcon} disabled={pin.isPending} onClick={() => pin.mutate({ id: backup.id, pinned: !backup.pinned })}>{backup.pinned ? "Unpin" : "Pin"}</DropdownMenu.Item>
+                  <DropdownMenu.Item icon={backup.pinned ? PinnedOffIcon : PinIcon} disabled={pin.isPending} onClick={() => pin.mutate({ id: backup.id, pinned: !backup.pinned })}>{backup.pinned ? "Unpin" : "Pin"}</DropdownMenu.Item>
                   <DropdownMenu.Separator />
                   <DropdownMenu.Item icon={TrashIcon} variant="danger" onClick={() => setDeleting({ id: backup.id, fileName: backup.fileName })}>Delete</DropdownMenu.Item>
                 </DropdownMenu.Content>

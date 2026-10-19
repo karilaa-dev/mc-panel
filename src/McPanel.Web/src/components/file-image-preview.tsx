@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { LinkButton } from "@cloudflare/kumo"
-import { DownloadSimpleIcon, ImageIcon } from "@phosphor-icons/react"
+import { DownloadIcon, PhotoIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import { imageFileType } from "@/lib/image-file"
 import { useRetained } from "@/hooks/use-retained"
@@ -27,7 +27,7 @@ function ImagePreview({ serverId, path, onDimensions }: { serverId: string; path
 
   return (
     <div className="image-preview flex min-h-64 flex-1 items-center justify-center overflow-hidden rounded-lg p-4 ring ring-kumo-line">
-      {problem ? <EmptyState inset size="sm" icon={<ImageIcon />} title="Could not preview image" description={`${problem} You can still download the file.`} />
+      {problem ? <EmptyState inset size="sm" icon={<PhotoIcon />} title="Could not preview image" description={`${problem} You can still download the file.`} />
         : source ? <img src={source} alt={name} className="max-h-[60dvh] max-w-full object-contain [image-rendering:auto]" onLoad={(event) => onDimensions(`${event.currentTarget.naturalWidth} × ${event.currentTarget.naturalHeight} pixels`)} onError={() => setProblem("This file is not a supported or readable image.")} />
           : <InlineLoading>Loading image…</InlineLoading>}
     </div>
@@ -48,7 +48,7 @@ export function FileImagePreview({ serverId, path, onClose }: { serverId: string
       description={dimensions && dimensions.path === shownPath ? dimensions.text : "Image preview"}
       footer={<>
         <ModalClose>Close</ModalClose>
-        {shownPath && <LinkButton variant="primary" icon={DownloadSimpleIcon} href={api.fileDownloadUrl(serverId, shownPath)}>Download image</LinkButton>}
+        {shownPath && <LinkButton variant="primary" icon={DownloadIcon} href={api.fileDownloadUrl(serverId, shownPath)}>Download image</LinkButton>}
       </>}
     >
       {shownPath && <ImagePreview key={shownPath} serverId={serverId} path={shownPath} onDimensions={(text) => setDimensions({ path: shownPath, text })} />}

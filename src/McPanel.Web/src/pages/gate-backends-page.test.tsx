@@ -89,7 +89,7 @@ describe("GateBackendsPage", () => {
     const { container } = renderPage()
 
     expect(await screen.findByRole("radio", { name: "Default backend for Lobby" })).toBeChecked()
-    expect(container.querySelector(".max-w-5xl")).toBeInTheDocument()
+    expect(container.querySelector(".max-w-6xl")).toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Add backend" }))
     await user.click(screen.getByRole("tab", { name: "External address" }))
     await user.type(screen.getByLabelText("Display name"), "Remote survival")

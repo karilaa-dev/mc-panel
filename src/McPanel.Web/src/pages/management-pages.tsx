@@ -2,22 +2,7 @@ import { useState, type FormEvent } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useParams, useSearchParams } from "react-router-dom"
 import { Badge, Button, DropdownMenu, Input, Label, Select, Switch, Table, Tabs } from "@cloudflare/kumo"
-import {
-  ArrowClockwiseIcon,
-  ArrowDownIcon,
-  ArrowUpIcon,
-  CalendarCheckIcon,
-  ClockCounterClockwiseIcon,
-  CoffeeIcon,
-  DesktopIcon,
-  DotsThreeIcon,
-  MoonIcon,
-  PencilSimpleIcon,
-  PlayIcon,
-  PlusIcon,
-  SunIcon,
-  TrashIcon,
-} from "@phosphor-icons/react"
+import { ArrowDownIcon, ArrowUpIcon, CalendarCheckIcon, CoffeeIcon, DeviceDesktopIcon, DotsIcon, HistoryIcon, MoonIcon, PencilIcon, PlayerPlayIcon, PlusIcon, RefreshIcon, SunIcon, TrashIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import { withFrequencyDefaults } from "@/lib/schedule-defaults"
 import { toast } from "@/lib/toast"
@@ -144,9 +129,9 @@ function ScheduleEditor({ initial, onSave }: { initial: ScheduleWriteDto; onSave
               <Select aria-label={`Action for step ${index + 1}`} className="w-full sm:w-56" items={actionTypes.map((value) => ({ value, label: actionLabel(value) }))} value={action.action} onValueChange={(value) => value && updateAction(index, { action: value as ScheduleActionType, command: value === "Command" ? action.command : undefined })} />
               {action.action === "Command" && <Input aria-label={`Command for step ${index + 1}`} className="font-mono" maxLength={4096} value={action.command ?? ""} placeholder="say Backup complete" onChange={(event) => updateAction(index, { command: event.target.value.replace(/[\r\n]/g, "") })} />}
               <div className="flex gap-1 sm:ml-auto">
-                <Button type="button" variant="ghost" size="sm" shape="square" icon={<ArrowUpIcon size={14} />} aria-label="Move up" disabled={index === 0} onClick={() => moveAction(index, -1)} />
-                <Button type="button" variant="ghost" size="sm" shape="square" icon={<ArrowDownIcon size={14} />} aria-label="Move down" disabled={index === form.actions.length - 1} onClick={() => moveAction(index, 1)} />
-                <Button type="button" variant="ghost" size="sm" shape="square" icon={<TrashIcon size={14} />} aria-label="Remove action" disabled={form.actions.length === 1} onClick={() => update("actions", form.actions.filter((_, current) => current !== index))} />
+                <Button type="button" variant="ghost" size="sm" shape="square" icon={<ArrowUpIcon size={16} />} aria-label="Move up" disabled={index === 0} onClick={() => moveAction(index, -1)} />
+                <Button type="button" variant="ghost" size="sm" shape="square" icon={<ArrowDownIcon size={16} />} aria-label="Move down" disabled={index === form.actions.length - 1} onClick={() => moveAction(index, 1)} />
+                <Button type="button" variant="ghost" size="sm" shape="square" icon={<TrashIcon size={16} />} aria-label="Remove action" disabled={form.actions.length === 1} onClick={() => update("actions", form.actions.filter((_, current) => current !== index))} />
               </div>
             </li>
           ))}
@@ -205,11 +190,11 @@ export function SchedulesPage() {
             <Table.Cell><Switch aria-label={`Enable ${schedule.name}`} checked={schedule.enabled} onCheckedChange={(enabled) => toggle.mutate({ id: schedule.id, enabled })} /></Table.Cell>
             <Table.Cell className="text-right">
               <DropdownMenu>
-                <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsThreeIcon size={18} weight="bold" />} aria-label={`Manage ${schedule.name}`} />} />
+                <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsIcon size={20} stroke={2} />} aria-label={`Manage ${schedule.name}`} />} />
                 <DropdownMenu.Content align="end">
-                  <DropdownMenu.Item icon={PlayIcon} disabled={!schedule.enabled || run.isPending} onClick={() => run.mutate(schedule.id)}>Run now</DropdownMenu.Item>
-                  <DropdownMenu.Item icon={PencilSimpleIcon} onClick={() => setEditing(schedule)}>Edit</DropdownMenu.Item>
-                  <DropdownMenu.Item icon={ClockCounterClockwiseIcon} onClick={() => setHistoryId(schedule.id)}>History</DropdownMenu.Item>
+                  <DropdownMenu.Item icon={PlayerPlayIcon} disabled={!schedule.enabled || run.isPending} onClick={() => run.mutate(schedule.id)}>Run now</DropdownMenu.Item>
+                  <DropdownMenu.Item icon={PencilIcon} onClick={() => setEditing(schedule)}>Edit</DropdownMenu.Item>
+                  <DropdownMenu.Item icon={HistoryIcon} onClick={() => setHistoryId(schedule.id)}>History</DropdownMenu.Item>
                   <DropdownMenu.Separator />
                   <DropdownMenu.Item icon={TrashIcon} variant="danger" onClick={() => setDeleting(schedule)}>Delete</DropdownMenu.Item>
                 </DropdownMenu.Content>
@@ -228,7 +213,7 @@ export function SchedulesPage() {
         <QueryFeedback query={history} />
         {history.isLoading ? <SectionSkeleton header={false} rows={3} /> : history.data?.length
           ? <ul className="flex flex-col divide-y divide-kumo-hairline rounded-lg ring ring-kumo-hairline">{history.data.map((item) => <li key={item.id} className="flex flex-col gap-0.5 px-3 py-2.5"><span className="text-sm font-medium">{item.result}</span><span className="text-xs text-kumo-subtle">{formatDate(item.startedAt)}</span></li>)}</ul>
-          : <EmptyState inset size="sm" icon={<ClockCounterClockwiseIcon />} title="No runs yet" description="Runs appear here after the schedule executes." />}
+          : <EmptyState inset size="sm" icon={<HistoryIcon />} title="No runs yet" description="Runs appear here after the schedule executes." />}
       </Modal>
       <Modal
         open={Boolean(editing)}
@@ -269,7 +254,7 @@ export function JavaPage() {
   })
 
   return (
-    <Page title="Java runtimes" description="Detected from JAVA_HOME, PATH, alternatives, /usr/lib/jvm, and common /opt locations." actions={<Button variant="primary" icon={ArrowClockwiseIcon} loading={rescan.isPending} onClick={() => rescan.mutate()}>Rescan system</Button>}>
+    <Page title="Java runtimes" description="Detected from JAVA_HOME, PATH, alternatives, /usr/lib/jvm, and common /opt locations." actions={<Button variant="primary" icon={RefreshIcon} loading={rescan.isPending} onClick={() => rescan.mutate()}>Rescan system</Button>}>
       <Section title="Discovered runtimes" description="Every executable is canonicalized and probed with Java’s version properties before use." flush>
         {runtimes.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 2 }, (_, index) => <Skeleton key={index} className="h-10" />)}</div> : runtimes.data?.length ? <Table>
           <Table.Header><Table.Row><Table.Head>Java</Table.Head><Table.Head>Vendor</Table.Head><Table.Head>Architecture</Table.Head><Table.Head>Path</Table.Head><Table.Head>Source</Table.Head></Table.Row></Table.Header>
@@ -357,14 +342,14 @@ export function PanelSettingsPage() {
           </Section>
           {settings.isLoading ? <SectionSkeleton rows={3} /> : settings.data && <PanelSystemSettings key={settings.data.revision} value={settings.data} pending={saveSettings.isPending} onSave={(value) => saveSettings.mutate(value)} />}
         </>}
-        {selectedTab === "backups" && <div className="grid items-start gap-6 xl:grid-cols-2"><PanelBackups /><InstanceExports /></div>}
+        {selectedTab === "backups" && <div className="grid gap-x-4 gap-y-6 xl:grid-cols-2"><PanelBackups /><InstanceExports /></div>}
         {selectedTab === "appearance" && <Section title="Appearance" description="Stored locally in this browser. Press D anywhere outside a text field to toggle light and dark.">
           <div className="flex flex-col gap-2">
             <Label>Theme</Label>
             <SegmentedControl aria-label="Theme" value={theme} onValueChange={(values) => values[0] && setTheme(values[0])} options={[
-              { value: "system", label: "System", icon: <DesktopIcon size={16} /> },
-              { value: "light", label: "Light", icon: <SunIcon size={16} /> },
-              { value: "dark", label: "Dark", icon: <MoonIcon size={16} /> },
+              { value: "system", label: "System", icon: <DeviceDesktopIcon size={18} /> },
+              { value: "light", label: "Light", icon: <SunIcon size={18} /> },
+              { value: "dark", label: "Dark", icon: <MoonIcon size={18} /> },
             ]} />
           </div>
         </Section>}

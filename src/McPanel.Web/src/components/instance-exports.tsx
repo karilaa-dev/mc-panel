@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Badge, Button, Checkbox, LinkButton } from "@cloudflare/kumo"
-import { DownloadSimpleIcon, PackageIcon } from "@phosphor-icons/react"
+import { DownloadIcon, PackageIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import { serverKindLabel } from "@/lib/server-kind"
 import { toast } from "@/lib/toast"
@@ -68,7 +68,7 @@ export function InstanceExports() {
             {job.message && job.state === "Running" && <p className="text-sm text-kumo-subtle">{job.message}</p>}
             {job.error && <p className="text-sm text-kumo-danger [overflow-wrap:anywhere]">{job.error}</p>}
           </div>
-          {job.state === "Completed" && <LinkButton className="self-start sm:self-auto" size="sm" variant="secondary" icon={DownloadSimpleIcon} href={api.exportDownloadUrl(job.id)} download>Download instance export</LinkButton>}
+          {job.state === "Completed" && <LinkButton className="self-start sm:self-auto" size="sm" variant="secondary" icon={DownloadIcon} href={api.exportDownloadUrl(job.id)} download>Download instance export</LinkButton>}
         </li>)}
       </ul>
     </div>}

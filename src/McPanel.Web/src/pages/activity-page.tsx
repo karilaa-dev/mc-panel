@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Badge, Banner, Button, LinkButton, Table } from "@cloudflare/kumo"
-import { CheckCircleIcon, ClockCounterClockwiseIcon, DownloadSimpleIcon, ListChecksIcon, TerminalWindowIcon, WarningCircleIcon } from "@phosphor-icons/react"
+import { AlertCircleFilledIcon, CircleCheckFilledIcon, DownloadIcon, HistoryIcon, ListCheckIcon, Terminal2Icon } from "@/components/icons"
 import { api } from "@/lib/api"
 import type { JobDto } from "@/lib/contracts"
 import { toast } from "@/lib/toast"
@@ -48,7 +48,7 @@ export function ActivityPage() {
         return <Banner
           key={incident.id}
           variant="error"
-          icon={<WarningCircleIcon weight="fill" />}
+          icon={<AlertCircleFilledIcon />}
           title={incidentTitle(incident.code)}
           description={<span className="flex flex-col gap-1">
             <span className="[overflow-wrap:anywhere]">{incident.message}</span>
@@ -61,7 +61,7 @@ export function ActivityPage() {
           </>}
         />
       })}
-      {!incidents.isLoading && !incidents.isError && !open.length && <Banner role="status" variant="secondary" icon={<CheckCircleIcon weight="fill" className="text-kumo-success" />} title="Nothing needs attention" description="New issues appear here when they need a fix." />}
+      {!incidents.isLoading && !incidents.isError && !open.length && <Banner role="status" variant="secondary" icon={<CircleCheckFilledIcon className="text-kumo-success" />} title="Nothing needs attention" description="New issues appear here when they need a fix." />}
     </section>
     <Section title="Operations" description="Track progress and review completed or failed tasks." flush>
       <QueryFeedback query={jobs} />
@@ -86,13 +86,13 @@ export function ActivityPage() {
             {!job.message && !job.error && <span className="text-sm text-kumo-subtle">—</span>}
           </Table.Cell>
           <Table.Cell className="text-right"><div className="flex flex-wrap justify-end gap-1.5">
-            {job.serverId && <LinkButton size="sm" variant="ghost" icon={TerminalWindowIcon} href={`/servers/${job.serverId}/console`}>Console</LinkButton>}
-            {(job.type === "ServerExport" || job.type === "InstancesExport") && job.state === "Completed" && <LinkButton size="sm" variant="secondary" icon={DownloadSimpleIcon} href={api.exportDownloadUrl(job.id)} download>Download export</LinkButton>}
+            {job.serverId && <LinkButton size="sm" variant="ghost" icon={Terminal2Icon} href={`/servers/${job.serverId}/console`}>Console</LinkButton>}
+            {(job.type === "ServerExport" || job.type === "InstancesExport") && job.state === "Completed" && <LinkButton size="sm" variant="secondary" icon={DownloadIcon} href={api.exportDownloadUrl(job.id)} download>Download export</LinkButton>}
             {job.canCancel && <Button size="sm" variant="secondary-destructive" disabled={action.isPending} onClick={() => action.mutate({ id: job.id, operation: "cancel" })}>Cancel</Button>}
             {job.canRetry && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ id: job.id, operation: "retry" })}>Retry</Button>}
           </div></Table.Cell>
         </Table.Row>)}</Table.Body>
-      </Table> : !jobs.isError && <EmptyState inset size="sm" icon={<ListChecksIcon />} title="No operations yet" description="Installs, backups, updates, and exports appear here." />}
+      </Table> : !jobs.isError && <EmptyState inset size="sm" icon={<ListCheckIcon />} title="No operations yet" description="Installs, backups, updates, and exports appear here." />}
     </Section>
     <Section title="Administrative history" description="A record of changes made through the panel." flush>
       <QueryFeedback query={audit} />
@@ -101,10 +101,10 @@ export function ActivityPage() {
         <Table.Body>{audit.data.map((event) => <Table.Row key={event.id}>
           <Table.Cell className="whitespace-nowrap text-kumo-subtle">{formatTime(event.timestamp)}</Table.Cell>
           <Table.Cell>{event.actor}</Table.Cell>
-          <Table.Cell className="whitespace-normal"><span className="font-medium">{event.action}</span>{event.target && <span className="ml-1.5 font-mono text-xs text-kumo-subtle [overflow-wrap:anywhere]">{event.target}</span>}</Table.Cell>
+          <Table.Cell className="min-w-52 whitespace-normal"><span className="font-medium">{event.action}</span>{event.target && <span className="ml-1.5 font-mono text-xs text-kumo-subtle [overflow-wrap:anywhere]">{event.target}</span>}</Table.Cell>
           <Table.Cell><Badge variant={/fail|denied|error/i.test(event.outcome) ? "error" : "neutral"}>{event.outcome}</Badge></Table.Cell>
         </Table.Row>)}</Table.Body>
-      </Table> : !audit.isError && <EmptyState inset size="sm" icon={<ClockCounterClockwiseIcon />} title="No administrative history" description="Changes made through the panel are recorded here." />}
+      </Table> : !audit.isError && <EmptyState inset size="sm" icon={<HistoryIcon />} title="No administrative history" description="Changes made through the panel are recorded here." />}
     </Section>
   </Page>
 }

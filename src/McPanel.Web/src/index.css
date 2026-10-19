@@ -84,3 +84,11 @@
     background-size: 20px 20px;
   }
 }
+
+@layer utilities {
+  /* Kumo pins menu item icons at 16px, which leaves Tabler's padded glyphs smaller than the item text. */
+  [data-kumo-part="item"] > .tabler-icon {
+    width: 1.125rem;
+    height: 1.125rem;
+  }
+}

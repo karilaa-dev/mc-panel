@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 import { Banner, Empty, LayerCard, Loader, SkeletonLine, cn } from "@cloudflare/kumo"
-import { WarningCircleIcon } from "@phosphor-icons/react"
+import { AlertCircleFilledIcon } from "@/components/icons"
 import { errorMessage } from "@/lib/errors"
 
 type RefetchableQuery = { isError: boolean; error: unknown; dataUpdatedAt?: number; refetch: () => Promise<unknown> }
@@ -23,7 +23,7 @@ export function ErrorBanner({ title, description, onRetry, retryLabel = "Retry" 
     <Banner
       role="alert"
       variant="error"
-      icon={<WarningCircleIcon weight="fill" />}
+      icon={<AlertCircleFilledIcon />}
       title={title}
       description={description}
       action={onRetry ? <Banner.Action variant="secondary" onClick={onRetry}>{retryLabel}</Banner.Action> : undefined}
@@ -62,7 +62,7 @@ export function SectionSkeleton({ rows = 3, className, header = true }: { rows?:
   return (
     <LayerCard role="status" aria-label="Loading" className={className}>
       {header && <LayerCard.Secondary className="flex-col items-start gap-2.5 py-5"><SkeletonLine className="h-2.5" minWidth={20} maxWidth={30} /><SkeletonLine className="h-2" minWidth={40} maxWidth={60} /></LayerCard.Secondary>}
-      <LayerCard.Primary className="gap-5 p-5">
+      <LayerCard.Primary className="gap-5 p-4">
         {Array.from({ length: rows }, (_, index) => <SkeletonLine key={index} className="h-3" minWidth={45} maxWidth={95} />)}
       </LayerCard.Primary>
     </LayerCard>

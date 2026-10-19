@@ -1,10 +1,17 @@
 import { useState, type ComponentProps, type ReactElement, type ReactNode } from "react"
 import { Button, Dialog, cn } from "@cloudflare/kumo"
 import { Dialog as DialogPrimitive } from "@cloudflare/kumo/primitives/dialog"
-import { WarningIcon, XIcon } from "@phosphor-icons/react"
+import { AlertTriangleFilledIcon, XIcon } from "@/components/icons"
 
 type DialogSize = "sm" | "base" | "lg" | "xl"
 type RootProps = ComponentProps<typeof Dialog.Root>
+
+/**
+ * Kumo anchors dialogs near the top of the viewport. Center them on both axes instead, the way a
+ * native <dialog> does: auto margins inside a full-viewport inset keep the box on whole pixels and
+ * let it grow evenly from the middle as its content loads.
+ */
+const centered = "inset-0 m-auto h-fit translate-x-0 sm:top-0"
 
 /** A dialog with a title row, a scrollable body, and an optional action footer. */
 export function Modal({
@@ -45,14 +52,14 @@ export function Modal({
   return (
     <Dialog.Root {...rootProps}>
       {trigger && <Dialog.Trigger render={trigger} />}
-      <Dialog size={size} className={cn("flex max-h-[calc(100dvh-4rem)] flex-col sm:max-h-[calc(100dvh-8rem)]", className)}>
+      <Dialog size={size} className={cn(centered, "flex max-h-[calc(100dvh-2rem)] flex-col sm:max-h-[calc(100dvh-8rem)]", className)}>
         <div data-slot="dialog-header" className="flex shrink-0 items-start gap-3 px-6 pt-6 pb-4">
           {icon && <div className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-lg">{icon}</div>}
           <div className="flex min-w-0 flex-1 flex-col gap-1">
             <Dialog.Title className="text-lg leading-snug font-semibold text-kumo-strong [overflow-wrap:anywhere]">{title}</Dialog.Title>
             {description && <Dialog.Description className="text-base text-pretty text-kumo-subtle">{description}</Dialog.Description>}
           </div>
-          {dismissible && <Dialog.Close render={<Button variant="ghost" shape="square" size="sm" icon={<XIcon size={16} />} aria-label="Close" className="-mt-1 -mr-2 shrink-0" />} />}
+          {dismissible && <Dialog.Close render={<Button variant="ghost" shape="square" size="sm" icon={<XIcon size={18} />} aria-label="Close" className="-mt-1 -mr-2 shrink-0" />} />}
         </div>
         <div className={cn("flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 py-1", !footer && "pb-6", bodyClassName)}>{children}</div>
         {footer && <div data-slot="dialog-footer" className="flex shrink-0 flex-wrap items-center justify-end gap-2 px-6 pt-4 pb-6">{footer}</div>}
@@ -110,11 +117,11 @@ export function ConfirmDialog({
   return (
     <Dialog.Root {...rootProps}>
       {trigger && <Dialog.Trigger render={trigger} />}
-      <Dialog size="lg" className="flex flex-col gap-5 p-6">
+      <Dialog size="lg" className={cn(centered, "flex max-h-[calc(100dvh-2rem)] flex-col gap-5 overflow-y-auto p-6")}>
         <div className="flex items-start gap-4">
           {tone === "danger" && (
             <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-kumo-danger-tint text-kumo-danger">
-              <WarningIcon size={20} weight="fill" />
+              <AlertTriangleFilledIcon size={22} />
             </div>
           )}
           <div className="flex min-w-0 flex-col gap-1.5">
@@ -160,7 +167,7 @@ export function Sheet({ open, onOpenChange, onOpenChangeComplete, side = "right"
               <DialogPrimitive.Title className="text-lg leading-snug font-semibold text-kumo-strong [overflow-wrap:anywhere]">{title}</DialogPrimitive.Title>
               {description && <DialogPrimitive.Description className="text-base text-pretty text-kumo-subtle">{description}</DialogPrimitive.Description>}
             </div>
-            <DialogPrimitive.Close render={<Button variant="ghost" shape="square" size="sm" icon={<XIcon size={16} />} aria-label="Close" className="-mr-1.5 shrink-0" />} />
+            <DialogPrimitive.Close render={<Button variant="ghost" shape="square" size="sm" icon={<XIcon size={18} />} aria-label="Close" className="-mr-1.5 shrink-0" />} />
           </div>
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-5">{children}</div>
         </DialogPrimitive.Popup>
