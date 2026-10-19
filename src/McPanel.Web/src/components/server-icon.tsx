@@ -167,7 +167,7 @@ export function ServerIconEditor({ server, disabled = false }: { server: ServerS
               onClick={() => select.mutate(icon.revision)}
             >
               <img className="size-full rounded-[18%] object-cover [image-rendering:pixelated]" src={api.panelIconUrl(icon.revision)} alt="" />
-              {current && <span className="absolute top-1 right-1 flex size-5 items-center justify-center rounded-full bg-kumo-brand text-white"><CheckIcon size={12} stroke={2} /></span>}
+              {current && <span className="absolute top-1 right-1 flex size-5 items-center justify-center rounded-full bg-kumo-brand text-white"><CheckIcon size={14} stroke={2} /></span>}
             </button>
           })}
         </div>
@@ -200,7 +200,7 @@ export function PanelIconExplorer() {
         {library.data.map((icon, index) => <div key={icon.revision} className="group relative aspect-square overflow-hidden rounded-lg bg-kumo-base p-1.5 ring ring-kumo-line">
           <img className="size-full rounded-[18%] object-cover [image-rendering:pixelated]" src={api.panelIconUrl(icon.revision)} alt={`Panel icon ${index + 1}`} />
           <ConfirmDialog
-            trigger={<Button variant="secondary" size="sm" shape="square" icon={<TrashIcon size={14} />} aria-label={`Delete panel icon ${index + 1}`} disabled={remove.isPending || upload.isPending} className="absolute top-1.5 right-1.5 opacity-100 shadow-sm sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100" />}
+            trigger={<Button variant="secondary" size="sm" shape="square" icon={<TrashIcon size={16} />} aria-label={`Delete panel icon ${index + 1}`} disabled={remove.isPending || upload.isPending} className="absolute top-1.5 right-1.5 opacity-100 shadow-sm sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100" />}
             title="Delete this panel icon?"
             description="It will no longer be available for future selection. Servers already using it keep their applied copy."
             confirmLabel="Delete icon"

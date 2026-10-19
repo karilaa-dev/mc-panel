@@ -141,7 +141,7 @@ function GateBackendsEditor({ gate, servers }: { gate: GateStatusDto; servers: S
         description="Players join the default backend unless they connect using another backend's hostname."
         actions={<Button
           size="sm"
-          icon={adding ? <XIcon size={14} /> : <PlusIcon size={14} />}
+          icon={adding ? <XIcon size={16} /> : <PlusIcon size={16} />}
           aria-expanded={adding}
           onClick={() => {
             if (!adding) setBackendSource(availableServers.length ? "managed" : "external")
@@ -180,7 +180,7 @@ function GateBackendsEditor({ gate, servers }: { gate: GateStatusDto; servers: S
                       </Radio.Root>
                       <span aria-hidden="true" className="cursor-pointer @2xl/backends:hidden" onClick={() => selectDefault(backend.id)}>Default</span>
                     </div>
-                    <Button variant="ghost" size="sm" shape="square" icon={<TrashIcon size={14} />} className="@2xl/backends:col-start-5 @2xl/backends:row-start-1" aria-label={`Remove ${backend.name}`} onClick={() => backend.external ? removeExternal(backend.id) : selectManaged(backend.id, false)} />
+                    <Button variant="ghost" size="sm" shape="square" icon={<TrashIcon size={16} />} className="@2xl/backends:col-start-5 @2xl/backends:row-start-1" aria-label={`Remove ${backend.name}`} onClick={() => backend.external ? removeExternal(backend.id) : selectManaged(backend.id, false)} />
                   </div>
                 </fieldset>
               ))}
@@ -223,7 +223,7 @@ function GateBackendsEditor({ gate, servers }: { gate: GateStatusDto; servers: S
         title="Saved routes"
         description="Routing from the last saved configuration. Save backend changes to update these routes."
         actions={<Button size="sm" variant="ghost" aria-expanded={routesOpen} onClick={() => setRoutesOpen(!routesOpen)}>
-          <ChevronDownIcon size={14} className={routesOpen ? "rotate-180 transition-transform" : "transition-transform"} />
+          <ChevronDownIcon size={16} className={routesOpen ? "rotate-180 transition-transform" : "transition-transform"} />
           {routesOpen ? "Hide saved routes" : "View saved routes"}
         </Button>}
         flush
@@ -237,7 +237,7 @@ function GateBackendsEditor({ gate, servers }: { gate: GateStatusDto; servers: S
               <Table.Cell className="font-mono text-xs">{route.backendAddress}</Table.Cell>
               <Table.Cell className="font-mono text-xs">{route.publicHost ?? <span className="text-kumo-subtle">None</span>}</Table.Cell>
               <Table.Cell className="min-w-48 whitespace-normal">
-                <Badge variant="outline" icon={<SignRightIcon size={12} />}>{route.routeKind}</Badge>
+                <Badge variant="outline" icon={<SignRightIcon className="size-3.5!" />}>{route.routeKind}</Badge>
                 {route.note && <p className="mt-1 text-xs text-kumo-subtle">{route.note}</p>}
               </Table.Cell>
             </Table.Row>)}</Table.Body>

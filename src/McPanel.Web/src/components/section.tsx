@@ -50,7 +50,7 @@ export function StatTile({ label, value, icon: Icon, progress, detail }: {
     <LayerCard className="flex min-w-0 flex-col gap-3 p-4">
       <div className="flex items-center justify-between gap-3 text-sm text-kumo-subtle">
         <span className="truncate">{label}</span>
-        {Icon && <Icon size={16} className="shrink-0" />}
+        {Icon && <Icon size={18} className="shrink-0" />}
       </div>
       <p className="truncate text-xl leading-tight font-semibold tracking-tight text-kumo-strong tabular-nums">{value}</p>
       {detail && <p className="-mt-2 truncate text-sm text-kumo-subtle">{detail}</p>}

@@ -65,7 +65,7 @@ export function GateBackendChecks({ serverId, form }: { serverId: string; form: 
               </Table>
               {matchingCount > 0 && <p className="border-t border-kumo-hairline px-4 py-3 text-sm text-kumo-subtle">{matchingCount} other {matchingCount === 1 ? "backend has" : "backends have"} no mismatches.</p>}
             </>
-              : <p className="flex items-center gap-2 text-sm text-kumo-default"><CircleCheckFilledIcon size={16} className="text-kumo-success" />No mismatches found in saved backend settings.</p>}
+              : <p className="flex items-center gap-2 text-sm text-kumo-default"><CircleCheckFilledIcon size={18} className="text-kumo-success" />No mismatches found in saved backend settings.</p>}
     </div>
   </Section>
 }

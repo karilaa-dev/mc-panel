@@ -73,7 +73,7 @@ export function ModpackPicker({ inspection, selectedOptionalFiles, onChange }: M
   if (inspection) {
     return <div className="flex flex-col gap-5">
       <LayerCard className="flex items-start gap-3 p-4">
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-kumo-recessed text-kumo-subtle"><PackageIcon size={20} /></span>
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-kumo-recessed text-kumo-subtle"><PackageIcon size={22} /></span>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <p className="font-semibold text-kumo-default">{inspection.name} {inspection.version}</p>
           <div className="flex flex-wrap gap-1.5">

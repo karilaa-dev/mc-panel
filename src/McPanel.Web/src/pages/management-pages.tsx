@@ -129,9 +129,9 @@ function ScheduleEditor({ initial, onSave }: { initial: ScheduleWriteDto; onSave
               <Select aria-label={`Action for step ${index + 1}`} className="w-full sm:w-56" items={actionTypes.map((value) => ({ value, label: actionLabel(value) }))} value={action.action} onValueChange={(value) => value && updateAction(index, { action: value as ScheduleActionType, command: value === "Command" ? action.command : undefined })} />
               {action.action === "Command" && <Input aria-label={`Command for step ${index + 1}`} className="font-mono" maxLength={4096} value={action.command ?? ""} placeholder="say Backup complete" onChange={(event) => updateAction(index, { command: event.target.value.replace(/[\r\n]/g, "") })} />}
               <div className="flex gap-1 sm:ml-auto">
-                <Button type="button" variant="ghost" size="sm" shape="square" icon={<ArrowUpIcon size={14} />} aria-label="Move up" disabled={index === 0} onClick={() => moveAction(index, -1)} />
-                <Button type="button" variant="ghost" size="sm" shape="square" icon={<ArrowDownIcon size={14} />} aria-label="Move down" disabled={index === form.actions.length - 1} onClick={() => moveAction(index, 1)} />
-                <Button type="button" variant="ghost" size="sm" shape="square" icon={<TrashIcon size={14} />} aria-label="Remove action" disabled={form.actions.length === 1} onClick={() => update("actions", form.actions.filter((_, current) => current !== index))} />
+                <Button type="button" variant="ghost" size="sm" shape="square" icon={<ArrowUpIcon size={16} />} aria-label="Move up" disabled={index === 0} onClick={() => moveAction(index, -1)} />
+                <Button type="button" variant="ghost" size="sm" shape="square" icon={<ArrowDownIcon size={16} />} aria-label="Move down" disabled={index === form.actions.length - 1} onClick={() => moveAction(index, 1)} />
+                <Button type="button" variant="ghost" size="sm" shape="square" icon={<TrashIcon size={16} />} aria-label="Remove action" disabled={form.actions.length === 1} onClick={() => update("actions", form.actions.filter((_, current) => current !== index))} />
               </div>
             </li>
           ))}
@@ -190,7 +190,7 @@ export function SchedulesPage() {
             <Table.Cell><Switch aria-label={`Enable ${schedule.name}`} checked={schedule.enabled} onCheckedChange={(enabled) => toggle.mutate({ id: schedule.id, enabled })} /></Table.Cell>
             <Table.Cell className="text-right">
               <DropdownMenu>
-                <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsIcon size={18} stroke={2} />} aria-label={`Manage ${schedule.name}`} />} />
+                <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsIcon size={20} stroke={2} />} aria-label={`Manage ${schedule.name}`} />} />
                 <DropdownMenu.Content align="end">
                   <DropdownMenu.Item icon={PlayerPlayIcon} disabled={!schedule.enabled || run.isPending} onClick={() => run.mutate(schedule.id)}>Run now</DropdownMenu.Item>
                   <DropdownMenu.Item icon={PencilIcon} onClick={() => setEditing(schedule)}>Edit</DropdownMenu.Item>
@@ -347,9 +347,9 @@ export function PanelSettingsPage() {
           <div className="flex flex-col gap-2">
             <Label>Theme</Label>
             <SegmentedControl aria-label="Theme" value={theme} onValueChange={(values) => values[0] && setTheme(values[0])} options={[
-              { value: "system", label: "System", icon: <DeviceDesktopIcon size={16} /> },
-              { value: "light", label: "Light", icon: <SunIcon size={16} /> },
-              { value: "dark", label: "Dark", icon: <MoonIcon size={16} /> },
+              { value: "system", label: "System", icon: <DeviceDesktopIcon size={18} /> },
+              { value: "light", label: "Light", icon: <SunIcon size={18} /> },
+              { value: "dark", label: "Dark", icon: <MoonIcon size={18} /> },
             ]} />
           </div>
         </Section>}

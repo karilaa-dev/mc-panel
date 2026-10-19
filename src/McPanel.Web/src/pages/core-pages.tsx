@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react"
+import { lazy, Suspense, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react"
 import { useForm, useWatch } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -6,7 +6,7 @@ import { Link, useNavigate, useParams } from "react-router-dom"
 import { z } from "zod"
 import {
   Badge, Banner, Button, Checkbox, ClipboardText, CommandPalette, Input, InputArea, InputGroup, Label, LayerCard,
-  LinkButton, Select, Tabs, cn,
+  LinkButton, Select, Switch, Tabs, cn,
 } from "@cloudflare/kumo"
 import { AlertCircleFilledIcon, AlertTriangleFilledIcon, ArrowRightIcon, CheckIcon, CircleCheckFilledIcon, CpuIcon, CubeIcon, DatabaseIcon, EyeIcon, EyeOffIcon, GaugeIcon, InfoCircleFilledIcon, MemoryIcon, PlayerPlayIcon, PlayerStopIcon, PlusIcon, RefreshIcon, SearchIcon, ShareIcon, TrashIcon, UsersIcon } from "@/components/icons"
 import { ApiError, api } from "@/lib/api"
@@ -77,7 +77,7 @@ function ServerCard({ server }: { server: ServerSummaryDto }) {
           <div className="flex min-w-0 flex-col gap-0.5"><dt className="text-kumo-subtle">Uptime</dt><dd className="font-medium">{server.state === "Running" ? duration(server.uptimeSeconds) : "—"}</dd></div>
         </dl>
         <div className="-mx-1 -mb-1 flex justify-end">
-          <LinkButton href={href} size="sm" variant="ghost">Manage<ArrowRightIcon size={14} /></LinkButton>
+          <LinkButton href={href} size="sm" variant="ghost">Manage<ArrowRightIcon size={16} /></LinkButton>
         </div>
       </LayerCard.Primary>
     </LayerCard>
@@ -137,8 +137,8 @@ type ServerCategory = "Regular" | "Proxy"
 type InstallSource = "Official" | "CustomJar" | "Modpack"
 
 const categoryOptions = [
-  { value: "Regular", title: "Regular server", description: "Runs a Minecraft world players join directly.", icon: <CubeIcon size={16} /> },
-  { value: "Proxy", title: "Proxy", description: "Minekube Gate routes players to one or more servers.", icon: <ShareIcon size={16} /> },
+  { value: "Regular", title: "Regular server", description: "Runs a Minecraft world players join directly.", icon: <CubeIcon size={18} /> },
+  { value: "Proxy", title: "Proxy", description: "Minekube Gate routes players to one or more servers.", icon: <ShareIcon size={18} /> },
 ] as const
 const sourceOptions = [
   { value: "Official", title: "Official server core", description: "Verified Vanilla, Paper, Fabric, Forge, or NeoForge downloads." },
@@ -167,7 +167,7 @@ function Stepper({ steps, current }: { steps: string[]; current: number }) {
               done && "bg-kumo-brand text-white ring-kumo-brand",
               active && "bg-kumo-base text-kumo-default ring-2 ring-kumo-brand",
               !done && !active && "bg-kumo-base text-kumo-subtle ring-kumo-line",
-            )}>{done ? <CheckIcon size={12} stroke={2} /> : number}</span>
+            )}>{done ? <CheckIcon size={14} stroke={2} /> : number}</span>
             <span className={cn("text-sm whitespace-nowrap", active ? "font-medium text-kumo-default" : "text-kumo-subtle")}>{label}</span>
             {number < steps.length && <span aria-hidden="true" className={cn("mx-1 h-px w-6 sm:w-10", done ? "bg-kumo-brand" : "bg-kumo-line")} />}
           </li>
@@ -342,7 +342,7 @@ export function CreateServerPage() {
   const finalStep = step === totalSteps
   const footer = <>
     <Button disabled={step === 1 || isSubmitting || gateSubmitting} onClick={() => setStep((current) => current - 1)}>Back</Button>
-    {!finalStep ? <Button variant="primary" disabled={!canAdvance} onClick={() => setStep((current) => current + 1)}>Continue<ArrowRightIcon size={16} /></Button>
+    {!finalStep ? <Button variant="primary" disabled={!canAdvance} onClick={() => setStep((current) => current + 1)}>Continue<ArrowRightIcon size={18} /></Button>
       : isGate ? <Button variant="primary" loading={gateSubmitting} disabled={!selectedGateVersion || gateVersions.isError} onClick={() => void submitGate()}>Create Gate server</Button>
         : <Button variant="primary" form="create-form" type="submit" loading={isSubmitting} disabled={!eula}>Create server</Button>}
   </>
@@ -653,6 +653,28 @@ function propertyTabFor(entry: Pick<ServerPropertyDto, "key" | "section">): Prop
   return "advanced"
 }
 
+/**
+ * Each property is a name column and a value column, so every value starts at the same edge right
+ * after its name. Wide cards split the list into two such columns, top to bottom, instead of leaving
+ * the right half empty. Rows share one grid, so their dividers line up across both columns.
+ */
+const propertyList = "grid @5xl/properties:grid-flow-col @5xl/properties:grid-cols-2 @5xl/properties:grid-rows-[repeat(var(--property-rows),auto)] @5xl/properties:gap-x-12"
+const propertyRow = "grid items-center gap-x-6 gap-y-2 border-t border-kumo-hairline py-3.5 @xl/properties:grid-cols-[minmax(0,14rem)_minmax(0,1fr)]"
+
+/** Drops the outer divider and padding at the top and bottom edge of each visible column. */
+function propertyRowEdges(index: number, count: number) {
+  const rows = Math.ceil(count / 2)
+  const last = index === count - 1
+  const endsFirstColumn = index === rows - 1
+  return cn(
+    index === 0 ? "border-t-0 pt-0" : index === rows && "@5xl/properties:border-t-0 @5xl/properties:pt-0",
+    last && "pb-0",
+    // An odd count leaves the second column a row short, so its last row keeps the padding of its neighbour.
+    last && count % 2 === 1 && !endsFirstColumn && "@5xl/properties:pb-3.5",
+    !last && endsFirstColumn && "@5xl/properties:pb-0",
+  )
+}
+
 function supportedRange(ranges: Array<{ from: string; to?: string | null }>) {
   return ranges.map((range) => range.to ? `${range.from}–${range.to}` : `${range.from} and later`).join(", ")
 }
@@ -736,24 +758,27 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
     const firstMatch = entries.find((entry) => `${entry.key} ${humanizePropertyKey(entry.key)} ${entry.section}`.toLowerCase().includes(normalized))
     if (firstMatch) setActiveTab(propertyTabFor(firstMatch))
   }
-  const propertyField = (entry: ServerPropertyDto) => {
+  const propertyField = (entry: ServerPropertyDto, index: number) => {
     const id = `property-${entry.key}`
+    const row = cn(propertyRow, propertyRowEdges(index, currentTab.entries.length))
     const label = humanizePropertyKey(entry.key)
     const isRevealed = revealed.has(entry.key)
-    const meta = <span className="flex flex-wrap items-center gap-1.5">
-      <code className="text-xs text-kumo-subtle">{entry.key}</code>
-      {entry.compatibility !== "Supported" && entry.catalogued && <Badge variant={entry.compatibility === "UnknownVersion" ? "outline" : "warning"}>Supported {supportedRange(entry.supportedRanges)}</Badge>}
-      {!entry.catalogued && <Badge variant="outline">Uncatalogued</Badge>}
-      {values[entry.key] !== baseline[entry.key] && <Badge variant="info">Edited</Badge>}
-    </span>
-    if (entry.type === "boolean") return <div key={entry.key} className="py-3.5 first:pt-0 last:pb-0">
-      <SwitchField id={id} label={label} description={meta} checked={values[entry.key] === "true"} onCheckedChange={(checked) => update(entry.key, String(checked))} />
+    const metaId = `${id}-meta`
+    const name = <div className="flex min-w-0 flex-col gap-0.5">
+      <Label htmlFor={id} className="w-fit">{label}</Label>
+      <span id={metaId} className="flex flex-wrap items-center gap-1.5">
+        <code className="text-xs text-kumo-subtle">{entry.key}</code>
+        {entry.compatibility !== "Supported" && entry.catalogued && <Badge variant={entry.compatibility === "UnknownVersion" ? "outline" : "warning"}>Supported {supportedRange(entry.supportedRanges)}</Badge>}
+        {!entry.catalogued && <Badge variant="outline">Uncatalogued</Badge>}
+        {values[entry.key] !== baseline[entry.key] && <Badge variant="info">Edited</Badge>}
+      </span>
     </div>
-    return <div key={entry.key} className="grid gap-x-6 gap-y-2 py-3.5 first:pt-0 last:pb-0 md:grid-cols-[minmax(0,1fr)_minmax(0,26rem)] md:items-center">
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <Label htmlFor={id} className="w-fit">{label}</Label>
-        {meta}
-      </div>
+    if (entry.type === "boolean") return <div key={entry.key} className={cn(row, "grid-cols-[minmax(0,1fr)_auto]")}>
+      {name}
+      <Switch id={id} aria-label={label} aria-describedby={metaId} className="justify-self-start" checked={values[entry.key] === "true"} onCheckedChange={(checked) => update(entry.key, String(checked))} />
+    </div>
+    return <div key={entry.key} className={row}>
+      {name}
       {entry.sensitive
         ? <InputGroup>
           <InputGroup.Input id={id} aria-label={label} type={isRevealed ? "text" : "password"} value={values[entry.key] ?? ""} onChange={(event) => update(entry.key, event.target.value)} />
@@ -794,7 +819,9 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
     </div>
     <Section title={currentTab.title} description={currentTab.description}>
       {currentTab.entries.length
-        ? <div className="divide-y divide-kumo-hairline">{currentTab.entries.map(propertyField)}</div>
+        ? <div className="@container/properties">
+          <div className={propertyList} style={{ "--property-rows": Math.ceil(currentTab.entries.length / 2) } as CSSProperties}>{currentTab.entries.map(propertyField)}</div>
+        </div>
         : <EmptyState inset size="sm" title={normalizedSearch ? "No matching properties in this tab" : "No properties in this tab"} description={normalizedSearch ? "Try another tab or a different search." : "Properties appear here when they are present in server.properties."} />}
     </Section>
     <CommandPalette.Root<AvailableGroup, ServerPropertyDefinitionDto>

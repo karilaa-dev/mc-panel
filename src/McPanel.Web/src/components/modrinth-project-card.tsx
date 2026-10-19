@@ -44,9 +44,9 @@ function ProjectBadges({ project }: { project: ModrinthProjectDto }) {
 
 function ProjectStats({ project, compact = false }: { project: ModrinthProjectDto; compact?: boolean }) {
   return <div className={cn("grid gap-x-3 gap-y-1.5 text-sm text-kumo-subtle tabular-nums", compact ? "grid-cols-3" : "grid-cols-3 sm:grid-cols-1 sm:justify-items-end")}>
-    <span className="flex items-center gap-1.5 whitespace-nowrap" title="Downloads"><DownloadIcon size={14} aria-hidden="true" />{compactNumber(project.downloads)}</span>
-    <span className="flex items-center gap-1.5 whitespace-nowrap" title="Followers"><HeartIcon size={14} aria-hidden="true" />{compactNumber(project.followers)}</span>
-    <span className="flex items-center gap-1.5 whitespace-nowrap" title="Last updated"><HistoryIcon size={14} aria-hidden="true" />{relativeDate(project.modifiedAt)}</span>
+    <span className="flex items-center gap-1.5 whitespace-nowrap" title="Downloads"><DownloadIcon size={16} aria-hidden="true" />{compactNumber(project.downloads)}</span>
+    <span className="flex items-center gap-1.5 whitespace-nowrap" title="Followers"><HeartIcon size={16} aria-hidden="true" />{compactNumber(project.followers)}</span>
+    <span className="flex items-center gap-1.5 whitespace-nowrap" title="Last updated"><HistoryIcon size={16} aria-hidden="true" />{relativeDate(project.modifiedAt)}</span>
   </div>
 }
 

@@ -384,7 +384,7 @@ function ServerFiles({ serverId }: { serverId: string }) {
     <Button size="sm" variant="ghost" icon={HomeIcon} onClick={() => setPath("")} aria-current={segments.length ? undefined : "location"}>Root</Button>
     {segments.map((segment, index) => (
       <span key={`${segment}-${index}`} className="flex min-w-0 items-center gap-0.5">
-        <ChevronRightIcon size={12} className="shrink-0 text-kumo-subtle" aria-hidden="true" />
+        <ChevronRightIcon size={14} className="shrink-0 text-kumo-subtle" aria-hidden="true" />
         <Button size="sm" variant="ghost" className="max-w-48" onClick={() => setPath(segments.slice(0, index + 1).join("/"))} aria-current={index === segments.length - 1 ? "location" : undefined}><span className="truncate">{segment}</span></Button>
       </span>
     ))}
@@ -437,7 +437,7 @@ function ServerFiles({ serverId }: { serverId: string }) {
                   return <Table.Row key={entry.path}>
                     <Table.Cell>
                       <button type="button" className="-ml-2 flex max-w-md min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-base text-kumo-default hover:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:outline-none" onClick={() => openEntry(entry)}>
-                        <EntryIcon size={16} className={entry.isDirectory ? "shrink-0 text-(--color-kumo-brand)" : "shrink-0 text-kumo-subtle"} aria-hidden="true" />
+                        <EntryIcon size={18} className={entry.isDirectory ? "shrink-0 text-(--color-kumo-brand)" : "shrink-0 text-kumo-subtle"} aria-hidden="true" />
                         <span className="truncate">{entry.name}</span>
                       </button>
                     </Table.Cell>
@@ -445,7 +445,7 @@ function ServerFiles({ serverId }: { serverId: string }) {
                     <Table.Cell className="whitespace-nowrap text-kumo-subtle">{formatDate(entry.modifiedAt)}</Table.Cell>
                     <Table.Cell className="text-right">
                       <DropdownMenu>
-                        <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsIcon size={18} stroke={2} />} aria-label={`Actions for ${entry.name}`} />} />
+                        <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsIcon size={20} stroke={2} />} aria-label={`Actions for ${entry.name}`} />} />
                         <DropdownMenu.Content align="end">
                           {entry.isDirectory && <DropdownMenu.Item icon={FolderIcon} onClick={() => setPath(entry.path)}>Open folder</DropdownMenu.Item>}
                           {!entry.isDirectory && (image
@@ -663,11 +663,11 @@ export function BackupsPage() {
           <Table.Header><Table.Row><Table.Head>Created</Table.Head><Table.Head>Reason</Table.Head><Table.Head>Size</Table.Head><Table.Head>Status</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
           <Table.Body>{backups.data.map((backup) => <Table.Row key={backup.id}>
             <Table.Cell className="whitespace-nowrap">{formatDate(backup.createdAt)}</Table.Cell>
-            <Table.Cell><span className="flex flex-wrap items-center gap-1.5">{backup.reason}{backup.pinned && <Badge variant="outline" icon={<PinIcon size={12} />}>Pinned</Badge>}</span></Table.Cell>
+            <Table.Cell><span className="flex flex-wrap items-center gap-1.5">{backup.reason}{backup.pinned && <Badge variant="outline" icon={<PinIcon className="size-3.5!" />}>Pinned</Badge>}</span></Table.Cell>
             <Table.Cell className="whitespace-nowrap tabular-nums">{formatBytes(backup.size)}</Table.Cell>
             <Table.Cell><Badge variant={backup.state === "Completed" ? "success" : backup.state === "Failed" ? "error" : "neutral"} appearance="dot">{backup.state}</Badge></Table.Cell>
             <Table.Cell className="text-right"><div className="flex justify-end gap-1">
-              <LinkButton variant="ghost" size="sm" shape="square" icon={<DownloadIcon size={16} />} aria-label={`Download ${backup.fileName}`} href={api.backupDownloadUrl(serverId, backup.id)} />
+              <LinkButton variant="ghost" size="sm" shape="square" icon={<DownloadIcon size={18} />} aria-label={`Download ${backup.fileName}`} href={api.backupDownloadUrl(serverId, backup.id)} />
               <ConfirmDialog
                 trigger={<HintButton size="sm" icon={HistoryIcon} disabled={!canRestore} hint={canRestore ? undefined : restoreHint} aria-label={`Restore ${backup.fileName}`}>Restore</HintButton>}
                 title="Restore this backup?"
@@ -676,7 +676,7 @@ export function BackupsPage() {
                 onConfirm={() => restore.mutate(backup.id)}
               />
               <DropdownMenu>
-                <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsIcon size={18} stroke={2} />} aria-label={`More actions for ${backup.fileName}`} />} />
+                <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsIcon size={20} stroke={2} />} aria-label={`More actions for ${backup.fileName}`} />} />
                 <DropdownMenu.Content align="end">
                   <DropdownMenu.Item icon={backup.pinned ? PinnedOffIcon : PinIcon} disabled={pin.isPending} onClick={() => pin.mutate({ id: backup.id, pinned: !backup.pinned })}>{backup.pinned ? "Unpin" : "Pin"}</DropdownMenu.Item>
                   <DropdownMenu.Separator />

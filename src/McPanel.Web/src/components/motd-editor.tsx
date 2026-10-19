@@ -93,12 +93,12 @@ function MotdComposer({ value, onChange, serverName }: { value: string; onChange
         } />)}
       </div>
       <div className="flex flex-wrap items-center gap-1">
-        <FormatButton label="Bold" code="§l" onApply={insertFormatting}><BoldIcon size={16} stroke={2} /></FormatButton>
-        <FormatButton label="Italic" code="§o" onApply={insertFormatting}><ItalicIcon size={16} /></FormatButton>
-        <FormatButton label="Underline" code="§n" onApply={insertFormatting}><UnderlineIcon size={16} /></FormatButton>
-        <FormatButton label="Strikethrough" code="§m" onApply={insertFormatting}><StrikethroughIcon size={16} /></FormatButton>
-        <FormatButton label="Obfuscated" code="§k" onApply={insertFormatting}><Dice5Icon size={16} /></FormatButton>
-        <FormatButton label="Reset formatting" code="§r" onApply={insertFormatting}><RotateIcon size={16} /></FormatButton>
+        <FormatButton label="Bold" code="§l" onApply={insertFormatting}><BoldIcon size={18} stroke={2} /></FormatButton>
+        <FormatButton label="Italic" code="§o" onApply={insertFormatting}><ItalicIcon size={18} /></FormatButton>
+        <FormatButton label="Underline" code="§n" onApply={insertFormatting}><UnderlineIcon size={18} /></FormatButton>
+        <FormatButton label="Strikethrough" code="§m" onApply={insertFormatting}><StrikethroughIcon size={18} /></FormatButton>
+        <FormatButton label="Obfuscated" code="§k" onApply={insertFormatting}><Dice5Icon size={18} /></FormatButton>
+        <FormatButton label="Reset formatting" code="§r" onApply={insertFormatting}><RotateIcon size={18} /></FormatButton>
         <span className="mx-1 h-6 w-px bg-kumo-line" aria-hidden="true" />
         <input type="color" className="h-7 w-9 cursor-pointer rounded-md border-0 bg-transparent p-0.5 ring ring-kumo-line" aria-label="Custom MOTD color" value={customColor} onChange={(event) => setCustomColor(event.target.value)} />
         <Button size="sm" icon={PaletteIcon} onClick={() => insertFormatting(hexFormattingCode(customColor))}>Apply custom color</Button>

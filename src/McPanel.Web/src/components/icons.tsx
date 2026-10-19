@@ -20,13 +20,19 @@ import {
 const ICON_STROKE = 1.5
 
 /**
- * Wraps a Tabler icon so it sizes to the surrounding text (1em) by default. Kumo renders icon
+ * Tabler draws on a 24px grid with 2px of padding, so its glyphs fill less of their box than the
+ * surrounding text does. At 1.25em the drawn glyph is about as tall as the text beside it.
+ */
+const ICON_SIZE = "1.25em"
+
+/**
+ * Wraps a Tabler icon so it scales with the surrounding text by default. Kumo renders icon
  * components passed to Button, InputGroup, and similar slots without a size, so they follow the
  * control's font size; explicit `size` and `stroke` props still win.
  */
 function appIcon(Tabler: TablerIcon) {
   const AppIcon = forwardRef<SVGSVGElement, IconProps>(function AppIcon(props, ref) {
-    return <Tabler size="1em" stroke={ICON_STROKE} {...props} ref={ref} />
+    return <Tabler size={ICON_SIZE} stroke={ICON_STROKE} {...props} ref={ref} />
   })
   AppIcon.displayName = Tabler.displayName
   return AppIcon

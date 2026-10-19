@@ -11,7 +11,7 @@ export function HelpTooltip({ label, children }: { label: string; children: Reac
   return <Tooltip
     side="right"
     content={<span className="block max-w-xs text-pretty">{children}</span>}
-    render={<Button type="button" variant="ghost" size="xs" shape="square" icon={<InfoCircleIcon size={14} />} aria-label={`About ${label}`} className="text-kumo-subtle hover:text-kumo-default" />}
+    render={<Button type="button" variant="ghost" size="xs" shape="square" icon={<InfoCircleIcon size={16} />} aria-label={`About ${label}`} className="text-kumo-subtle hover:text-kumo-default" />}
   />
 }
 
@@ -23,7 +23,10 @@ export function FieldLabel({ htmlFor, label, help }: { htmlFor?: string; label: 
   </div>
 }
 
-/** A settings row: label and description on the left, switch on the right. */
+/**
+ * A settings row: the switch, then its label and description. The switch leads, as in Kumo's own
+ * labelled Switch, so on wide cards it stays beside the text it controls instead of the far edge.
+ */
 export function SwitchField({ id, label, description, tooltip, checked, onCheckedChange, disabled, className }: {
   id?: string
   label: string
@@ -38,11 +41,7 @@ export function SwitchField({ id, label, description, tooltip, checked, onChecke
   const switchId = id ?? generatedId
   const descriptionId = `${switchId}-description`
   return (
-    <div className={cn("flex items-start justify-between gap-6", className)}>
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <FieldLabel htmlFor={switchId} label={label} help={tooltip} />
-        {description && <p id={descriptionId} className="text-sm text-pretty text-kumo-subtle">{description}</p>}
-      </div>
+    <div className={cn("flex items-start gap-3", className)}>
       <Switch
         id={switchId}
         aria-label={label}
@@ -52,6 +51,10 @@ export function SwitchField({ id, label, description, tooltip, checked, onChecke
         onCheckedChange={(value) => onCheckedChange(value)}
         className="mt-0.5 shrink-0"
       />
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <FieldLabel htmlFor={switchId} label={label} help={tooltip} />
+        {description && <p id={descriptionId} className="text-sm text-pretty text-kumo-subtle">{description}</p>}
+      </div>
     </div>
   )
 }
@@ -139,7 +142,7 @@ export function ChoiceCards<T extends string>({ value, onValueChange, options, c
           >
             <span className="flex items-center gap-2 pr-6 text-base font-medium text-kumo-default">{option.icon}{option.title}</span>
             {option.description && <span id={descriptionId} className="text-sm text-pretty text-kumo-subtle">{option.description}</span>}
-            <CircleCheckFilledIcon size={18} aria-hidden="true" className="absolute top-3 right-3 text-(--color-kumo-brand) opacity-0 transition-opacity group-data-[pressed]:opacity-100" />
+            <CircleCheckFilledIcon size={20} aria-hidden="true" className="absolute top-3 right-3 text-(--color-kumo-brand) opacity-0 transition-opacity group-data-[pressed]:opacity-100" />
           </Toggle>
         )
       })}

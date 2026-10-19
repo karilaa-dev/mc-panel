@@ -170,7 +170,7 @@ function GateSettings({
       size="narrow"
       description={`Configure how ${server.name} accepts players, connects to backends, and runs.`}
       actions={<>
-        {gate.configuration.configurationDirty && <Badge variant="info" icon={<RefreshIcon size={12} />}>Applying changes</Badge>}
+        {gate.configuration.configurationDirty && <Badge variant="info" icon={<RefreshIcon className="size-3.5!" />}>Applying changes</Badge>}
         <Button variant="primary" loading={save.isPending} disabled={!memoryValid} onClick={() => save.mutate()}>Save settings</Button>
       </>}
     >
@@ -1176,7 +1176,7 @@ function AdvancedSettings({
         aria-label={`${open ? "Hide" : "Show"} ${title.toLowerCase()}`}
         onClick={() => setOpen(!open)}
       >
-        <ChevronDownIcon size={14} className={open ? "rotate-180 transition-transform" : "transition-transform"} />
+        <ChevronDownIcon size={16} className={open ? "rotate-180 transition-transform" : "transition-transform"} />
         {open ? "Hide options" : "Show options"}
       </Button>}
       contentClassName={open ? undefined : "hidden"}

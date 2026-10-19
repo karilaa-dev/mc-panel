@@ -192,8 +192,8 @@ export function ModrinthBrowser({ serverId, server, kind }: { serverId: string; 
               value={view}
               onValueChange={(values) => values[0] && setView(values[0])}
               options={[
-                { value: "list", label: <><MenuIcon size={16} /><span className="sr-only">List view</span></> },
-                { value: "gallery", label: <><LayoutGridIcon size={16} /><span className="sr-only">Gallery view</span></> },
+                { value: "list", label: <><MenuIcon size={18} /><span className="sr-only">List view</span></> },
+                { value: "gallery", label: <><LayoutGridIcon size={18} /><span className="sr-only">Gallery view</span></> },
               ]}
             />
           </div>
@@ -267,7 +267,7 @@ export function ModrinthBrowser({ serverId, server, kind }: { serverId: string; 
                 : <span className="mt-0.5 size-4 shrink-0" aria-hidden="true" />}
               <div className="flex min-w-0 flex-col gap-0.5">
                 {dependency.projectUrl
-                  ? <a className="flex w-fit items-center gap-1 font-medium text-kumo-link hover:underline" href={dependency.projectUrl} target="_blank" rel="noreferrer">{name}<ExternalLinkIcon size={12} aria-hidden="true" /></a>
+                  ? <a className="flex w-fit items-center gap-1 font-medium text-kumo-link hover:underline" href={dependency.projectUrl} target="_blank" rel="noreferrer">{name}<ExternalLinkIcon size={14} aria-hidden="true" /></a>
                   : <span className="font-medium text-kumo-default">{name}</span>}
                 {installed.length > 0 && <p className="text-sm text-kumo-subtle">{requestedVersionInstalled
                   ? `Already installed: ${installedSummary}.`
