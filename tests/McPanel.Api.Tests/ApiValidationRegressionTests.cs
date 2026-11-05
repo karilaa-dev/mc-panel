@@ -593,7 +593,7 @@ done
             Port = 32_123,
             MemoryMb = PanelOptions.MinimumServerMemoryMb,
             InitialMemoryMb = PanelOptions.MinimumServerMemoryMb,
-            MemoryLimitMb = PanelOptions.MinimumServerTotalMemoryMb,
+            MemoryLimitMb = PanelOptions.MinimumServerMemoryMb,
             JavaRuntimeId = JavaId,
             EulaAcceptedAt = DateTimeOffset.UtcNow
         });
@@ -712,7 +712,7 @@ done
     }
 
     [Fact]
-    public async Task Server_with_minimum_heap_and_total_limit_starts_and_stops()
+    public async Task Server_with_minimum_heap_and_no_extra_headroom_starts_and_stops()
     {
         Assert.Equal(512, PanelOptions.MinimumServerMemoryMb);
         try
@@ -1065,7 +1065,7 @@ done
         var server = await ReadServerAsync();
         Assert.Equal(1024, server.InitialMemoryMb);
         Assert.Equal(1024, server.MemoryMb);
-        Assert.Equal(1536, server.MemoryLimitMb);
+        Assert.Equal(1024, server.MemoryLimitMb);
         Assert.True(server.UseAikarFlags);
         Assert.Equal("-Dcustom=true", server.JvmArguments);
 
@@ -1099,7 +1099,7 @@ done
         var server = await ReadServerAsync();
         Assert.Equal(3072, server.InitialMemoryMb);
         Assert.Equal(3072, server.MemoryMb);
-        Assert.Equal(4096, server.MemoryLimitMb);
+        Assert.Equal(3072, server.MemoryLimitMb);
         Assert.True(server.UseAikarFlags);
 
         var loweredMaximum = ValidConfiguration();
@@ -1109,7 +1109,7 @@ done
         server = await ReadServerAsync();
         Assert.Equal(512, server.InitialMemoryMb);
         Assert.Equal(512, server.MemoryMb);
-        Assert.Equal(1024, server.MemoryLimitMb);
+        Assert.Equal(512, server.MemoryLimitMb);
         Assert.True(server.UseAikarFlags);
     }
 

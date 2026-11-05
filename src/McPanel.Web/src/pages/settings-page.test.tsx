@@ -177,7 +177,7 @@ describe("RuntimeSettingsPage", () => {
     await user.click(screen.getByRole("button", { name: "Save runtime settings" }))
 
     await waitFor(() => expect(mockedApi.saveRuntime).toHaveBeenCalledWith("server-1", expect.objectContaining({
-      totalMemoryMb: 4096,
+      totalMemoryMb: 3072,
       initialMemoryMb: 3072,
       maximumMemoryMb: 3072,
       useAikarFlags: true,
@@ -198,7 +198,7 @@ describe("RuntimeSettingsPage", () => {
     await waitFor(() => expect(aikar).toBeChecked())
   })
 
-  it("caps automatic headroom for large RAM allocations", async () => {
+  it("preserves selected RAM without adding hidden headroom", async () => {
     mockedApi.runtime.mockResolvedValue({ ...runtime, initialMemoryMb: 65536, maximumMemoryMb: 65536, totalMemoryMb: 69632 })
     mockedApi.systemInfo.mockResolvedValue({ version: "1.0.0", dataDirectory: "/var/lib/mcpanel", instancesDirectory: "/var/lib/mcpanel/instances", memoryAllocationLimitBytes: 68 * 1024 ** 3 })
     renderPage("runtime")
@@ -206,7 +206,7 @@ describe("RuntimeSettingsPage", () => {
     expect(await screen.findByText("RAM: 64.0 GiB")).toBeInTheDocument()
     await userEvent.setup().click(screen.getByRole("button", { name: "Save runtime settings" }))
     await waitFor(() => expect(mockedApi.saveRuntime).toHaveBeenCalledWith("server-1", expect.objectContaining({
-      totalMemoryMb: 69632,
+      totalMemoryMb: 65536,
       initialMemoryMb: 65536,
       maximumMemoryMb: 65536,
     })))

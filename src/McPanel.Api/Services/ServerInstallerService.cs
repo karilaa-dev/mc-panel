@@ -7,7 +7,6 @@ using McPanel.Api.Contracts;
 using McPanel.Api.Data;
 using McPanel.Api.Infrastructure;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 
 namespace McPanel.Api.Services;
 
@@ -20,7 +19,6 @@ public sealed partial class ServerInstallerService(
     OperationQueue operations,
     ConsoleService console,
     AsyncKeyedLock keyedLock,
-    IOptions<PanelOptions> options,
     GateProxyService gate,
     ILogger<ServerInstallerService> logger,
     CustomJarService? customJars = null,
@@ -43,10 +41,7 @@ public sealed partial class ServerInstallerService(
             throw PanelProblems.Conflict("PORT_IN_USE", "The selected port is already assigned to another server.");
         if (await db.Servers.AnyAsync(x => x.Name.ToLower() == request.Name.Trim().ToLower(), cancellationToken))
             throw PanelProblems.Conflict("VALIDATION_FAILED", "A server with that name already exists.");
-        var totalLimitMb = MemorySizing.TotalForExistingHeapMb(request.MemoryMb);
-        var totalMemory = HostMetricsService.ReadMemory().Total;
-        if ((long)totalLimitMb * 1024 * 1024 > totalMemory * options.Value.MemoryAllocationFraction)
-            throw new PanelException(400, "MEMORY_LIMIT_EXCEEDED", "The selected memory exceeds the host allocation limit.");
+        var totalLimitMb = request.MemoryMb;
 
         CustomJarService.ClaimedCustomJar? customJarClaim = null;
         if (request.Kind == ServerKind.CustomJar)
@@ -122,10 +117,7 @@ public sealed partial class ServerInstallerService(
             throw PanelProblems.Conflict("PORT_IN_USE", "The selected port is already assigned to another server.");
         if (await db.Servers.AnyAsync(x => x.Name.ToLower() == request.Name.Trim().ToLower(), cancellationToken))
             throw PanelProblems.Conflict("VALIDATION_FAILED", "A server with that name already exists.");
-        var totalLimitMb = MemorySizing.TotalForExistingHeapMb(request.MemoryMb);
-        var totalMemory = HostMetricsService.ReadMemory().Total;
-        if ((long)totalLimitMb * 1024 * 1024 > totalMemory * options.Value.MemoryAllocationFraction)
-            throw new PanelException(400, "MEMORY_LIMIT_EXCEEDED", "The selected memory exceeds the host allocation limit.");
+        var totalLimitMb = request.MemoryMb;
 
         var claim = await modpacks.ClaimAsync(request.ImportToken, cancellationToken);
         var entity = new ServerEntity

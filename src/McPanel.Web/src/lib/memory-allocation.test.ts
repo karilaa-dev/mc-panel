@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { clampMemoryMb, heapLimitMb, memoryLimitMb, totalMemoryForHeapMb } from "@/lib/memory-allocation"
+import { clampMemoryMb, memoryLimitMb } from "@/lib/memory-allocation"
 
 describe("memory allocation normalization", () => {
   it("supports 512 MiB and raises smaller or invalid values to that minimum", () => {
@@ -13,10 +13,9 @@ describe("memory allocation normalization", () => {
     expect(memoryLimitMb(8.25 * 1024 ** 3)).toBe(8192)
   })
 
-  it("reserves hidden overhead while keeping the selected heap exact", () => {
-    expect(totalMemoryForHeapMb(512)).toBe(1024)
-    expect(totalMemoryForHeapMb(4096)).toBe(5120)
-    expect(totalMemoryForHeapMb(65536)).toBe(69632)
-    expect(heapLimitMb(8 * 1024 ** 3)).toBe(6144)
+  it("uses host RAM directly without reserving hidden overhead", () => {
+    expect(memoryLimitMb(512 * 1024 ** 2)).toBe(512)
+    expect(memoryLimitMb(256 * 1024 ** 2)).toBe(0)
+    expect(memoryLimitMb(8 * 1024 ** 3)).toBe(8192)
   })
 })

@@ -188,10 +188,10 @@ public static partial class ApiEndpoints
             response.Headers.CacheControl = "no-store";
             return await gate.GenerateSecretAsync(id, kind, request.ConfirmReplace, token);
         });
-        api.MapGet("/system/info", (PanelPaths paths, IOptions<PanelOptions> options) =>
+        api.MapGet("/system/info", (PanelPaths paths) =>
         {
             var total = HostMetricsService.ReadMemory().Total;
-            return new SystemInfoDto(typeof(Program).Assembly.GetName().Version?.ToString() ?? "1.0.0", paths.Data, paths.Instances, (long)(total * options.Value.MemoryAllocationFraction));
+            return new SystemInfoDto(typeof(Program).Assembly.GetName().Version?.ToString() ?? "1.0.0", paths.Data, paths.Instances, total);
         });
         api.MapGet("/system/settings", async (IDbContextFactory<StateDbContext> factory, CancellationToken token) =>
         {

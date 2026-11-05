@@ -22,13 +22,26 @@ public sealed class RuntimeValidationTests
         Assert.Equal("snapshot", restored.Operation);
     }
 
-    [Theory]
-    [InlineData(512, 1024)]
-    [InlineData(4096, 5120)]
-    [InlineData(6144, 7680)]
-    [InlineData(65536, 69632)]
-    public void Adds_capped_native_headroom_without_reducing_the_selected_heap(int heapMb, int expectedTotalMb) =>
-        Assert.Equal(expectedTotalMb, MemorySizing.TotalForExistingHeapMb(heapMb));
+    [Fact]
+    public void Minecraft_accounting_clears_old_caps_and_swap_restrictions()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "mcpanel-memory-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            CgroupMemoryService.ConfigureMemory(directory, 1024);
+            Assert.Equal("1073741824", File.ReadAllText(Path.Combine(directory, "memory.max")));
+            Assert.Equal("1020054732", File.ReadAllText(Path.Combine(directory, "memory.high")));
+            Assert.Equal("0", File.ReadAllText(Path.Combine(directory, "memory.swap.max")));
+            Assert.Equal("1", File.ReadAllText(Path.Combine(directory, "memory.oom.group")));
+
+            CgroupMemoryService.ConfigureMemory(directory, null);
+            foreach (var file in new[] { "memory.max", "memory.high", "memory.swap.max" })
+                Assert.Equal("max", File.ReadAllText(Path.Combine(directory, file)));
+            Assert.Equal("0", File.ReadAllText(Path.Combine(directory, "memory.oom.group")));
+        }
+        finally { Directory.Delete(directory, true); }
+    }
 
     [Fact]
     public void Port_collision_reports_the_exact_port_and_next_action()
@@ -101,7 +114,7 @@ public sealed class RuntimeValidationTests
         var start = (System.Diagnostics.ProcessStartInfo)method.Invoke(null, [server, "/usr/bin/java", "/tmp"])!;
         var arguments = start.ArgumentList.ToList();
 
-        Assert.Equal("-Xms2048M", arguments[0]);
+        Assert.Equal("-Xms4096M", arguments[0]);
         Assert.Equal("-Xmx4096M", arguments[1]);
         Assert.Equal(ProcessSupervisor.AikarFlags, arguments.Skip(2).Take(ProcessSupervisor.AikarFlags.Count));
         Assert.Equal("-Dcustom=true", arguments[2 + ProcessSupervisor.AikarFlags.Count]);
@@ -119,7 +132,7 @@ public sealed class RuntimeValidationTests
         };
         var method = typeof(ProcessSupervisor).GetMethod("BuildStartInfo", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
         var start = (System.Diagnostics.ProcessStartInfo)method.Invoke(null, [server, "/usr/bin/java", "/tmp/server"])!;
-        Assert.Equal(["-Xms1024M", "-Xmx2048M", "@libraries/net/minecraftforge/forge/test/unix_args.txt", "nogui"], start.ArgumentList);
+        Assert.Equal(["-Xms2048M", "-Xmx2048M", "@libraries/net/minecraftforge/forge/test/unix_args.txt", "nogui"], start.ArgumentList);
     }
 
     [Theory]

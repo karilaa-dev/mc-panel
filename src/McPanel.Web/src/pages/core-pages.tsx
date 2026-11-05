@@ -15,11 +15,9 @@ import { recommendedJavaMajor } from "@/lib/java-version"
 import {
   clampMemoryMb,
   DEFAULT_MEMORY_LIMIT_MB,
-  heapLimitMb,
   MEMORY_MIN_MB,
   MEMORY_STEP_MB,
   memoryLimitMb,
-  totalMemoryForHeapMb,
 } from "@/lib/memory-allocation"
 import type { CustomJarImportDto, ModpackInspectionDto, RuntimeConfigurationDto, ServerKind, ServerPropertiesDto, ServerPropertyDefinitionDto, ServerPropertyDto, ServerState, ServerSummaryDto } from "@/lib/contracts"
 import { serverKindLabel } from "@/lib/server-kind"
@@ -257,11 +255,11 @@ export function CreateServerPage() {
     ? selectedInstaller
     : (installers[0]?.version ?? "")
   const hostTotalMemoryLimitMb = systemInfo
-    ? memoryLimitMb(systemInfo.memoryAllocationLimitBytes)
+    ? systemInfo.memoryAllocationLimitBytes / 1024 ** 2
     : DEFAULT_MEMORY_LIMIT_MB
   const supportedMemoryLimitMb = systemInfo
-    ? heapLimitMb(systemInfo.memoryAllocationLimitBytes)
-    : heapLimitMb(DEFAULT_MEMORY_LIMIT_MB * 1024 ** 2)
+    ? memoryLimitMb(systemInfo.memoryAllocationLimitBytes)
+    : memoryLimitMb(DEFAULT_MEMORY_LIMIT_MB * 1024 ** 2)
   const effectiveMemoryMb = clampMemoryMb(memoryMb, supportedMemoryLimitMb, MEMORY_MIN_MB)
   const memoryCapacityAvailable = supportedMemoryLimitMb >= MEMORY_MIN_MB
   const { register, handleSubmit, control, setValue, formState: { errors, isSubmitting } } = useForm<CreateFields>({ resolver: zodResolver(createSchema), defaultValues: { name: "My server", port: 25565, eulaAccepted: false } })
@@ -408,8 +406,8 @@ export function CreateServerPage() {
               ? <Select label="Java runtime" className="w-full" placeholder="Choose Java" items={compatibleJava.map((item) => ({ value: item.id, label: `Java ${item.major} · ${item.vendor}` }))} value={javaId} onValueChange={(value) => value && setSelectedJavaId(value as string)} />
               : <ErrorBanner title={`Java ${requiredJava}+ is required`} description="Install a compatible Java runtime on the host, then rescan from the Java page." />}
             {selectedRuntime && <Banner icon={<CircleCheckFilledIcon />} title="Compatible runtime found" description={<span className="font-mono text-sm [overflow-wrap:anywhere]">{selectedRuntime.path} · Java {selectedRuntime.major}</span>} />}
-            {memoryCapacityAvailable ? <MemoryField valueMb={effectiveMemoryMb} limitMb={supportedMemoryLimitMb} onChange={(value) => setMemoryMb(clampMemoryMb(value, supportedMemoryLimitMb, MEMORY_MIN_MB))} description={`Sets both Xms and Xmx to this exact value. MC Panel privately reserves JVM overhead. Maximum selectable RAM: ${gib(supportedMemoryLimitMb)}.`} />
-              : <ErrorBanner title="Not enough allocatable host RAM" description={`A server needs room for a 0.5 GiB heap plus JVM overhead, but the host allocation ceiling is ${gib(hostTotalMemoryLimitMb)}.`} />}
+            {memoryCapacityAvailable ? <MemoryField valueMb={effectiveMemoryMb} limitMb={supportedMemoryLimitMb} onChange={(value) => setMemoryMb(clampMemoryMb(value, supportedMemoryLimitMb, MEMORY_MIN_MB))} description={`Sets both Xms and Xmx to this exact value. Java can use additional memory outside the heap. Maximum selectable RAM: ${gib(supportedMemoryLimitMb)}.`} />
+              : <ErrorBanner title="Not enough allocatable host RAM" description={`A server needs at least a 0.5 GiB heap, but the host has ${gib(hostTotalMemoryLimitMb)}.`} />}
           </FormStack>}
 
           {step === 4 && !isGate && <form id="create-form" onSubmit={handleSubmit(submit)} noValidate className="flex flex-col gap-5">
@@ -876,13 +874,13 @@ export function RuntimeSettingsPage() {
   const { data: java = [] } = useQuery({ queryKey: ["java"], queryFn: api.java })
   const { data: systemInfo, isLoading: systemInfoLoading } = useQuery({ queryKey: ["system-info"], queryFn: api.systemInfo })
   if (serverLoading || isLoading || systemInfoLoading || !server || !data || !systemInfo) return <Page title="Runtime"><SectionSkeleton rows={5} /><SectionSkeleton rows={3} /></Page>
-  return <RuntimeSettingsEditor key={`${serverId}-${data.javaRuntimeId}-${data.totalMemoryMb}-${data.maximumMemoryMb}-${data.initialMemoryMb}`} serverId={serverId} serverState={server.state} serverKind={server.kind} initial={data} java={java} memoryLimitMb={heapLimitMb(systemInfo.memoryAllocationLimitBytes)} />
+  return <RuntimeSettingsEditor key={`${serverId}-${data.javaRuntimeId}-${data.totalMemoryMb}-${data.maximumMemoryMb}-${data.initialMemoryMb}`} serverId={serverId} serverState={server.state} serverKind={server.kind} initial={data} java={java} memoryLimitMb={Math.max(data.maximumMemoryMb, memoryLimitMb(systemInfo.memoryAllocationLimitBytes))} />
 }
 
 function RuntimeSettingsEditor({ serverId, serverState, serverKind, initial, java, memoryLimitMb }: { serverId: string; serverState: ServerState; serverKind: ServerKind; initial: RuntimeConfigurationDto; java: Awaited<ReturnType<typeof api.java>>; memoryLimitMb: number }) {
   const queryClient = useQueryClient()
   const heapMemoryMb = clampMemoryMb(initial.maximumMemoryMb, memoryLimitMb, MEMORY_MIN_MB)
-  const [form, setForm] = useState<RuntimeConfigurationDto>({ ...initial, totalMemoryMb: totalMemoryForHeapMb(heapMemoryMb), maximumMemoryMb: heapMemoryMb, initialMemoryMb: heapMemoryMb })
+  const [form, setForm] = useState<RuntimeConfigurationDto>({ ...initial, totalMemoryMb: heapMemoryMb, maximumMemoryMb: heapMemoryMb, initialMemoryMb: heapMemoryMb })
   const [confirmAikar, setConfirmAikar] = useState(false)
   const canSave = serverState === "Stopped" || serverState === "Running" || serverState === "Crashed"
   const memoryValid = form.maximumMemoryMb >= MEMORY_MIN_MB && form.maximumMemoryMb <= memoryLimitMb && form.maximumMemoryMb % MEMORY_STEP_MB === 0
@@ -898,7 +896,7 @@ function RuntimeSettingsEditor({ serverId, serverState, serverKind, initial, jav
   const update = <K extends keyof RuntimeConfigurationDto>(key: K, value: RuntimeConfigurationDto[K]) => setForm((current) => ({ ...current, [key]: value }))
   const changeMemory = (value: number) => {
     const next = clampMemoryMb(value, memoryLimitMb, MEMORY_MIN_MB)
-    setForm((current) => ({ ...current, totalMemoryMb: totalMemoryForHeapMb(next), maximumMemoryMb: next, initialMemoryMb: next }))
+    setForm((current) => ({ ...current, totalMemoryMb: next, maximumMemoryMb: next, initialMemoryMb: next }))
   }
   const changeAikar = (checked: boolean) => {
     if (checked && serverKind !== "Paper") setConfirmAikar(true)
@@ -907,7 +905,7 @@ function RuntimeSettingsEditor({ serverId, serverState, serverKind, initial, jav
   return <Page title="Runtime" description="Server core, Java, RAM, startup behavior, and JVM arguments." actions={<HintButton variant="primary" loading={save.isPending} disabled={!canSave || !memoryValid} hint={canSave ? undefined : `Runtime settings cannot be saved while the server is ${serverState.toLowerCase()}.`} onClick={() => save.mutate()}>Save runtime settings</HintButton>}>
     <Section title="Java and memory" description="Choose one RAM value; MC Panel applies it equally to Xms and Xmx.">
       <Select label="Java runtime" className="w-full" items={java.map((runtime) => ({ value: runtime.id, label: `Java ${runtime.major} · ${runtime.vendor}` }))} value={form.javaRuntimeId} onValueChange={(value) => value && update("javaRuntimeId", value as string)} />
-      <MemoryField valueMb={form.maximumMemoryMb} limitMb={memoryLimitMb} onChange={changeMemory} description="Both Xms and Xmx use this exact value. JVM overhead is handled internally." />
+      <MemoryField valueMb={form.maximumMemoryMb} limitMb={memoryLimitMb} onChange={changeMemory} description="Both Xms and Xmx use this exact value. Java can use additional memory outside the heap." />
     </Section>
     <Section title="Startup and JVM" description="How the server process starts and recovers.">
       <div className="flex flex-col gap-5">

@@ -38,7 +38,7 @@ internal sealed partial class RuntimeEngine
 
     public RuntimeCapabilities Capabilities() => new(RuntimeWire.Version, Data.SchemaMigration.ConsoleVersion,
         Infrastructure.RecoveryArchive.Version,
-        ["save-leases", "runtime-recovery", "bounded-logging", "health", "gate-feature-memory"]);
+        ["save-leases", "runtime-recovery", "bounded-logging", "health", "gate-feature-memory", "minecraft-heap-only"]);
 
     private Task QueueLogAsync(Guid id, string stream, string text, CancellationToken _)
     {
@@ -90,7 +90,7 @@ internal sealed partial class RuntimeEngine
         lock (_admissionGate)
         {
             var reserved = _memoryReservations.Where(x => x.Key != launch.ServerId).Sum(x => (long)x.Value);
-            if ((reserved + launch.MemoryLimitMb) * 1024L * 1024 > HostMetricsService.ReadMemory().Total * Settings.MemoryAllocationFraction)
+            if (launch.WorkloadKind == RuntimeWorkloadKind.Gate && (reserved + launch.MemoryLimitMb) * 1024L * 1024 > HostMetricsService.ReadMemory().Total * Settings.MemoryAllocationFraction)
                 throw new InvalidOperationException("Starting this workload would exceed the host memory allocation limit.");
             _memoryReservations[launch.ServerId] = launch.MemoryLimitMb;
         }
