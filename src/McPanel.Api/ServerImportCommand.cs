@@ -69,7 +69,7 @@ internal static class ServerImportCommand
                 await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
             }
             var java = new JavaDiscoveryService(factory, NullLogger<JavaDiscoveryService>.Instance);
-            var service = new ServerImportService(paths, factory, java, Options.Create(panelOptions));
+            var service = new ServerImportService(paths, factory, java);
             using var cancellation = new CancellationTokenSource();
             ConsoleCancelEventHandler cancel = (_, eventArgs) =>
             {

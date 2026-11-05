@@ -10,7 +10,6 @@ using McPanel.Api.Contracts;
 using McPanel.Api.Data;
 using McPanel.Api.Infrastructure;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 using Microsoft.Win32.SafeHandles;
 
 namespace McPanel.Api.Services;
@@ -609,8 +608,7 @@ public static class ServerImportSource
 public sealed partial class ServerImportService(
     PanelPaths paths,
     IDbContextFactory<StateDbContext> stateFactory,
-    JavaDiscoveryService javaDiscovery,
-    IOptions<PanelOptions> options)
+    JavaDiscoveryService javaDiscovery)
 {
     private const int ImportActivationVersion = 1;
     private static readonly JsonSerializerOptions ImportActivationJsonOptions = new(JsonSerializerDefaults.Web);
@@ -724,10 +722,7 @@ public sealed partial class ServerImportService(
             throw Usage("IMPORT_JAVA_INCOMPATIBLE", $"Minecraft {version} requires Java {requiredJava} or newer.", "java-runtime");
         if (request.Kind == ServerKind.Forge && requiredJava == 8 && runtime.Major != 8)
             throw Usage("IMPORT_JAVA_INCOMPATIBLE", $"Legacy Forge for Minecraft {version} requires Java 8.", "java-runtime");
-        var totalLimitMb = MemorySizing.TotalForExistingHeapMb(request.MemoryMb);
-        var totalMemory = HostMetricsService.ReadMemory().Total;
-        if ((long)totalLimitMb * 1024 * 1024 > totalMemory * options.Value.MemoryAllocationFraction)
-            throw Usage("IMPORT_MEMORY_LIMIT", "The selected memory exceeds the host allocation limit.", "memory-mb");
+        var totalLimitMb = request.MemoryMb;
 
         return new(name, request.Kind, version, loaderVersion, launchTarget, launchMode, runtime,
             requiredJava, request.MemoryMb, totalLimitMb, request.Port, request.JvmArguments ?? "");

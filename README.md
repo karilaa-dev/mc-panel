@@ -188,3 +188,13 @@ dotnet test McPanel.slnx --configuration Release
 ```
 
 The API notes are in [src/McPanel.Api/CONTRACT.md](src/McPanel.Api/CONTRACT.md).
+
+### Minecraft memory
+
+The RAM setting is the Java heap size: choosing 4096 MiB launches Java with
+`-Xms4096M -Xmx4096M`. MC Panel does not calculate an additional JVM overhead
+budget, impose a Minecraft process memory cap, throttle memory, or disable swap.
+Native Java memory and filesystem cache can make measured server usage exceed
+the selected heap size. Host memory limits still apply. Existing heap selections
+are preserved; legacy total-memory settings are ignored for Minecraft launches.
+Gate proxy memory limits are unchanged.

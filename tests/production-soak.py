@@ -177,9 +177,9 @@ def main():
                 database.execute('INSERT OR REPLACE INTO ' + table + ' (' + ','.join(row) + ') VALUES (' + ','.join('?' for _ in row) + ')', list(row.values()))
         endpoint = '/api/v1/servers/' + server_id
         job_done(api(endpoint + '/actions/start', {}))
-        if not control('snapshot')[0]['memoryEnforced']:
-            raise AssertionError('The runtime did not enforce the real cgroup memory limit')
-        event('started', runtime=control('capabilities'), memoryEnforced=True)
+        if control('snapshot')[0]['memoryEnforced']:
+            raise AssertionError('The runtime imposed an unwanted process memory limit')
+        event('started', runtime=control('capabilities'), memoryEnforced=False)
         deadline = time.monotonic() + args.hours * 3600
         while time.monotonic() < deadline:
             job_done(api(endpoint + '/backups', {}))

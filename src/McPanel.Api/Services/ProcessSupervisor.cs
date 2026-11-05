@@ -182,9 +182,9 @@ public sealed class ProcessSupervisor(
             await StartPersistentGateLockedAsync(server, db, recovery, cancellationToken);
             return;
         }
-        if (server.MemoryMb < PanelOptions.MinimumServerMemoryMb || server.MemoryLimitMb < PanelOptions.MinimumServerTotalMemoryMb || server.MemoryMb >= server.MemoryLimitMb)
+        if (server.MemoryMb < PanelOptions.MinimumServerMemoryMb)
             throw new PanelException(409, "MEMORY_LIMIT_TOO_LOW", "The configured server memory is below the supported minimum.",
-                $"Allocate at least {PanelOptions.MinimumServerTotalMemoryMb} MiB total and leave native-memory headroom above the Java heap.");
+                $"Select at least {PanelOptions.MinimumServerMemoryMb} MiB for the Java heap.");
         var java = await db.JavaRuntimes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == server.JavaRuntimeId, cancellationToken)
             ?? throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
         var probed = await javaDiscovery.ProbeAsync(java.Path, java.IsCustom, cancellationToken);
@@ -198,10 +198,6 @@ public sealed class ProcessSupervisor(
         await _memoryAdmission.WaitAsync(cancellationToken);
         try
         {
-            var allocationMb = await db.Servers.Where(x => x.Id != id && (x.ProcessId != null || x.State == ServerState.Running || x.State == ServerState.Starting || x.State == ServerState.Stopping || x.State == ServerState.BackingUp)).SumAsync(x => (long)x.MemoryLimitMb, cancellationToken);
-            var total = HostMetricsService.ReadMemory().Total;
-            if ((allocationMb + server.MemoryLimitMb) * 1024 * 1024 > total * options.Value.MemoryAllocationFraction)
-                throw new PanelException(409, "MEMORY_LIMIT_EXCEEDED", "Starting this server would exceed the host memory allocation limit.");
             EnsurePortAvailable(server.Port);
             var startInfo = BuildStartInfo(server, java.Path, instance);
             server.State = ServerState.Starting; server.ProcessId = null; server.UpdatedAt = DateTimeOffset.UtcNow;
@@ -213,7 +209,7 @@ public sealed class ProcessSupervisor(
                 cancellationToken.ThrowIfCancellationRequested();
                 // A dispatched launch continues in the runtime even if its caller cancels.
                 // Keep the server lock until its reply so an immediate stop can drain it.
-                snapshot = await persistentRuntime.StartAsync(new RuntimeLaunchRequest(id, java.Path, paths.Instance(id), startInfo.ArgumentList.ToList(), server.MemoryLimitMb, options.Value.GracefulStopSeconds, CrashRecovery: server.CrashRecovery, GamePort: server.Port), lifetime.ApplicationStopping);
+                snapshot = await persistentRuntime.StartAsync(new RuntimeLaunchRequest(id, java.Path, paths.Instance(id), startInfo.ArgumentList.ToList(), server.MemoryMb, options.Value.GracefulStopSeconds, CrashRecovery: server.CrashRecovery, GamePort: server.Port), lifetime.ApplicationStopping);
             }
             catch
             {
@@ -493,9 +489,9 @@ public sealed class ProcessSupervisor(
             throw PanelProblems.Conflict("SERVER_BUSY", "The server already has a managed process.");
         if (server.RecoveryRequired || server.State is ServerState.Installing or ServerState.Updating or ServerState.BackingUp or ServerState.Error)
             throw PanelProblems.Conflict("SERVER_BUSY", "The server cannot be started in its current state.");
-        if (server.MemoryMb < PanelOptions.MinimumServerMemoryMb || server.MemoryLimitMb < PanelOptions.MinimumServerTotalMemoryMb || server.MemoryMb >= server.MemoryLimitMb)
+        if (server.MemoryMb < PanelOptions.MinimumServerMemoryMb)
             throw new PanelException(409, "MEMORY_LIMIT_TOO_LOW", "The configured server memory is below the supported minimum.",
-                $"Allocate at least {PanelOptions.MinimumServerTotalMemoryMb} MiB total and leave native-memory headroom above the Java heap.");
+                $"Select at least {PanelOptions.MinimumServerMemoryMb} MiB for the Java heap.");
         var runtime = await db.JavaRuntimes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == server.JavaRuntimeId, cancellationToken)
             ?? throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
         var probed = await javaDiscovery.ProbeAsync(runtime.Path, runtime.IsCustom, cancellationToken);
@@ -513,12 +509,8 @@ public sealed class ProcessSupervisor(
         CgroupWorkload? workload = null;
         try
         {
-            var allocationMb = await db.Servers.Where(x => x.Id != id && (x.ProcessId != null || x.State == ServerState.Running || x.State == ServerState.Starting || x.State == ServerState.Stopping || x.State == ServerState.BackingUp)).SumAsync(x => (long)x.MemoryLimitMb, cancellationToken);
-            var total = HostMetricsService.ReadMemory().Total;
-            if ((allocationMb + server.MemoryLimitMb) * 1024 * 1024 > total * options.Value.MemoryAllocationFraction)
-                throw new PanelException(409, "MEMORY_LIMIT_EXCEEDED", "Starting this server would exceed the host memory allocation limit.");
             EnsurePortAvailable(server.Port);
-            workload = cgroups.Create(id, server.MemoryLimitMb);
+            workload = cgroups.Create(id, null);
             var start = cgroups.Wrap(BuildStartInfo(server, runtime.Path, instance), workload);
             server.State = ServerState.Starting; server.ProcessId = null; server.UpdatedAt = DateTimeOffset.UtcNow;
             if (!recovery) server.CrashAttempts = 0;
@@ -679,10 +671,10 @@ public sealed class ProcessSupervisor(
             return snapshot is null ? new(0, 0, 0, 0, 0, 0, 0, 0, false, 0) : new(snapshot.CpuPercent, snapshot.MemoryUsedMb, snapshot.MemoryPeakMb, snapshot.SwapUsedMb,
                 snapshot.AnonymousMemoryMb, snapshot.FileMemoryMb, snapshot.KernelMemoryMb, snapshot.SocketMemoryMb, snapshot.MemoryEnforced, snapshot.UptimeSeconds);
         }
-        if (!_processes.TryGetValue(id, out var managed)) return new(0, 0, 0, 0, 0, 0, 0, 0, cgroups.Available, 0);
+        if (!_processes.TryGetValue(id, out var managed)) return new(0, 0, 0, 0, 0, 0, 0, 0, false, 0);
         try
         {
-            if (managed.Process.HasExited) return new(0, 0, 0, 0, 0, 0, 0, 0, managed.Cgroup is not null, 0);
+            if (managed.Process.HasExited) return new(0, 0, 0, 0, 0, 0, 0, 0, managed.Cgroup?.MemoryEnforced == true, 0);
             lock (managed.MetricsLock)
             {
                 managed.Process.Refresh();
@@ -700,11 +692,11 @@ public sealed class ProcessSupervisor(
                     (memory?.FileBytes ?? 0) / 1024d / 1024d,
                     (memory?.KernelBytes ?? 0) / 1024d / 1024d,
                     (memory?.SocketBytes ?? 0) / 1024d / 1024d,
-                    managed.Cgroup is not null,
+                    managed.Cgroup?.MemoryEnforced == true,
                     Math.Max(0, (long)(now - managed.StartedAt).TotalSeconds));
             }
         }
-        catch { return new(0, 0, 0, 0, 0, 0, 0, 0, managed.Cgroup is not null, Math.Max(0, (long)(DateTimeOffset.UtcNow - managed.StartedAt).TotalSeconds)); }
+        catch { return new(0, 0, 0, 0, 0, 0, 0, 0, managed.Cgroup?.MemoryEnforced == true, Math.Max(0, (long)(DateTimeOffset.UtcNow - managed.StartedAt).TotalSeconds)); }
     }
 
     public bool IsRunning(Guid id) => persistentRuntime.Enabled ? persistentRuntime.IsRunning(id) : _processes.ContainsKey(id);
@@ -771,7 +763,7 @@ public sealed class ProcessSupervisor(
             var exitMessage = requested
                 ? $"Server stopped (exit {exitCode})."
                 : memoryLimitExceeded
-                    ? $"Server exceeded its total RAM limit and was stopped by the cgroup OOM killer (exit {exitCode})."
+                    ? $"Server was stopped by the kernel OOM killer (exit {exitCode})."
                     : $"Server exited unexpectedly with code {exitCode}.";
             try { await console.AppendAsync(id, "system", exitMessage); }
             catch (Exception exception) { logger.LogWarning(exception, "Could not persist exit message for {ServerId}", id); }
@@ -832,7 +824,7 @@ public sealed class ProcessSupervisor(
             FileName = javaPath, WorkingDirectory = instance, UseShellExecute = false,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true
         };
-        start.ArgumentList.Add($"-Xms{server.InitialMemoryMb}M");
+        start.ArgumentList.Add($"-Xms{server.MemoryMb}M");
         start.ArgumentList.Add($"-Xmx{server.MemoryMb}M");
         if (server.UseAikarFlags)
             foreach (var argument in AikarFlags) start.ArgumentList.Add(argument);

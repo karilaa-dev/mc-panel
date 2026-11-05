@@ -489,7 +489,7 @@ internal sealed partial class RuntimeEngine(
         Process process;
         try
         {
-        workload = cgroups.Create(launch.ServerId, launch.MemoryLimitMb);
+        workload = cgroups.Create(launch.ServerId, launch.WorkloadKind == RuntimeWorkloadKind.Gate ? launch.MemoryLimitMb : null);
         var start = new ProcessStartInfo
         {
             FileName = launch.JavaExecutable,
@@ -700,13 +700,13 @@ internal sealed partial class RuntimeEngine(
             (finalMemory?.SwapBytes ?? 0) / 1024d / 1024d,
             (finalMemory?.AnonymousBytes ?? 0) / 1024d / 1024d, (finalMemory?.FileBytes ?? 0) / 1024d / 1024d,
             (finalMemory?.KernelBytes ?? 0) / 1024d / 1024d, (finalMemory?.SocketBytes ?? 0) / 1024d / 1024d,
-            managed.Cgroup is not null,
+            managed.Cgroup?.MemoryEnforced == true,
             Math.Max(0, (long)(DateTimeOffset.UtcNow - managed.StartedAt).TotalSeconds));
         _status[id] = snapshot;
         managed.Exit.TrySetResult(exitCode);
         await TryPersistAsync(snapshot, CancellationToken.None);
         Changed();
-        var message = clean ? $"Server stopped (exit {exitCode})." : exceeded ? $"Server exceeded its total RAM limit and stopped (exit {exitCode})." : $"Server exited unexpectedly with code {exitCode}.";
+        var message = clean ? $"Server stopped (exit {exitCode})." : exceeded ? $"Server was stopped by the kernel OOM killer (exit {exitCode})." : $"Server exited unexpectedly with code {exitCode}.";
         await QueueLogAsync(id, "system", message, CancellationToken.None);
         if (!clean) ScheduleRecovery(id);
     }
@@ -730,11 +730,11 @@ internal sealed partial class RuntimeEngine(
                     (memory?.SwapBytes ?? 0) / 1024d / 1024d,
                     (memory?.AnonymousBytes ?? 0) / 1024d / 1024d, (memory?.FileBytes ?? 0) / 1024d / 1024d,
                     (memory?.KernelBytes ?? 0) / 1024d / 1024d, (memory?.SocketBytes ?? 0) / 1024d / 1024d,
-                    managed.Cgroup is not null,
+                    managed.Cgroup?.MemoryEnforced == true,
                     Math.Max(0, (long)(now - managed.StartedAt).TotalSeconds));
             }
         }
-        catch { return new(Guid.Empty, RuntimeProcessState.Running, managed.ProcessId, managed.StartedAt, DateTimeOffset.UtcNow, null, false, 0, 0, 0, 0, 0, 0, 0, 0, managed.Cgroup is not null, Math.Max(0, (long)(DateTimeOffset.UtcNow - managed.StartedAt).TotalSeconds)); }
+        catch { return new(Guid.Empty, RuntimeProcessState.Running, managed.ProcessId, managed.StartedAt, DateTimeOffset.UtcNow, null, false, 0, 0, 0, 0, 0, 0, 0, 0, managed.Cgroup?.MemoryEnforced == true, Math.Max(0, (long)(DateTimeOffset.UtcNow - managed.StartedAt).TotalSeconds)); }
     }
 
     private async Task PersistAsync(RuntimeServerSnapshot snapshot, CancellationToken cancellationToken)
@@ -766,7 +766,7 @@ internal sealed partial class RuntimeEngine(
             ValidateSecretFile(launch.VelocitySecretFile, paths.GateVelocitySecret(launch.ServerId));
             ValidateSecretFile(launch.BungeeGuardSecretFile, paths.GateBungeeGuardSecret(launch.ServerId));
         }
-        else if (launch.MemoryLimitMb < PanelOptions.MinimumServerTotalMemoryMb)
+        else if (launch.MemoryLimitMb < PanelOptions.MinimumServerMemoryMb)
             throw new InvalidDataException("The Minecraft runtime memory limit is invalid.");
     }
 

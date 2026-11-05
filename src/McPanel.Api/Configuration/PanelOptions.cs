@@ -3,7 +3,6 @@ namespace McPanel.Api.Configuration;
 public sealed class PanelOptions
 {
     public const int MinimumServerMemoryMb = 512;
-    public const int MinimumServerTotalMemoryMb = 1024;
     public const int ServerMemoryStepMb = 512;
 
     public string DataDirectory { get; set; } = Environment.GetEnvironmentVariable("MCPANEL_DATA_DIR") ?? "/var/lib/mcpanel";

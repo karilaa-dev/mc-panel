@@ -143,11 +143,11 @@ describe("CreateServerPage", () => {
     const slider = document.querySelector('[data-slot="slider"] input[type="range"]') as HTMLInputElement
     expect(slider).toHaveAttribute("aria-label", "RAM")
     expect(slider).toHaveAttribute("min", "512")
-    expect(slider).toHaveAttribute("max", "6144")
+    expect(slider).toHaveAttribute("max", "8192")
     expect(slider).toHaveValue("4096")
     expect(screen.getByText("RAM: 4.0 GiB")).toBeInTheDocument()
     expect(screen.getByText(/Sets both Xms and Xmx to this exact value/)).toBeInTheDocument()
-    expect(screen.getByText(/Maximum selectable RAM: 6.0 GiB/)).toBeInTheDocument()
+    expect(screen.getByText(/Maximum selectable RAM: 8.0 GiB/)).toBeInTheDocument()
     expect(screen.getByText(/Compatible runtime found/)).toBeInTheDocument()
 
     fireEvent.change(slider, { target: { value: "512" } })
@@ -156,8 +156,8 @@ describe("CreateServerPage", () => {
     expect(screen.queryByText(/NaN GiB/)).not.toBeInTheDocument()
   })
 
-  it("blocks creation when the host ceiling is below the total-memory minimum", async () => {
-    mockedApi.systemInfo.mockResolvedValue({ version: "1.0.0", dataDirectory: "/var/lib/mcpanel", instancesDirectory: "/var/lib/mcpanel/instances", memoryAllocationLimitBytes: 512 * 1024 ** 2 })
+  it("blocks creation when the host ceiling is below the minimum heap", async () => {
+    mockedApi.systemInfo.mockResolvedValue({ version: "1.0.0", dataDirectory: "/var/lib/mcpanel", instancesDirectory: "/var/lib/mcpanel/instances", memoryAllocationLimitBytes: 256 * 1024 ** 2 })
     const user = userEvent.setup()
     renderPage()
 
@@ -167,7 +167,7 @@ describe("CreateServerPage", () => {
 
     expect(document.querySelector('[data-slot="slider"]')).not.toBeInTheDocument()
     expect(screen.getByText("Not enough allocatable host RAM")).toBeInTheDocument()
-    expect(screen.getByText(/host allocation ceiling is 0.5 GiB/)).toBeInTheDocument()
+    expect(screen.getByText(/host has 0.3 GiB/)).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /continue/i })).toBeDisabled()
     expect(mockedApi.createServer).not.toHaveBeenCalled()
   })

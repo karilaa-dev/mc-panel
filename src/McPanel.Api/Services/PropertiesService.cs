@@ -5,7 +5,6 @@ using McPanel.Api.Contracts;
 using McPanel.Api.Data;
 using McPanel.Api.Infrastructure;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 
 namespace McPanel.Api.Services;
 
@@ -91,7 +90,6 @@ public sealed class PropertiesDocument
 public sealed class PropertiesService(
     PanelPaths paths,
     IDbContextFactory<StateDbContext> stateFactory,
-    IOptions<PanelOptions> options,
     AsyncKeyedLock keyedLock,
     IServerProcessStatus processStatus,
     GateProxyService gate,
@@ -196,12 +194,9 @@ public sealed class PropertiesService(
         EnsureStableState(server, processStatus.IsRunning(id));
         if (!await db.JavaRuntimes.AnyAsync(x => x.Id == dto.JavaRuntimeId, cancellationToken))
             throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
-        var totalLimitMb = MemorySizing.TotalForExistingHeapMb(dto.MaximumMemoryMb);
-        var totalMemory = HostMetricsService.ReadMemory().Total;
-        if ((long)totalLimitMb * 1024 * 1024 > totalMemory * options.Value.MemoryAllocationFraction)
-            throw new PanelException(400, "MEMORY_LIMIT_EXCEEDED", "The selected memory exceeds the host allocation limit.");
+        var totalLimitMb = dto.MaximumMemoryMb;
 
-        var restartChanged = server.InitialMemoryMb != dto.MaximumMemoryMb || server.MemoryMb != dto.MaximumMemoryMb || server.MemoryLimitMb != totalLimitMb ||
+        var restartChanged = server.InitialMemoryMb != dto.MaximumMemoryMb || server.MemoryMb != dto.MaximumMemoryMb ||
             server.JavaRuntimeId != dto.JavaRuntimeId || server.JvmArguments != dto.JvmArguments || server.UseAikarFlags != dto.UseAikarFlags;
         server.InitialMemoryMb = dto.MaximumMemoryMb;
         server.MemoryMb = dto.MaximumMemoryMb;
@@ -262,10 +257,7 @@ public sealed class PropertiesService(
             throw PanelProblems.Conflict("PORT_IN_USE", "The selected port is already assigned.");
         if (!await db.JavaRuntimes.AnyAsync(x => x.Id == dto.JavaRuntimeId, cancellationToken))
             throw new PanelException(400, "JAVA_RUNTIME_NOT_FOUND", "The selected Java runtime was not found.");
-        var totalLimitMb = MemorySizing.TotalForExistingHeapMb(dto.MemoryMb);
-        var totalMemory = HostMetricsService.ReadMemory().Total;
-        if ((long)totalLimitMb * 1024 * 1024 > totalMemory * options.Value.MemoryAllocationFraction)
-            throw new PanelException(400, "MEMORY_LIMIT_EXCEEDED", "The selected memory exceeds the host allocation limit.");
+        var totalLimitMb = dto.MemoryMb;
 
         var file = Path.Combine(paths.Instance(id), "server.properties");
         var fileExists = File.Exists(file);
@@ -281,7 +273,7 @@ public sealed class PropertiesService(
         var updatedText = document.ToString();
         var changedProperties = !fileExists || !string.Equals(originalText, updatedText, StringComparison.Ordinal);
         var portChanged = server.Port != dto.Port;
-        var changedRuntime = server.MemoryLimitMb != totalLimitMb || server.MemoryMb != dto.MemoryMb || server.InitialMemoryMb != dto.MemoryMb || server.JavaRuntimeId != dto.JavaRuntimeId || server.JvmArguments != dto.JvmArguments || server.Port != dto.Port;
+        var changedRuntime = server.MemoryMb != dto.MemoryMb || server.InitialMemoryMb != dto.MemoryMb || server.JavaRuntimeId != dto.JavaRuntimeId || server.JvmArguments != dto.JvmArguments || server.Port != dto.Port;
         server.Port = dto.Port; server.MemoryLimitMb = totalLimitMb; server.MemoryMb = dto.MemoryMb; server.InitialMemoryMb = dto.MemoryMb; server.JavaRuntimeId = dto.JavaRuntimeId;
         server.JvmArguments = dto.JvmArguments; server.StartOnBoot = dto.StartOnBoot; server.CrashRecovery = dto.CrashRecovery;
         server.RestartRequired |= server.State == ServerState.Running && (changedProperties || changedRuntime);
@@ -381,9 +373,9 @@ public sealed class PropertiesService(
         key.Contains("token", StringComparison.OrdinalIgnoreCase);
 
     private static RuntimeConfigurationDto RuntimeDto(ServerEntity server) => new(
-        server.InitialMemoryMb,
         server.MemoryMb,
-        server.MemoryLimitMb,
+        server.MemoryMb,
+        server.MemoryMb,
         server.JavaRuntimeId,
         server.JvmArguments,
         server.UseAikarFlags,

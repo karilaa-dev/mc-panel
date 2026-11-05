@@ -33,7 +33,7 @@ public sealed class ServerImportServiceTests : IAsyncLifetime
         await using var db = _factory.CreateDbContext();
         await db.Database.EnsureCreatedAsync();
         var java = new JavaDiscoveryService(_factory, NullLogger<JavaDiscoveryService>.Instance);
-        _service = new ServerImportService(_paths, _factory, java, Options.Create(options));
+        _service = new ServerImportService(_paths, _factory, java);
     }
 
     public Task DisposeAsync()

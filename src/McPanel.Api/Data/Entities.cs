@@ -41,7 +41,8 @@ public sealed class ServerEntity
     [MaxLength(64)] public string AddressRevision { get; set; } = Guid.NewGuid().ToString("N");
     public int MemoryMb { get; set; } = 4096;
     public int InitialMemoryMb { get; set; } = 4096;
-    public int MemoryLimitMb { get; set; } = 5120;
+    // Legacy compatibility field: Minecraft uses MemoryMb for its JVM heap, not an OS cap.
+    public int MemoryLimitMb { get; set; } = 4096;
     [MaxLength(64)] public required string JavaRuntimeId { get; set; }
     [MaxLength(2048)] public string JvmArguments { get; set; } = "";
     public bool UseAikarFlags { get; set; }

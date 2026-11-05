@@ -9,7 +9,7 @@ public sealed record CgroupMemorySnapshot(
     long CurrentBytes, long PeakBytes, long SwapBytes, long AnonymousBytes,
     long FileBytes, long KernelBytes, long SocketBytes, long OomKillCount);
 
-public sealed record CgroupWorkload(Guid ServerId, string Directory, string ProcsFile)
+public sealed record CgroupWorkload(Guid ServerId, string Directory, string ProcsFile, bool MemoryEnforced = true)
 {
     public string File(string name) => Path.Combine(Directory, name);
 }
@@ -32,21 +32,21 @@ public sealed class CgroupMemoryService
         try
         {
             _serversDirectory = Initialize();
-            logger.LogInformation("Per-server cgroup v2 memory enforcement is enabled at {CgroupDirectory}", _serversDirectory);
+            logger.LogInformation("Per-server cgroup v2 memory accounting is enabled at {CgroupDirectory}", _serversDirectory);
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "Per-server cgroup v2 memory enforcement is unavailable");
+            logger.LogWarning(exception, "Per-server cgroup v2 memory accounting is unavailable");
         }
     }
 
     public bool Available => _serversDirectory is not null;
 
-    public CgroupWorkload? Create(Guid serverId, int totalMemoryMb)
+    public CgroupWorkload? Create(Guid serverId, int? totalMemoryMb)
     {
         if (_serversDirectory is null)
         {
-            if (_required)
+            if (_required && totalMemoryMb is not null)
                 throw new PanelException(500, "MEMORY_ENFORCEMENT_UNAVAILABLE",
                     "The server cannot start because cgroup memory enforcement is unavailable.",
                     "Install the delegated systemd unit and restart MC Panel.");
@@ -57,19 +57,26 @@ public sealed class CgroupMemoryService
         try
         {
             Directory.CreateDirectory(directory);
-            var totalBytes = checked((long)totalMemoryMb * 1024 * 1024);
-            Write(directory, "memory.high", (totalBytes * 95 / 100).ToString(CultureInfo.InvariantCulture));
-            Write(directory, "memory.max", totalBytes.ToString(CultureInfo.InvariantCulture));
-            Write(directory, "memory.swap.max", "0");
-            Write(directory, "memory.oom.group", "1");
+            ConfigureMemory(directory, totalMemoryMb);
             _observedPeaks[serverId] = 0;
-            return new(serverId, directory, Path.Combine(directory, "cgroup.procs"));
+            return new(serverId, directory, Path.Combine(directory, "cgroup.procs"), totalMemoryMb is not null);
         }
         catch
         {
             try { Directory.Delete(directory); } catch { }
             throw;
         }
+    }
+
+    internal static void ConfigureMemory(string directory, int? totalMemoryMb)
+    {
+        // Minecraft's limit is its Java heap. Native allocations and file cache must
+        // not be throttled or killed by a second, guessed process-memory budget.
+        var totalBytes = totalMemoryMb is { } limit ? checked((long)limit * 1024 * 1024) : (long?)null;
+        Write(directory, "memory.max", totalBytes?.ToString(CultureInfo.InvariantCulture) ?? "max");
+        Write(directory, "memory.high", totalBytes is { } bytes ? (bytes * 95 / 100).ToString(CultureInfo.InvariantCulture) : "max");
+        Write(directory, "memory.swap.max", totalBytes is null ? "max" : "0");
+        Write(directory, "memory.oom.group", totalBytes is null ? "0" : "1");
     }
 
     public ProcessStartInfo Wrap(ProcessStartInfo java, CgroupWorkload? workload)

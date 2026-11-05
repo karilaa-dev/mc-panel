@@ -39,9 +39,23 @@ public sealed class PersistentRuntimeTests : IAsyncLifetime
             File.SetUnixFileMode(_fakeJava, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         var cgroups = new CgroupMemoryService(new TestEnvironment(), NullLogger<CgroupMemoryService>.Instance);
         _engine = new RuntimeEngine(_paths, cgroups, NullLogger<RuntimeEngine>.Instance,
-            Microsoft.Extensions.Options.Options.Create(new PanelOptions { BackupLeaseSeconds = 1, StartupTimeoutSeconds = 1 }))
+            Microsoft.Extensions.Options.Options.Create(new PanelOptions { BackupLeaseSeconds = 1, StartupTimeoutSeconds = 1, MemoryAllocationFraction = 0 }))
             { MaintenanceInterval = TimeSpan.FromMilliseconds(20), RecoveryDelay = TimeSpan.FromMilliseconds(100) };
         await _engine.InitializeAsync(CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData(512)]
+    [InlineData(1_048_576)]
+    public async Task Minecraft_uses_heap_settings_without_total_memory_admission(int heapMb)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var id = Guid.NewGuid(); Directory.CreateDirectory(_paths.Instance(id));
+        var snapshot = await _engine.StartAsync(new(id, _fakeJava, _paths.Instance(id),
+            [$"-Xms{heapMb}M", $"-Xmx{heapMb}M", "-jar", "server.jar"], heapMb, 1), default);
+        Assert.Equal(RuntimeProcessState.Running, snapshot.State);
+        Assert.False(snapshot.MemoryEnforced);
+        await _engine.StopAsync(id, false, default);
     }
 
     [Fact]
