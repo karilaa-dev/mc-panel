@@ -37,7 +37,7 @@ internal static class ProductionCommand
                         RuntimeCapabilities? capabilities = null;
                         try { capabilities = await PersistentRuntimeProtocol.SendAsync<RuntimeCapabilities>(paths.RuntimeSocket, "capabilities", null, token); }
                         catch (PanelException exception) when (exception.Code == "RUNTIME_OPERATION_FAILED") { }
-                        if (capabilities is null || capabilities.ConsoleSchema != SchemaMigration.ConsoleVersion || (!capabilities.Features.Contains("save-leases") || !capabilities.Features.Contains("gate-feature-memory")))
+                        if (capabilities is null || capabilities.ConsoleSchema != SchemaMigration.ConsoleVersion || (!capabilities.Features.Contains("save-leases") || !capabilities.Features.Contains("gate-feature-memory") || !capabilities.Features.Contains("minecraft-heap-only")))
                         {
                             var running = await PersistentRuntimeProtocol.SendAsync<RuntimeServerSnapshot[]>(paths.RuntimeSocket, "snapshot", null, token);
                             if (running is null || running.Any(x => PersistentRuntimeClient.IsActive(x.State)))

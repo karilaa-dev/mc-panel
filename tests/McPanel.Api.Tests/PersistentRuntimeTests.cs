@@ -49,6 +49,7 @@ public sealed class PersistentRuntimeTests : IAsyncLifetime
     [InlineData(1_048_576)]
     public async Task Minecraft_uses_heap_settings_without_total_memory_admission(int heapMb)
     {
+        Assert.Contains("minecraft-heap-only", _engine.Capabilities().Features);
         if (OperatingSystem.IsWindows()) return;
         var id = Guid.NewGuid(); Directory.CreateDirectory(_paths.Instance(id));
         var snapshot = await _engine.StartAsync(new(id, _fakeJava, _paths.Instance(id),

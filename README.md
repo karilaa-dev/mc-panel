@@ -198,3 +198,8 @@ Native Java memory and filesystem cache can make measured server usage exceed
 the selected heap size. Host memory limits still apply. Existing heap selections
 are preserved; legacy total-memory settings are ignored for Minecraft launches.
 Gate proxy memory limits are unchanged.
+
+Updating from the previous memory policy requires stopping running workloads
+first. The updater checks for `minecraft-heap-only` runtime support before
+replacing the panel and preserves the working installation if the old runtime
+still has active workloads. Once idle, it can update and restart the runtime.

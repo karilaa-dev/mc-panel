@@ -38,7 +38,7 @@ internal sealed partial class RuntimeEngine
 
     public RuntimeCapabilities Capabilities() => new(RuntimeWire.Version, Data.SchemaMigration.ConsoleVersion,
         Infrastructure.RecoveryArchive.Version,
-        ["save-leases", "runtime-recovery", "bounded-logging", "health", "gate-feature-memory"]);
+        ["save-leases", "runtime-recovery", "bounded-logging", "health", "gate-feature-memory", "minecraft-heap-only"]);
 
     private Task QueueLogAsync(Guid id, string stream, string text, CancellationToken _)
     {
