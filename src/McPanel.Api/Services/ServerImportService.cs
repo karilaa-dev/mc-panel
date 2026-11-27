@@ -785,8 +785,7 @@ public sealed partial class ServerImportService(
 
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-        var activated = false;
-        var committed = false;
+        var phase = ImportPhase.Staged;
         string? activationJournal = null;
         try
         {
@@ -818,10 +817,10 @@ public sealed partial class ServerImportService(
             await db.SaveChangesAsync(cancellationToken);
             activationJournal = CreateActivationJournal(id);
             Directory.Move(root, destination);
-            activated = true;
+            phase = ImportPhase.Activated;
             if (!OperatingSystem.IsWindows()) InstancePermissionService.NormalizeTree(destination, false);
             await transaction.CommitAsync(cancellationToken);
-            committed = true;
+            phase = ImportPhase.Committed;
             try { File.Delete(activationJournal); } catch { }
         }
         catch (ServerImportException) { throw; }
@@ -834,7 +833,7 @@ public sealed partial class ServerImportService(
                 databaseRolledBack = true;
             }
             catch { }
-            if (activated)
+            if (phase == ImportPhase.Activated)
             {
                 try { Directory.Move(destination, root); }
                 catch (Exception rollbackException)
@@ -843,7 +842,7 @@ public sealed partial class ServerImportService(
                         $"The import failed and the activated directory could not be rolled back: {destination}", innerException: new AggregateException(exception, rollbackException));
                 }
             }
-            if (!committed && databaseRolledBack && activationJournal is not null)
+            if (phase != ImportPhase.Committed && databaseRolledBack && activationJournal is not null)
             {
                 try { File.Delete(activationJournal); } catch { }
             }
@@ -923,9 +922,7 @@ public sealed partial class ServerImportService(
                 {
                     if (!Directory.Exists(destination))
                     {
-                        server.State = ServerState.Error;
-                        server.RecoveryRequired = true;
-                        server.RecoveryReason = "Imported server data is missing; repair the interrupted import before continuing.";
+                        server.RequireRecovery("Imported server data is missing; repair the interrupted import before continuing.");
                         server.ProcessId = null;
                         server.UpdatedAt = DateTimeOffset.UtcNow;
                         await state.SaveChangesAsync(cancellationToken);
@@ -933,7 +930,7 @@ public sealed partial class ServerImportService(
                             journal.ServerId, journalPath);
                         continue;
                     }
-                    server.RecoveryRequired = false; server.RecoveryReason = null;
+                    server.ClearRecovery();
                     if (server.State == ServerState.Error) server.State = ServerState.Stopped;
                     await state.SaveChangesAsync(cancellationToken);
                     File.Delete(journalPath);
@@ -958,6 +955,8 @@ public sealed partial class ServerImportService(
             }
         }
     }
+
+    private enum ImportPhase { Staged, Activated, Committed }
 
     private sealed record ImportActivationJournal(int Version, Guid ServerId, string Destination);
 

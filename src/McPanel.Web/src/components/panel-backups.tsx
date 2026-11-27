@@ -1,3 +1,4 @@
+import { jobPhase } from "@/lib/job-lifecycle"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Badge, Banner, Button, LinkButton } from "@cloudflare/kumo"
 import { ActivityIcon, CloudUploadIcon, DownloadIcon, ServersIcon } from "@/components/icons"
@@ -19,7 +20,7 @@ export function PanelBackups() {
     },
     onError: (error) => toast.error(error.message),
   })
-  const busy = capture.isPending || Boolean(jobs.data?.some((job) => job.type === "PanelRecovery" && (job.state === "Queued" || job.state === "Running")))
+  const busy = capture.isPending || Boolean(jobs.data?.some((job) => job.type === "PanelRecovery" && (jobPhase(job.state) === "active")))
 
   return <Section
     title="Panel backups"

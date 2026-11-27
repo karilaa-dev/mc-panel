@@ -1,5 +1,7 @@
 # HTTP and realtime API
 
+The [state machine inventory](../../STATE-MACHINES.md) describes job outcomes, server observations, cancellation and retry behavior for clients.
+
 The API prefix is `/api/v1`. JSON property names use camel case.
 
 This file records the protocol rules and route groups. The request and response

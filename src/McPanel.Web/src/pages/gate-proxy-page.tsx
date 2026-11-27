@@ -134,6 +134,9 @@ function GateSettings({
       ...current,
       classic: { ...current.classic, [key]: value },
     }))
+  const applyPhase = gate.configuration.lastApplyError ? "failed"
+    : gate.configuration.configurationDirty ? "pending" : "applied"
+
   function setMode(mode: GateMode) {
     setValue("mode", mode)
     if (mode === "Lite") setTab("general")
@@ -170,7 +173,7 @@ function GateSettings({
       size="narrow"
       description={`Configure how ${server.name} accepts players, connects to backends, and runs.`}
       actions={<>
-        {gate.configuration.configurationDirty && <Badge variant="info" icon={<RefreshIcon className="size-3.5!" />}>Applying changes</Badge>}
+        {applyPhase === "pending" && <Badge variant="info" icon={<RefreshIcon className="size-3.5!" />}>Applying changes</Badge>}
         <Button variant="primary" loading={save.isPending} disabled={!memoryValid} onClick={() => save.mutate()}>Save settings</Button>
       </>}
     >
@@ -192,8 +195,8 @@ function GateSettings({
           action={<Banner.Action variant="secondary" onClick={() => setTab("general")}>Review RAM limit</Banner.Action>}
         />
       )}
-      {gate.configuration.lastApplyError && (
-        <Banner variant="error" icon={<AlertCircleFilledIcon />} title="Last apply failed" description={gate.configuration.lastApplyError} />
+      {applyPhase === "failed" && (
+        <Banner variant="error" icon={<AlertCircleFilledIcon />} title="Last apply failed" description={gate.configuration.lastApplyError ?? undefined} />
       )}
       <Tabs variant="underline" value={activeTab} onValueChange={setTab} tabs={tabs} />
       <div role="tabpanel" aria-label={tabs.find((item) => item.value === activeTab)?.label} className="flex flex-col gap-6">

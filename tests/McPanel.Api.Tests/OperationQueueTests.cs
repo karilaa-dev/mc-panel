@@ -14,6 +14,101 @@ public sealed class OperationQueueTests : IDisposable
 {
     private readonly string _database = Path.Combine(Path.GetTempPath(), $"mcpanel-operation-queue-{Guid.NewGuid():N}.db");
 
+    [Theory]
+    [InlineData("Install")]
+    [InlineData("InstallModpack")]
+    [InlineData("GateInstall")]
+    public async Task Canceling_a_queued_install_releases_the_server_and_ignores_late_progress(string type)
+    {
+        var factory = new TestStateDbContextFactory(new DbContextOptionsBuilder<StateDbContext>()
+            .UseSqlite($"Data Source={_database};Cache=Shared").Options);
+        var server = new ServerEntity { Id = Guid.NewGuid(), Name = "test", Version = "1", JavaRuntimeId = "java" };
+        await using (var db = await factory.CreateDbContextAsync())
+        {
+            await db.Database.EnsureCreatedAsync();
+            db.Servers.Add(server);
+            await db.SaveChangesAsync();
+        }
+        var services = new ServiceCollection(); services.AddLogging(); services.AddSignalR();
+        await using var provider = services.BuildServiceProvider();
+        using var queue = new OperationQueue(provider, factory, provider.GetRequiredService<IHubContext<PanelHub>>(),
+            new SessionAudience(), new TestApplicationLifetime(), NullLogger<OperationQueue>.Instance);
+        var job = await queue.EnqueueAsync(type, server.Id, (_, _, _) => Task.CompletedTask, default);
+        var canceled = await queue.CancelAsync(job.Id, default);
+        await queue.ProgressAsync(job.Id, 75, "Obsolete worker", default);
+        Assert.Equal(JobState.Canceled, canceled.State);
+        Assert.Equal("Canceled", canceled.Message);
+        Assert.Equal(100, canceled.Progress);
+        Assert.Equal(canceled, await queue.GetAsync(job.Id, default));
+        await using var verify = await factory.CreateDbContextAsync();
+        Assert.Equal(ServerState.Error, (await verify.Servers.FindAsync(server.Id))!.State);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Queued_cancellation_releases_staged_input_without_a_worker(bool cancelBeforeHandoff)
+    {
+        var factory = new TestStateDbContextFactory(new DbContextOptionsBuilder<StateDbContext>()
+            .UseSqlite($"Data Source={_database};Cache=Shared").Options);
+        var job = OperationQueue.CreatePending("Install", Guid.NewGuid());
+        await using (var db = await factory.CreateDbContextAsync())
+        {
+            await db.Database.EnsureCreatedAsync();
+            db.Jobs.Add(job);
+            await db.SaveChangesAsync();
+        }
+        var services = new ServiceCollection(); services.AddLogging(); services.AddSignalR();
+        await using var provider = services.BuildServiceProvider();
+        using var queue = new OperationQueue(provider, factory, provider.GetRequiredService<IHubContext<PanelHub>>(),
+            new SessionAudience(), new TestApplicationLifetime(), NullLogger<OperationQueue>.Instance);
+        using var upload = new MemoryStream();
+        if (cancelBeforeHandoff) await queue.CancelAsync(job.Id, default);
+        await queue.HandoffCommittedAsync(job, (_, _, _) => throw new InvalidOperationException(), default, upload);
+        if (!cancelBeforeHandoff) await queue.CancelAsync(job.Id, default);
+        Assert.False(upload.CanRead);
+        Assert.Equal(JobState.Canceled, (await queue.GetAsync(job.Id, default))!.State);
+    }
+
+    [Fact]
+    public async Task Failed_worker_claim_releases_queue_owned_input()
+    {
+        var factory = new TestStateDbContextFactory(new DbContextOptionsBuilder<StateDbContext>()
+            .UseSqlite($"Data Source={_database};Cache=Shared").Options);
+        var server = new ServerEntity { Id = Guid.NewGuid(), Name = "test", Version = "1", JavaRuntimeId = "java" };
+        var job = OperationQueue.CreatePending("InstallModpack", server.Id);
+        await using (var db = await factory.CreateDbContextAsync())
+        {
+            await db.Database.EnsureCreatedAsync();
+            db.Servers.Add(server);
+            db.Jobs.Add(job);
+            await db.SaveChangesAsync();
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TRIGGER fail_claim BEFORE UPDATE OF State ON Jobs WHEN NEW.State = 'Running'
+                BEGIN SELECT RAISE(ABORT, 'Could not claim job'); END;
+                """);
+        }
+        var services = new ServiceCollection(); services.AddLogging(); services.AddSignalR();
+        await using var provider = services.BuildServiceProvider();
+        using var queue = new OperationQueue(provider, factory, provider.GetRequiredService<IHubContext<PanelHub>>(),
+            new SessionAudience(), new TestApplicationLifetime(), NullLogger<OperationQueue>.Instance);
+        using var stagedInput = new MemoryStream();
+        var invoked = false;
+        await queue.HandoffCommittedAsync(job, (_, _, _) => { invoked = true; return Task.CompletedTask; }, default, stagedInput);
+        await queue.StartAsync(default);
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            while ((await queue.GetAsync(job.Id, timeout.Token))?.State != JobState.Failed)
+                await Task.Delay(10, timeout.Token);
+        }
+        finally { await queue.StopAsync(default); }
+        Assert.False(invoked);
+        Assert.False(stagedInput.CanRead);
+        await using var verify = await factory.CreateDbContextAsync();
+        Assert.Equal(ServerState.Error, (await verify.Servers.FindAsync(server.Id))!.State);
+    }
+
     [Fact]
     public async Task Immediate_operation_runs_while_all_workers_are_busy()
     {

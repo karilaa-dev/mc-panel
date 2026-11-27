@@ -83,7 +83,6 @@ public sealed class ServerSoftwareService(
         var rollback = Path.Combine(paths.Staging, $"software-rollback-{serverId:N}-{jobId:N}");
         CustomJarService.ClaimedCustomJar? claim = null;
         SoftwareActivationService.ActivationTransaction? activation = null;
-        var committed = false;
         try
         {
             Directory.CreateDirectory(stage);
@@ -170,7 +169,6 @@ public sealed class ServerSoftwareService(
             server.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(cancellationToken);
             activation.MarkCommitted();
-            committed = true;
             try { activation.Commit(); }
             catch (Exception cleanupException)
             {
@@ -197,7 +195,7 @@ public sealed class ServerSoftwareService(
         {
             Exception? rollbackFailure = null;
             Exception? claimRestoreFailure = null;
-            if (!committed)
+            if (activation?.IsCommitRecorded != true)
             {
                 try
                 {
@@ -211,7 +209,7 @@ public sealed class ServerSoftwareService(
                         "Server core activation rollback failed for {ServerId}; preserving rollback files", serverId);
                 }
                 original.Restore(server);
-                if (rollbackFailure is not null) { server.RecoveryRequired = true; server.RecoveryReason = "Software rollback failed. Recovery files were preserved."; server.State = ServerState.Error; }
+                if (rollbackFailure is not null) { server.RequireRecovery("Software rollback failed. Recovery files were preserved."); }
                 try { await db.SaveChangesAsync(CancellationToken.None); } catch { }
                 if (claim is not null)
                 {

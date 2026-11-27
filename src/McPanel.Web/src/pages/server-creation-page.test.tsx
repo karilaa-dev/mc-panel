@@ -81,6 +81,15 @@ describe("ServerCreationPage", () => {
     expect(await screen.findByRole("heading", { name: "Server overview" })).toBeVisible()
   })
 
+  it.each(["Interrupted", "Canceled"] as const)("shows the terminal %s result and stops polling", async (state) => {
+    mockedApi.job.mockClear().mockResolvedValue({ id: "job-1", type: "Install", state, progress: 0, serverId: "server-1" })
+    renderPage()
+    expect(await screen.findByText(state)).toBeVisible()
+    expect(screen.getByRole("link", { name: "Open server" })).toBeVisible()
+    await new Promise((resolve) => setTimeout(resolve, 1_150))
+    expect(mockedApi.job).toHaveBeenCalledTimes(1)
+  })
+
   it("keeps installation errors visible with a link to the server", async () => {
     mockedApi.job.mockResolvedValue({
       id: "job-1",

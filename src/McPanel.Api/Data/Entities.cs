@@ -35,6 +35,20 @@ public sealed class ServerEntity
     public ServerState State { get; set; } = ServerState.Installing;
     public bool RecoveryRequired { get; set; }
     public string? RecoveryReason { get; set; }
+
+    public void RequireRecovery(string reason)
+    {
+        State = ServerState.Error;
+        RecoveryRequired = true;
+        RecoveryReason = reason;
+    }
+
+    public void ClearRecovery()
+    {
+        RecoveryRequired = false;
+        RecoveryReason = null;
+    }
+
     public int Port { get; set; } = 25565;
     [MaxLength(255)] public string? PublicHost { get; set; }
     public int? PublicPort { get; set; }
@@ -86,6 +100,24 @@ public sealed class GateSettingsEntity
     public bool ConfigurationDirty { get; set; } = true;
     [MaxLength(4096)] public string? LastApplyError { get; set; }
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public void QueueApply()
+    {
+        ConfigurationDirty = true;
+        LastApplyError = null;
+    }
+
+    public void Applied()
+    {
+        ConfigurationDirty = false;
+        LastApplyError = null;
+    }
+
+    public void ApplyFailed(string error)
+    {
+        ConfigurationDirty = true;
+        LastApplyError = error[..Math.Min(4096, error.Length)];
+    }
 }
 
 public sealed class GateBackendEntity

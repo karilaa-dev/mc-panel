@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen, waitFor, within } from "@testing-library/react"
+import { act, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { createMemoryRouter, RouterProvider } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -14,7 +14,13 @@ vi.mock("@/lib/api", () => ({
     downloadFile: vi.fn(),
     fileDownloadUrl: vi.fn(() => "/download-image"),
     readFile: vi.fn(),
+    saveFile: vi.fn(),
   },
+}))
+
+vi.mock("@/components/code-editor", () => ({
+  CodeEditor: ({ value, onChange }: { value: string; onChange: (value: string) => void }) =>
+    <textarea aria-label="File contents" value={value} onChange={(event) => onChange(event.target.value)} />,
 }))
 
 const mockedApi = vi.mocked(api)
@@ -77,6 +83,53 @@ describe("FilesPage mutation availability", () => {
       expect(screen.getByRole("button", { name: "New folder" })).toBeEnabled()
       expect(screen.getByRole("button", { name: "New file" })).toBeEnabled()
     })
+  })
+
+  it.each([false, true])("keeps the current folder when a previous read settles, failed = %s", async (failed) => {
+    mockedApi.server.mockResolvedValue(server("Stopped"))
+    mockedApi.files.mockResolvedValue(["notes.txt", "world"].map((name) => ({
+      name, path: name, size: 10, isDirectory: name === "world", modifiedAt: "2026-09-05T00:00:00Z",
+    })))
+    let finish!: (value: { content: string; revision: string }) => void
+    let fail!: (reason: Error) => void
+    const read = new Promise<{ content: string; revision: string }>((resolve, reject) => { finish = resolve; fail = reject })
+    mockedApi.readFile.mockReturnValueOnce(read)
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole("button", { name: "notes.txt" }))
+    await user.click(screen.getByRole("button", { name: "world" }))
+    await act(async () => { if (failed) fail(new Error("Stale read")); else finish({ content: "old file", revision: "1" }) })
+    expect(screen.queryByText("Stale read")).not.toBeInTheDocument()
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Parent folder" })).toBeVisible()
+  })
+
+  it.each([false, true])("preserves edits made during a save, external change = %s", async (externalChange) => {
+    mockedApi.server.mockResolvedValue(server("Stopped"))
+    mockedApi.files.mockResolvedValue([{ name: "notes", path: "notes", size: 4, isDirectory: false, modifiedAt: "2026-09-05T00:00:00Z" }])
+    mockedApi.readFile.mockResolvedValueOnce({ content: "base", revision: "r1" })
+      .mockResolvedValueOnce({ content: externalChange ? "external" : "base1", revision: "r2" })
+    let finishSave!: () => void
+    mockedApi.saveFile.mockReturnValueOnce(new Promise<void>((resolve) => { finishSave = resolve }))
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole("button", { name: "notes" }))
+    const contents = await screen.findByRole("textbox", { name: "File contents" })
+    await user.type(contents, "1")
+    await user.click(screen.getByRole("button", { name: "Save file" }))
+    await waitFor(() => expect(mockedApi.saveFile).toHaveBeenCalledWith("server-1", "notes", "base1", "r1"))
+    await user.type(contents, "2")
+    await act(async () => finishSave())
+    expect(contents).toHaveValue("base12")
+    await user.click(await screen.findByRole("button", { name: "Save file" }))
+    if (externalChange) {
+      await waitFor(() => expect(mockedApi.readFile).toHaveBeenCalledTimes(2))
+      expect(mockedApi.saveFile).toHaveBeenCalledTimes(1)
+      expect(contents).toHaveValue("base12")
+    } else {
+      await waitFor(() => expect(mockedApi.saveFile).toHaveBeenCalledWith("server-1", "notes", "base12", "r2"))
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+    }
   })
 
   it("supports Gate instance files while keeping forwarding keys protected", async () => {

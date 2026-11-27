@@ -286,7 +286,7 @@ public sealed partial class BackupService(
         }
         catch (Exception exception)
         {
-            if (!restore.IsCommitRecorded && restore.IsStarted)
+            if (restore.CanRollback)
             {
                 try
                 {
@@ -297,9 +297,7 @@ public sealed partial class BackupService(
                 }
                 catch (Exception rollbackException)
                 {
-                    server.State = ServerState.Error;
-                            server.RecoveryRequired = true;
-                            server.RecoveryReason = "Interrupted recovery could not restore the original files. Recovery artifacts have been preserved.";
+                    server.RequireRecovery("Interrupted recovery could not restore the original files. Recovery artifacts have been preserved.");
                     server.ProcessId = null;
                     try { await db.SaveChangesAsync(CancellationToken.None); } catch { }
                     throw new AggregateException(
@@ -370,7 +368,7 @@ public sealed partial class BackupService(
                     if (permissions is not null)
                         await permissions.NormalizeInstanceAsync(restore.ServerId, cancellationToken);
                     restore.Commit();
-                    server.RecoveryRequired = false; server.RecoveryReason = null;
+                    server.ClearRecovery();
                     await state.SaveChangesAsync(cancellationToken);
                     logger?.LogInformation("Finalized interrupted backup restore for {ServerId}", restore.ServerId);
                 }
@@ -380,7 +378,7 @@ public sealed partial class BackupService(
                     restore.OriginalMetadata.Restore(server);
                     await state.SaveChangesAsync(cancellationToken);
                     restore.FinishRollback();
-                    server.RecoveryRequired = false; server.RecoveryReason = null;
+                    server.ClearRecovery();
                     await state.SaveChangesAsync(cancellationToken);
                     logger?.LogWarning("Rolled back interrupted backup restore for {ServerId}", restore.ServerId);
                 }
@@ -396,9 +394,7 @@ public sealed partial class BackupService(
                             entity => entity.Id == id, cancellationToken);
                         if (server is not null)
                         {
-                            server.State = ServerState.Error;
-                            server.RecoveryRequired = true;
-                            server.RecoveryReason = "Interrupted recovery could not restore the original files. Recovery artifacts have been preserved.";
+                            server.RequireRecovery("Interrupted recovery could not restore the original files. Recovery artifacts have been preserved.");
                             server.ProcessId = null;
                             server.UpdatedAt = DateTimeOffset.UtcNow;
                             await state.SaveChangesAsync(cancellationToken);
@@ -419,8 +415,8 @@ public sealed partial class BackupService(
         private const int JournalVersion = 1;
         private readonly PanelPaths _paths;
         private RestoreJournal _journal;
-        private bool _started;
-        private bool _finished;
+        private enum RestorePhase { Staged, Activated, CommitRecorded, Committed, FilesRestored, RolledBack }
+        private RestorePhase _phase;
 
         public RestoreTransaction(
             PanelPaths paths,
@@ -441,12 +437,12 @@ public sealed partial class BackupService(
         {
             _paths = paths;
             _journal = journal;
-            _started = true;
+            _phase = journal.CommitRecorded ? RestorePhase.CommitRecorded : RestorePhase.Activated;
         }
 
         public Guid ServerId => _journal.ServerId;
-        public bool IsStarted => _started;
-        public bool IsCommitRecorded => _journal.CommitRecorded;
+        public bool CanRollback => _phase == RestorePhase.Activated;
+        public bool IsCommitRecorded => _phase is RestorePhase.CommitRecorded or RestorePhase.Committed;
         public bool HasJournal => File.Exists(JournalPath);
         public SoftwareActivationService.SoftwareMetadataSnapshot OriginalMetadata => _journal.OriginalMetadata;
         public SoftwareActivationService.SoftwareMetadataSnapshot TargetMetadata => _journal.TargetMetadata;
@@ -460,9 +456,9 @@ public sealed partial class BackupService(
 
         public void Activate()
         {
-            if (_started) throw new InvalidOperationException("The backup restore is already activated.");
+            if (_phase != RestorePhase.Staged) throw new InvalidOperationException("The backup restore is already activated.");
             WriteJournal(_journal);
-            _started = true;
+            _phase = RestorePhase.Activated;
             Directory.Move(Current, Old);
             Directory.Move(Stage, Current);
             if (!_journal.ChangeModpackState) return;
@@ -472,40 +468,43 @@ public sealed partial class BackupService(
 
         public void MarkCommitted()
         {
-            if (!_started || _finished) throw new InvalidOperationException("The backup restore is not active.");
+            if (_phase is not (RestorePhase.Activated or RestorePhase.CommitRecorded)) throw new InvalidOperationException("The backup restore is not active.");
             var committed = _journal with { CommitRecorded = true };
             WriteJournal(committed);
             _journal = committed;
+            _phase = RestorePhase.CommitRecorded;
         }
 
         public void Commit()
         {
-            if (_finished) return;
-            if (!_journal.CommitRecorded) throw new InvalidOperationException("The backup restore is not committed.");
+            if (_phase is RestorePhase.Committed or RestorePhase.RolledBack) return;
+            if (_phase != RestorePhase.CommitRecorded) throw new InvalidOperationException("The backup restore is not committed.");
             DeleteDirectory(Old);
             DeleteDirectory(ModpackOld);
             DeleteDirectory(Stage);
             DeleteDirectory(ModpackStage);
             File.Delete(JournalPath);
-            _finished = true;
+            _phase = RestorePhase.Committed;
         }
 
         public void RollbackFiles()
         {
-            if (_finished || _journal.CommitRecorded)
+            if (!CanRollback)
                 throw new InvalidOperationException("The backup restore cannot be rolled back.");
             RestoreOriginal(Current, Old, originalRequired: true);
             if (_journal.ChangeModpackState)
                 RestoreOriginal(CurrentModpack, ModpackOld, _journal.HadOriginalModpack);
             DeleteDirectory(Stage);
             DeleteDirectory(ModpackStage);
+            _phase = RestorePhase.FilesRestored;
         }
 
         public void FinishRollback()
         {
-            if (_journal.CommitRecorded) throw new InvalidOperationException("A committed backup restore cannot finish rollback.");
+            if (_phase == RestorePhase.RolledBack) return;
+            if (_phase != RestorePhase.FilesRestored) throw new InvalidOperationException("Restore the original files before finishing rollback.");
             File.Delete(JournalPath);
-            _finished = true;
+            _phase = RestorePhase.RolledBack;
         }
 
         public void CleanupStaging()

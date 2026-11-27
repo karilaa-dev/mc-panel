@@ -330,12 +330,7 @@ public sealed class FileManagerService(
             var server = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == serverId, cancellationToken)
                 ?? throw PanelProblems.NotFound("Server");
             var processRunning = processStatus.IsRunning(serverId);
-            var stateMatchesProcess = server.State switch
-            {
-                ServerState.Running => processRunning,
-                ServerState.Stopped or ServerState.Crashed => !processRunning,
-                _ => false
-            };
+            var stateMatchesProcess = ServerLifecycle.IsStable(server.State, processRunning);
             if (!stateMatchesProcess)
                 throw PanelProblems.Conflict("SERVER_BUSY", "Files cannot be changed while the server is changing state.");
 

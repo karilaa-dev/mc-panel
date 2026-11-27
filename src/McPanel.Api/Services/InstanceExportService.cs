@@ -71,7 +71,7 @@ public sealed class InstanceExportService(PanelPaths paths, IDbContextFactory<St
             {
                 if (gate.DefaultBackendServerId is { } backend && !ids.Contains(backend)) gate.DefaultBackendServerId = null;
                 // Regenerate generated config after import, using only exported backend relationships.
-                gate.ConfigurationDirty = true;
+                gate.QueueApply();
             }
             var metadata = new InstanceExportMetadata(servers,
                 await db.Schedules.AsNoTracking().Where(x => ids.Contains(x.ServerId)).ToArrayAsync(token),
@@ -146,7 +146,7 @@ public sealed class InstanceExportService(PanelPaths paths, IDbContextFactory<St
             }
             foreach (var schedule in metadata.Schedules) { schedule.Enabled = false; schedule.IsRunning = false; schedule.NextRunAt = null; }
             foreach (var player in metadata.Players) { player.Id = 0; player.Online = false; }
-            foreach (var gate in metadata.GateSettings) gate.ConfigurationDirty = true;
+            foreach (var gate in metadata.GateSettings) gate.QueueApply();
             db.Servers.AddRange(servers); db.Schedules.AddRange(metadata.Schedules); db.Players.AddRange(metadata.Players);
             db.GateSettings.AddRange(metadata.GateSettings); db.GateBackends.AddRange(metadata.GateBackends); db.GateExternalBackends.AddRange(metadata.GateExternalBackends);
             db.AuditEvents.Add(new() { Actor = "local-recovery", Action = "instances-import", Target = string.Join(",", ids), Outcome = "succeeded" });

@@ -245,12 +245,7 @@ public sealed class PropertiesService(
         var server = await db.Servers.SingleOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw PanelProblems.NotFound("Server");
         EnsureMinecraft(server);
         var processRunning = processStatus.IsRunning(id);
-        var stateIsConsistent = server.State switch
-        {
-            ServerState.Running => processRunning,
-            ServerState.Stopped or ServerState.Crashed => !processRunning,
-            _ => false
-        };
+        var stateIsConsistent = ServerLifecycle.IsStable(server.State, processRunning);
         if (!stateIsConsistent)
             throw PanelProblems.Conflict("SERVER_BUSY", "The server configuration cannot be changed in its current state.");
         if (await db.Servers.AnyAsync(x => x.Id != id && x.Port == dto.Port, cancellationToken))
@@ -384,12 +379,7 @@ public sealed class PropertiesService(
 
     private static void EnsureStableState(ServerEntity server, bool processRunning)
     {
-        var consistent = server.State switch
-        {
-            ServerState.Running => processRunning,
-            ServerState.Stopped or ServerState.Crashed => !processRunning,
-            _ => false
-        };
+        var consistent = ServerLifecycle.IsStable(server.State, processRunning);
         if (!consistent) throw PanelProblems.Conflict("SERVER_BUSY", "The server configuration cannot be changed in its current state.");
     }
 

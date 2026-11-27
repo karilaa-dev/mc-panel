@@ -18,6 +18,7 @@ public sealed class OperationQueue(
     ILogger<OperationQueue> logger) : BackgroundService
 {
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _activeCancellation = new();
+    private readonly ConcurrentDictionary<Guid, IDisposable> _stagedInputs = new();
     private readonly Channel<QueuedOperation> _channel = Channel.CreateBounded<QueuedOperation>(new BoundedChannelOptions(256)
     {
         FullMode = BoundedChannelFullMode.Wait, SingleReader = false, SingleWriter = false
@@ -30,17 +31,28 @@ public sealed class OperationQueue(
     };
 
     public async Task<JobDto> HandoffCommittedAsync(JobEntity job,
-        Func<IServiceProvider, Guid, CancellationToken, Task> action, CancellationToken cancellationToken)
+        Func<IServiceProvider, Guid, CancellationToken, Task> action, CancellationToken cancellationToken, IDisposable? unclaimedResource = null)
     {
         try
         {
             // The database row is authoritative. Cancellation of the HTTP request after commit
             // must not make a successfully-created server look like it never existed.
+            if (unclaimedResource is not null)
+            {
+                _stagedInputs[job.Id] = unclaimedResource;
+                // Cancellation can commit after the row is created and before ownership is registered here.
+                if (await GetAsync(job.Id, lifetime.ApplicationStopping) is { State: JobState.Canceled } canceled)
+                {
+                    ReleaseStagedInput(job.Id);
+                    return canceled;
+                }
+            }
             await _channel.Writer.WriteAsync(new QueuedOperation(job.Id, action), lifetime.ApplicationStopping);
         }
         catch (Exception exception)
         {
             logger.LogError(exception, "Committed job {JobId} could not be handed to the operation queue", job.Id);
+            ReleaseStagedInput(job.Id);
             job.State = JobState.Failed;
             job.Progress = 100;
             job.Message = "Queue handoff failed";
@@ -134,11 +146,10 @@ public sealed class OperationQueue(
     public async Task ProgressAsync(Guid jobId, int progress, string message, CancellationToken cancellationToken)
     {
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
-        var job = await db.Jobs.FindAsync([jobId], cancellationToken);
-        if (job is null) return;
-        job.Progress = Math.Clamp(progress, 0, 99); job.Message = message; job.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync(cancellationToken);
-        try { await audience.PublishAsync(group => hub.Clients.Group(group).SendAsync("JobUpdated", Map(job), cancellationToken), cancellationToken); } catch (Exception exception) { logger.LogDebug(exception, "Could not broadcast job {JobId}", job.Id); }
+        var changed = await db.Jobs.Where(x => x.Id == jobId).Where(JobLifecycle.Active)
+            .ExecuteUpdateAsync(set => set.SetProperty(x => x.Progress, Math.Clamp(progress, 0, 99))
+                .SetProperty(x => x.Message, message).SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), cancellationToken);
+        if (changed != 0) await PublishCurrentAsync(jobId, cancellationToken);
     }
 
     public async Task<JobDto?> GetAsync(Guid id, CancellationToken cancellationToken)
@@ -164,12 +175,13 @@ public sealed class OperationQueue(
             {
                 await using (var db = await stateFactory.CreateDbContextAsync(stoppingToken))
                 {
-                    var claimed = await db.Jobs.Where(x => x.Id == item.JobId && x.State == JobState.Queued && !x.CancellationRequested)
+                    var claimed = await db.Jobs.Where(x => x.Id == item.JobId).Where(JobLifecycle.Claimable)
                         .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.State, JobState.Running)
                             .SetProperty(x => x.Progress, 1).SetProperty(x => x.Message, "Running").SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), stoppingToken);
                     if (claimed == 0) continue;
                 }
                 execution.Token.ThrowIfCancellationRequested();
+                _stagedInputs.TryRemove(item.JobId, out _); // The installer now owns the claim.
                 await item.Action(serviceProvider, item.JobId, execution.Token);
                 await SetStateAsync(item.JobId, JobState.Completed, 100, "Completed", null, stoppingToken);
             }
@@ -186,8 +198,19 @@ public sealed class OperationQueue(
                 logger.LogError(exception, "Operation {JobId} failed", item.JobId);
                 await TrySetTerminalAsync(item.JobId, JobState.Failed, "Failed", exception.Message);
             }
-            finally { _activeCancellation.TryRemove(item.JobId, out _); }
+            finally
+            {
+                _activeCancellation.TryRemove(item.JobId, out _);
+                ReleaseStagedInput(item.JobId);
+            }
         }
+    }
+
+    private void ReleaseStagedInput(Guid id)
+    {
+        if (!_stagedInputs.TryRemove(id, out var resource)) return;
+        try { resource.Dispose(); }
+        catch (Exception error) { logger.LogWarning(error, "Could not release staged input for {JobId}", id); }
     }
 
     private async Task TrySetTerminalAsync(Guid id, JobState state, string message, string error)
@@ -207,32 +230,61 @@ public sealed class OperationQueue(
     public async Task<JobDto> CancelAsync(Guid id, CancellationToken token)
     {
         await using var db = await stateFactory.CreateDbContextAsync(token);
-        var changed = await db.Jobs.Where(x => x.Id == id && !x.CancellationRequested &&
-                (x.State == JobState.Queued || x.State == JobState.Running && x.Type == "Backup"))
+        await using var transaction = await db.Database.BeginTransactionAsync(token);
+        var changed = await db.Jobs.Where(x => x.Id == id).Where(JobLifecycle.Cancelable)
             .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.CancellationRequested, true)
+                .SetProperty(x => x.Progress, x => x.State == JobState.Queued ? 100 : x.Progress)
+                .SetProperty(x => x.Message, x => x.State == JobState.Queued ? "Canceled" : x.Message)
                 .SetProperty(x => x.State, x => x.State == JobState.Queued ? JobState.Canceled : x.State)
                 .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), token);
         if (changed == 0) throw PanelProblems.Conflict("JOB_NOT_CANCELABLE", "This operation has completed or cannot be safely canceled while running.");
+        await ReleaseUnfinishedInstallAsync(db, id, token);
+        var canceled = await db.Jobs.AnyAsync(job => job.Id == id && job.State == JobState.Canceled, token);
+        await transaction.CommitAsync(token);
+        if (canceled) ReleaseStagedInput(id);
         if (_activeCancellation.TryGetValue(id, out var execution))
         { try { await execution.CancelAsync(); } catch (ObjectDisposedException) { } }
+        await PublishCurrentAsync(id, token);
         return (await GetAsync(id, token))!;
     }
+
+    // A worker can fail or be canceled before the installer ever runs.
+    private static Task ReleaseUnfinishedInstallAsync(StateDbContext db, Guid jobId, CancellationToken token) =>
+        db.Servers.Where(server => server.State == ServerState.Installing && db.Jobs.Any(job =>
+            job.Id == jobId && job.ServerId == server.Id && job.State != JobState.Running &&
+            (job.Type == "Install" || job.Type == "InstallModpack" || job.Type == "GateInstall")))
+            .ExecuteUpdateAsync(set => set.SetProperty(server => server.State, ServerState.Error)
+                .SetProperty(server => server.UpdatedAt, DateTimeOffset.UtcNow), token);
 
     private async Task SetStateAsync(Guid id, JobState state, int progress, string message, string? error, CancellationToken cancellationToken)
     {
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
-        var job = await db.Jobs.FindAsync([id], cancellationToken);
-        if (job is null) return;
-        job.State = state; job.Progress = progress; job.Message = message; job.Error = error; job.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync(cancellationToken);
-        try { await audience.PublishAsync(group => hub.Clients.Group(group).SendAsync("JobUpdated", Map(job), cancellationToken), cancellationToken); } catch (Exception exception) { logger.LogDebug(exception, "Could not broadcast job {JobId}", job.Id); }
+        await using var transaction = state == JobState.Completed ? null : await db.Database.BeginTransactionAsync(cancellationToken);
+        var changed = await db.Jobs.Where(x => x.Id == id).Where(JobLifecycle.CanFinishAs(state))
+            .ExecuteUpdateAsync(set => set.SetProperty(x => x.State, state).SetProperty(x => x.Progress, progress)
+                .SetProperty(x => x.Message, message).SetProperty(x => x.Error, error)
+                .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), cancellationToken);
+        if (transaction is not null)
+        {
+            if (changed != 0) await ReleaseUnfinishedInstallAsync(db, id, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        if (changed != 0) await PublishCurrentAsync(id, cancellationToken);
     }
 
-    public static bool IsTerminal(JobState state) => state is JobState.Completed or JobState.Failed or JobState.Interrupted or JobState.Canceled;
+    private async Task PublishCurrentAsync(Guid id, CancellationToken token)
+    {
+        try
+        {
+            var job = await GetAsync(id, token);
+            if (job is not null)
+                await audience.PublishAsync(group => hub.Clients.Group(group).SendAsync("JobUpdated", job, token), token);
+        }
+        catch (Exception exception) { logger.LogDebug(exception, "Could not broadcast job {JobId}", id); }
+    }
+
+    public static bool IsTerminal(JobState state) => JobLifecycle.IsTerminal(state);
     private static JobDto Map(JobEntity job) => new(job.Id, job.Type, job.State, job.Progress, job.Message, job.Error, job.ServerId,
-        job.CreatedAt, job.UpdatedAt,
-        !job.CancellationRequested && (job.State == JobState.Queued || job.State == JobState.Running && job.Type == "Backup"),
-        job.State is JobState.Failed or JobState.Interrupted or JobState.Canceled && job.InputJson is not null && job.Type is "Backup" or "Restore" or "Start" or "Stop" or "Install",
-        job.RetryOf);
+        job.CreatedAt, job.UpdatedAt, JobLifecycle.CanCancel(job), JobLifecycle.CanRetry(job), job.RetryOf);
     private sealed record QueuedOperation(Guid JobId, Func<IServiceProvider, Guid, CancellationToken, Task> Action);
 }

@@ -35,7 +35,7 @@ public sealed class SoftwareActivationService(
                 if (activation.IsCommitRecorded)
                 {
                     activation.Commit();
-                    if (server is not null) { server.RecoveryRequired = false; server.RecoveryReason = null; await state.SaveChangesAsync(cancellationToken); }
+                    if (server is not null) { server.ClearRecovery(); await state.SaveChangesAsync(cancellationToken); }
                     logger.LogInformation("Finalized interrupted server core activation for {ServerId}", activation.ServerId);
                     continue;
                 }
@@ -46,7 +46,7 @@ public sealed class SoftwareActivationService(
                     await state.SaveChangesAsync(cancellationToken);
                 }
                 activation.Rollback();
-                if (server is not null) { server.RecoveryRequired = false; server.RecoveryReason = null; await state.SaveChangesAsync(cancellationToken); }
+                if (server is not null) { server.ClearRecovery(); await state.SaveChangesAsync(cancellationToken); }
                 logger.LogWarning("Rolled back interrupted server core activation for {ServerId}", activation.ServerId);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
@@ -59,9 +59,7 @@ public sealed class SoftwareActivationService(
                         var server = await state.Servers.SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
                         if (server is not null)
                         {
-                            server.State = ServerState.Error;
-                            server.RecoveryRequired = true;
-                            server.RecoveryReason = "Interrupted recovery could not restore the original files. Recovery artifacts have been preserved.";
+                            server.RequireRecovery("Interrupted recovery could not restore the original files. Recovery artifacts have been preserved.");
                             server.ProcessId = null;
                             server.UpdatedAt = DateTimeOffset.UtcNow;
                             await state.SaveChangesAsync(cancellationToken);
@@ -136,8 +134,8 @@ public sealed class SoftwareActivationService(
         private readonly SoftwareMetadataSnapshot _originalMetadata;
         private readonly List<FileMutation> _files;
         private readonly List<string> _createdDirectories;
-        private bool _commitRecorded;
-        private bool _finished;
+        private enum ActivationPhase { Prepared, Activating, CommitRecorded, Committed, RolledBack }
+        private ActivationPhase _phase;
 
         private ActivationTransaction(
             Guid serverId,
@@ -154,7 +152,7 @@ public sealed class SoftwareActivationService(
             _destination = Path.GetFullPath(destination);
             _rollback = Path.GetFullPath(rollback);
             _originalMetadata = originalMetadata;
-            _commitRecorded = commitRecorded;
+            _phase = commitRecorded ? ActivationPhase.CommitRecorded : source is null ? ActivationPhase.Activating : ActivationPhase.Prepared;
             _files = files ?? [];
             _createdDirectories = createdDirectories ?? [];
         }
@@ -169,15 +167,16 @@ public sealed class SoftwareActivationService(
 
         public Guid ServerId { get; }
         public SoftwareMetadataSnapshot OriginalMetadata => _originalMetadata;
-        public bool IsCommitRecorded => _commitRecorded;
-        public bool IsFinished => _finished;
+        public bool IsCommitRecorded => _phase is ActivationPhase.CommitRecorded or ActivationPhase.Committed;
+        public bool IsFinished => _phase is ActivationPhase.Committed or ActivationPhase.RolledBack;
         public IReadOnlyList<string> ActivatedPaths => _files.Select(file => ResolveDestination(file.RelativePath)).ToArray();
         private string ManifestPath => Path.Combine(_rollback, "activation-manifest.json");
         private string PayloadRoot => Path.Combine(_rollback, PayloadDirectoryName);
 
         public void Activate()
         {
-            if (_source is null) throw new InvalidOperationException("A recovered activation cannot be started again.");
+            if (_source is null || _phase != ActivationPhase.Prepared) throw new InvalidOperationException("A recovered activation cannot be started again.");
+            _phase = ActivationPhase.Activating;
             Directory.CreateDirectory(_destination);
             WriteManifest();
             foreach (var file in Directory.EnumerateFiles(_source, "*", SearchOption.AllDirectories).ToList())
@@ -201,43 +200,51 @@ public sealed class SoftwareActivationService(
 
         public void Commit()
         {
-            if (_finished) return;
+            if (IsFinished) return;
+            if (!IsCommitRecorded) throw new InvalidOperationException("Record the activation commit before cleanup.");
             if (Directory.Exists(_rollback))
             {
                 var cleanup = Path.Combine(Path.GetDirectoryName(_rollback)!,
                     $"software-committed-cleanup-{Guid.NewGuid():N}");
                 Directory.Move(_rollback, cleanup);
                 ServerImportService.FlushJournalDirectory(Path.GetDirectoryName(_rollback)!);
-                _finished = true;
+                _phase = ActivationPhase.Committed;
                 Directory.Delete(cleanup, true);
                 ServerImportService.FlushJournalDirectory(Path.GetDirectoryName(_rollback)!);
                 return;
             }
-            _finished = true;
+            _phase = ActivationPhase.Committed;
         }
 
         public void MarkCommitted()
         {
-            if (_finished) throw new InvalidOperationException("The activation is already finished.");
-            _commitRecorded = true;
+            if (_phase == ActivationPhase.CommitRecorded) return;
+            if (_phase != ActivationPhase.Activating) throw new InvalidOperationException("The activation has not started or is already finished.");
+            _phase = ActivationPhase.CommitRecorded;
             try { WriteManifest(); }
             catch
             {
-                _commitRecorded = false;
+                _phase = ActivationPhase.Activating;
                 throw;
             }
         }
 
         public void PrepareRollback()
         {
-            if (_finished || !_commitRecorded) return;
-            _commitRecorded = false;
-            WriteManifest();
+            if (_phase != ActivationPhase.CommitRecorded) return;
+            _phase = ActivationPhase.Activating;
+            try { WriteManifest(); }
+            catch
+            {
+                _phase = ActivationPhase.CommitRecorded;
+                throw;
+            }
         }
 
         public void Rollback()
         {
-            if (_finished) return;
+            if (IsFinished) return;
+            if (IsCommitRecorded) throw new InvalidOperationException("Prepare rollback before restoring files.");
             foreach (var mutation in _files.AsEnumerable().Reverse())
             {
                 var target = ResolveDestination(mutation.RelativePath);
@@ -258,7 +265,7 @@ public sealed class SoftwareActivationService(
                     Directory.Delete(directory);
             }
             if (Directory.Exists(_rollback)) Directory.Delete(_rollback, true);
-            _finished = true;
+            _phase = ActivationPhase.RolledBack;
         }
 
         public static ActivationTransaction Open(PanelPaths paths, string rollback)
@@ -305,7 +312,7 @@ public sealed class SoftwareActivationService(
             using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
             {
                 JsonSerializer.Serialize(stream,
-                    new ActivationManifest(ManifestVersion, ServerId, _commitRecorded, _originalMetadata,
+                    new ActivationManifest(ManifestVersion, ServerId, IsCommitRecorded, _originalMetadata,
                         _files, _createdDirectories), JsonOptions);
                 stream.Flush(true);
             }

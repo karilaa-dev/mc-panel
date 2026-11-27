@@ -132,7 +132,7 @@ public sealed class ProcessSupervisor(
             await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
             var server = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, cancellationToken)
                 ?? throw PanelProblems.NotFound("Server");
-            if (await db.Jobs.AsNoTracking().AnyAsync(x => x.ServerId == id && (x.State == JobState.Queued || x.State == JobState.Running), cancellationToken))
+            if (await db.Jobs.AsNoTracking().Where(JobLifecycle.Active).AnyAsync(x => x.ServerId == id, cancellationToken))
                 throw PanelProblems.Conflict("SERVER_BUSY", "Another operation is already running for this server.");
             if (server.Kind == ServerKind.Gate && normalized is "start" or "restart")
                 await gate.ValidateStartConfigurationAsync(id, cancellationToken);
@@ -173,10 +173,7 @@ public sealed class ProcessSupervisor(
         if (expectedRecoveryAttempt is { } attempt &&
             (server.State != ServerState.Crashed || !server.CrashRecovery || server.RecoveryRequired || server.CrashAttempts != attempt))
             return;
-        if (persistentRuntime.IsRunning(id) || server.State is ServerState.Running or ServerState.Starting or ServerState.Stopping)
-            throw PanelProblems.Conflict("SERVER_BUSY", "The server already has a managed process.");
-        if (server.RecoveryRequired || server.State is ServerState.Installing or ServerState.Updating or ServerState.BackingUp or ServerState.Error)
-            throw PanelProblems.Conflict("SERVER_BUSY", "The server cannot be started in its current state.");
+        ServerLifecycle.RequireStartable(server, persistentRuntime.IsRunning(id));
         if (server.Kind == ServerKind.Gate)
         {
             await StartPersistentGateLockedAsync(server, db, recovery, cancellationToken);
@@ -200,8 +197,7 @@ public sealed class ProcessSupervisor(
         {
             EnsurePortAvailable(server.Port);
             var startInfo = BuildStartInfo(server, java.Path, instance);
-            server.State = ServerState.Starting; server.ProcessId = null; server.UpdatedAt = DateTimeOffset.UtcNow;
-            if (!recovery) server.CrashAttempts = 0;
+            ServerLifecycle.BeginStart(server, recovery);
             await db.SaveChangesAsync(cancellationToken); await PublishStateAsync(server, cancellationToken);
             RuntimeServerSnapshot snapshot;
             try
@@ -213,13 +209,11 @@ public sealed class ProcessSupervisor(
             }
             catch
             {
-                server.State = ServerState.Crashed; server.ProcessId = null; server.UpdatedAt = DateTimeOffset.UtcNow;
+                ServerLifecycle.StartFailed(server);
                 await db.SaveChangesAsync(CancellationToken.None); await PublishStateAsync(server, CancellationToken.None);
                 throw;
             }
-            server.State = snapshot.State == RuntimeProcessState.Running ? ServerState.Running : ServerState.Starting;
-            server.ProcessId = snapshot.ProcessId; server.StartedAt = snapshot.StartedAt;
-            server.RestartRequired = false; server.UpdatedAt = DateTimeOffset.UtcNow;
+            ServerLifecycle.AcceptRuntimeStart(server, snapshot);
             await db.SaveChangesAsync(cancellationToken); await PublishStateAsync(server, cancellationToken);
             _runtimeStates[id] = snapshot.State;
         }
@@ -240,11 +234,8 @@ public sealed class ProcessSupervisor(
             if ((allocationMb + launch.MemoryLimitMb) * 1024 * 1024 > total * options.Value.MemoryAllocationFraction)
                 throw new PanelException(409, "MEMORY_LIMIT_EXCEEDED", "Starting Gate would exceed the host memory allocation limit.");
             EnsurePortAvailable(server.Port);
-            server.State = ServerState.Starting;
-            server.ProcessId = null;
             server.MemoryMb = server.InitialMemoryMb = server.MemoryLimitMb = launch.MemoryLimitMb;
-            server.UpdatedAt = DateTimeOffset.UtcNow;
-            if (!recovery) server.CrashAttempts = 0;
+            ServerLifecycle.BeginStart(server, recovery);
             await db.SaveChangesAsync(cancellationToken);
             await PublishStateAsync(server, cancellationToken);
             RuntimeServerSnapshot snapshot;
@@ -255,18 +246,12 @@ public sealed class ProcessSupervisor(
             }
             catch
             {
-                server.State = ServerState.Crashed;
-                server.ProcessId = null;
-                server.UpdatedAt = DateTimeOffset.UtcNow;
+                ServerLifecycle.StartFailed(server);
                 await db.SaveChangesAsync(CancellationToken.None);
                 await PublishStateAsync(server, CancellationToken.None);
                 throw;
             }
-            server.State = snapshot.State == RuntimeProcessState.Running ? ServerState.Running : ServerState.Starting;
-            server.ProcessId = snapshot.ProcessId;
-            server.StartedAt = snapshot.StartedAt;
-            server.RestartRequired = false;
-            server.UpdatedAt = DateTimeOffset.UtcNow;
+            ServerLifecycle.AcceptRuntimeStart(server, snapshot);
             await db.SaveChangesAsync(cancellationToken);
             await PublishStateAsync(server, cancellationToken);
             _runtimeStates[server.Id] = snapshot.State;
@@ -393,7 +378,8 @@ public sealed class ProcessSupervisor(
                 if (!initial && PersistentRuntimeClient.IsActive(previous) && snapshot.State == RuntimeProcessState.Crashed)
                 {
                     server.CrashAttempts++;
-                    if (!_runtimeOwnsRecovery && server.CrashRecovery && !server.RecoveryRequired && server.CrashAttempts <= 3) SchedulePersistentRecovery(server.Id, server.CrashAttempts);
+                    if (!_runtimeOwnsRecovery && server.CrashRecovery && !server.RecoveryRequired && CrashRecovery.Delay(server.CrashAttempts, TimeSpan.FromSeconds(5)) is { } delay)
+                        SchedulePersistentRecovery(server.Id, server.CrashAttempts, delay);
                 }
                 if (_runtimeOwnsRecovery)
                 {
@@ -401,7 +387,8 @@ public sealed class ProcessSupervisor(
                     await persistentRuntime.SetRecoveryPolicyAsync(server.Id, server.CrashRecovery && !server.RecoveryRequired, cancellationToken);
                 }
             }
-            else if (server.State is ServerState.Running or ServerState.Starting or ServerState.Stopping or ServerState.BackingUp or ServerState.Updating)
+            else if (server.State is ServerState.Running or ServerState.Starting or ServerState.Stopping ||
+                initial && server.State is (ServerState.BackingUp or ServerState.Updating))
             {
                 server.State = ServerState.Crashed; server.ProcessId = null;
             }
@@ -433,14 +420,13 @@ public sealed class ProcessSupervisor(
         });
     }
 
-    private void SchedulePersistentRecovery(Guid id, int attempt)
+    private void SchedulePersistentRecovery(Guid id, int attempt, TimeSpan delay)
     {
-        var delay = new[] { 5, 15, 60 }[attempt - 1];
         _ = Task.Run(async () =>
         {
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(delay), lifetime.ApplicationStopping);
+                await Task.Delay(delay, lifetime.ApplicationStopping);
                 await using var db = await stateFactory.CreateDbContextAsync(lifetime.ApplicationStopping);
                 var server = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, lifetime.ApplicationStopping);
                 if (server is null || !server.CrashRecovery || server.RecoveryRequired || server.CrashAttempts != attempt || server.State != ServerState.Crashed) return;
@@ -468,14 +454,7 @@ public sealed class ProcessSupervisor(
 
     private static void ApplySnapshot(ServerEntity server, RuntimeServerSnapshot snapshot, bool preserveOperationState = false)
     {
-        server.State = server.RecoveryRequired ? ServerState.Error : snapshot.State switch
-        {
-            RuntimeProcessState.Starting => ServerState.Starting,
-            RuntimeProcessState.Running => preserveOperationState && server.State is (ServerState.BackingUp or ServerState.Updating) ? server.State : ServerState.Running,
-            RuntimeProcessState.Stopping => ServerState.Stopping,
-            RuntimeProcessState.Crashed => ServerState.Crashed,
-            _ => ServerState.Stopped
-        };
+        server.State = ServerLifecycle.Observe(server, snapshot.State, preserveOperationState);
         server.ProcessId = PersistentRuntimeClient.IsActive(snapshot.State) ? snapshot.ProcessId : null;
         server.StartedAt = snapshot.State == RuntimeProcessState.Stopped ? null : snapshot.StartedAt;
     }
@@ -485,10 +464,7 @@ public sealed class ProcessSupervisor(
         var readinessCursor = await console.LatestSequenceAsync(id, cancellationToken);
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
         var server = await db.Servers.FindAsync([id], cancellationToken) ?? throw PanelProblems.NotFound("Server");
-        if (_processes.ContainsKey(id) || server.State is ServerState.Running or ServerState.Starting or ServerState.Stopping)
-            throw PanelProblems.Conflict("SERVER_BUSY", "The server already has a managed process.");
-        if (server.RecoveryRequired || server.State is ServerState.Installing or ServerState.Updating or ServerState.BackingUp or ServerState.Error)
-            throw PanelProblems.Conflict("SERVER_BUSY", "The server cannot be started in its current state.");
+        ServerLifecycle.RequireStartable(server, _processes.ContainsKey(id));
         if (server.MemoryMb < PanelOptions.MinimumServerMemoryMb)
             throw new PanelException(409, "MEMORY_LIMIT_TOO_LOW", "The configured server memory is below the supported minimum.",
                 $"Select at least {PanelOptions.MinimumServerMemoryMb} MiB for the Java heap.");
@@ -512,15 +488,14 @@ public sealed class ProcessSupervisor(
             EnsurePortAvailable(server.Port);
             workload = cgroups.Create(id, null);
             var start = cgroups.Wrap(BuildStartInfo(server, runtime.Path, instance), workload);
-            server.State = ServerState.Starting; server.ProcessId = null; server.UpdatedAt = DateTimeOffset.UtcNow;
-            if (!recovery) server.CrashAttempts = 0;
+            ServerLifecycle.BeginStart(server, recovery);
             await db.SaveChangesAsync(cancellationToken);
             await PublishStateAsync(server, cancellationToken);
             try { process = Process.Start(start) ?? throw new InvalidOperationException("Process.Start returned null."); }
             catch (Exception exception)
             {
                 cgroups.Remove(workload);
-                server.State = ServerState.Crashed; server.UpdatedAt = DateTimeOffset.UtcNow; await db.SaveChangesAsync(cancellationToken);
+                ServerLifecycle.StartFailed(server); await db.SaveChangesAsync(cancellationToken);
                 throw new PanelException(500, "OPERATION_FAILED", "Java could not start.", exception.Message);
             }
             managedProcess = new ManagedProcess(process, DateTimeOffset.UtcNow, workload, cgroups.Read(workload)?.OomKillCount ?? 0);
@@ -740,7 +715,7 @@ public sealed class ProcessSupervisor(
         managed.Process.Dispose();
         cgroups.Remove(managed.Cgroup);
         int attempt = 0;
-        bool recover = false;
+        TimeSpan? recoveryDelay = null;
         try
         {
             using var serverLock = await keyedLock.AcquireAsync(id);
@@ -756,7 +731,7 @@ public sealed class ProcessSupervisor(
             {
                 if (DateTimeOffset.UtcNow - managed.StartedAt >= TimeSpan.FromMinutes(5)) server.CrashAttempts = 0;
                 server.State = ServerState.Crashed; server.CrashAttempts++; attempt = server.CrashAttempts;
-                recover = server.CrashRecovery && attempt <= 3;
+                if (server.CrashRecovery) recoveryDelay = CrashRecovery.Delay(attempt, TimeSpan.FromSeconds(5));
             }
             await db.SaveChangesAsync();
             await db.Players.Where(x => x.ServerId == id && x.Online).ExecuteUpdateAsync(x => x.SetProperty(p => p.Online, false));
@@ -771,14 +746,13 @@ public sealed class ProcessSupervisor(
         }
         catch (Exception exception) { logger.LogError(exception, "Could not persist exit state for {ServerId}", id); }
         finally { managed.Exit.TrySetResult(exitCode); }
-        if (recover)
+        if (recoveryDelay is { } delay)
         {
-            var delay = new[] { 5, 15, 60 }[attempt - 1];
-            try { await console.AppendAsync(id, "system", $"Crash recovery attempt {attempt}/3 in {delay} seconds."); }
+            try { await console.AppendAsync(id, "system", $"Crash recovery attempt {attempt}/3 in {delay.TotalSeconds} seconds."); }
             catch (Exception exception) { logger.LogWarning(exception, "Could not persist recovery message for {ServerId}", id); }
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(delay), lifetime.ApplicationStopping);
+                await Task.Delay(delay, lifetime.ApplicationStopping);
                 await TryStartRecoveryAsync(id, attempt, lifetime.ApplicationStopping);
             }
             catch (OperationCanceledException) when (lifetime.ApplicationStopping.IsCancellationRequested) { }

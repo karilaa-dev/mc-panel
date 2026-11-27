@@ -1,12 +1,10 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import { useBlocker } from "react-router-dom"
 import { ConfirmDialog } from "@/components/modal"
 
 export function useUnsavedChanges(dirty: boolean) {
   const blocker = useBlocker(dirty)
   const [pending, setPending] = useState<{ proceed: () => void }>()
-  // Closing the dialog after a discard must not reset the navigation that discard just resumed.
-  const discarded = useRef(false)
   useEffect(() => {
     if (!dirty) return
     const beforeUnload = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = "" }
@@ -14,12 +12,10 @@ export function useUnsavedChanges(dirty: boolean) {
     return () => window.removeEventListener("beforeunload", beforeUnload)
   }, [dirty])
   const cancel = () => {
-    if (!discarded.current && blocker.state === "blocked") blocker.reset()
-    discarded.current = false
+    if (blocker.state === "blocked") blocker.reset()
     setPending(undefined)
   }
   const discard = () => {
-    discarded.current = true
     if (blocker.state === "blocked") blocker.proceed(); else pending?.proceed()
     setPending(undefined)
   }
@@ -33,6 +29,7 @@ export function useUnsavedChanges(dirty: boolean) {
       cancelLabel="Keep editing"
       confirmLabel="Discard changes"
       tone="danger"
+      closeOnConfirm={false}
       onConfirm={discard}
     />,
   }

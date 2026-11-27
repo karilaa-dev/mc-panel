@@ -30,8 +30,8 @@ vi.mock("@microsoft/signalr", () => ({
         handlers,
         on: vi.fn((name: string, handler: HubHandler) => { handlers.set(name, handler) }),
         onclose: vi.fn((handler: HubHandler) => { handlers.set("closed", handler) }),
-        onreconnecting: vi.fn(),
-        onreconnected: vi.fn(),
+        onreconnecting: vi.fn((handler: HubHandler) => { handlers.set("reconnecting", handler) }),
+        onreconnected: vi.fn((handler: HubHandler) => { handlers.set("reconnected", handler) }),
         start: vi.fn(() => signalRMock.startFactories.shift()?.() ?? Promise.resolve()),
         stop: vi.fn().mockResolvedValue(undefined),
       }
@@ -214,6 +214,21 @@ describe("ConsolePage command availability", () => {
     act(() => { signalRMock.connections[0]?.handlers.get("ConsoleBatch")?.([gapEvent]) })
     expect(terminalMock.write).toHaveBeenCalledOnce()
     expect(terminalMock.visibleEvents).toEqual([gapEvent])
+  })
+
+  it("ignores an obsolete catch-up after a disconnect", async () => {
+    mockedApi.server.mockResolvedValue(server("Running"))
+    let finish!: (value: ConsoleEventDto[]) => void
+    const backlog = new Promise<ConsoleEventDto[]>((resolve) => { finish = resolve })
+    mockedApi.consoleBacklog.mockResolvedValueOnce([]).mockReturnValueOnce(backlog)
+    renderPage()
+    await screen.findByText("Catching up")
+    act(() => { signalRMock.connections[0].handlers.get("reconnecting")?.() })
+    await act(async () => { finish([consoleEvent("server-1", 1, "old snapshot")]) })
+    expect(screen.getByText("Reconnecting")).toBeVisible()
+    expect(terminalMock.visibleEvents).toHaveLength(0)
+    act(() => { signalRMock.connections[0].handlers.get("reconnected")?.() })
+    expect(await screen.findByText("Live")).toBeVisible()
   })
 
   it("retries a failed initial connection and catches up without missing or duplicating output", async () => {

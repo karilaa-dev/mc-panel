@@ -161,8 +161,8 @@ public sealed class SchedulerService(
             {
                 await using var db = await stateFactory.CreateDbContextAsync(stoppingToken);
                 var now = DateTimeOffset.UtcNow;
-                var due = await db.Schedules
-                    .Where(x => x.Enabled && !x.IsRunning && x.NextRunAt != null && x.NextRunAt <= now)
+                var due = await db.Schedules.Where(Waiting)
+                    .Where(x => x.NextRunAt != null && x.NextRunAt <= now)
                     .OrderBy(x => x.NextRunAt)
                     .Select(x => x.Id)
                     .Take(20)
@@ -173,6 +173,15 @@ public sealed class SchedulerService(
             await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken);
         }
     }
+
+    // A one-shot schedule disables future runs as soon as it is claimed.
+    // Its current run still takes precedence until the worker records an outcome.
+    private enum SchedulePhase { Disabled, Waiting, Running }
+    private static SchedulePhase Phase(ScheduleEntity schedule) =>
+        schedule.IsRunning ? SchedulePhase.Running : schedule.Enabled ? SchedulePhase.Waiting : SchedulePhase.Disabled;
+
+    private static readonly System.Linq.Expressions.Expression<Func<ScheduleEntity, bool>> Waiting =
+        schedule => schedule.Enabled && !schedule.IsRunning;
 
     private void StartTracked(Guid id, CancellationToken token)
     {
@@ -191,8 +200,8 @@ public sealed class SchedulerService(
     {
         await using var db = await stateFactory.CreateDbContextAsync(token);
         var schedule = await db.Schedules.SingleOrDefaultAsync(x => x.Id == id && x.ServerId == serverId, token) ?? throw PanelProblems.NotFound("Schedule");
-        if (schedule.IsRunning) throw PanelProblems.Conflict("SCHEDULE_RUNNING", "This schedule is already running.");
-        if (!schedule.Enabled) throw PanelProblems.Conflict("SCHEDULE_DISABLED", "Enable this schedule before running it.");
+        if (Phase(schedule) == SchedulePhase.Running) throw PanelProblems.Conflict("SCHEDULE_RUNNING", "This schedule is already running.");
+        if (Phase(schedule) == SchedulePhase.Disabled) throw PanelProblems.Conflict("SCHEDULE_DISABLED", "Enable this schedule before running it.");
         schedule.NextRunAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(token);
     }
@@ -218,8 +227,8 @@ public sealed class SchedulerService(
             var found = await db.Schedules.SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
             if (found is null) return;
             entity = found;
-            if (entity.IsRunning || !entity.Enabled) return;
-            if (await db.Schedules.Where(x => x.Id == id && !x.IsRunning && x.Enabled).ExecuteUpdateAsync(updates => updates.SetProperty(x => x.IsRunning, true), cancellationToken) != 1) return;
+            if (Phase(entity) != SchedulePhase.Waiting) return;
+            if (await db.Schedules.Where(x => x.Id == id).Where(Waiting).ExecuteUpdateAsync(updates => updates.SetProperty(x => x.IsRunning, true), cancellationToken) != 1) return;
             entity.IsRunning = true; entity.LastRunAt = DateTimeOffset.UtcNow;
             entity.NextRunAt = ScheduleCalculator.Next(entity.Frequency, Trigger(entity), entity.TimeZone, entity.LastRunAt.Value);
             if (entity.Frequency.Equals("Once", StringComparison.OrdinalIgnoreCase)) entity.Enabled = false;

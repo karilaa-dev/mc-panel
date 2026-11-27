@@ -47,7 +47,12 @@ export function useServerLifecycle(server?: Pick<ServerSummaryDto, "id" | "state
   })
 
   const requestInFlight = mutation.isPending && mutation.variables?.serverId === server?.id
+  // The observed state can change before the HTTP response arrives, or vice versa.
+  const phase = current
+    ? requestInFlight ? "submitting" : "awaitingObservation"
+    : requestInFlight ? "awaitingResponse" : "idle"
   return {
+    phase,
     run: (action: LifecycleAction) => {
       if (!server) return
       const request = { serverId: server.id, action, from: server.state }
@@ -55,6 +60,6 @@ export function useServerLifecycle(server?: Pick<ServerSummaryDto, "id" | "state
       mutation.mutate(request)
     },
     pendingAction: current?.action,
-    busy: Boolean(current) || requestInFlight,
+    busy: phase !== "idle",
   }
 }

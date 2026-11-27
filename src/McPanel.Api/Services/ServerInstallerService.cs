@@ -74,12 +74,7 @@ public sealed partial class ServerInstallerService(
             var job = await operations.HandoffCommittedAsync(pending,
                 request.Kind == ServerKind.CustomJar
                     ? (_, jobId, token) => InstallCustomJarAsync(entity.Id, jobId, claim!, token)
-                    : (_, jobId, token) => InstallAsync(entity.Id, jobId, request.IncludeExperimental, token), cancellationToken);
-            if (job.State == JobState.Failed)
-            {
-                customJarClaim?.Dispose();
-                await MarkHandoffFailureAsync(entity.Id);
-            }
+                    : (_, jobId, token) => InstallAsync(entity.Id, jobId, request.IncludeExperimental, token), cancellationToken, claim);
             return (entity, job);
         }
         catch (Exception exception)
@@ -143,12 +138,7 @@ public sealed partial class ServerInstallerService(
                 await transaction.CommitAsync(cancellationToken);
             }
             var job = await operations.HandoffCommittedAsync(pending,
-                (_, jobId, token) => InstallModpackAsync(entity.Id, jobId, claim, request.SelectedOptionalFiles, token), cancellationToken);
-            if (job.State == JobState.Failed)
-            {
-                claim.Dispose();
-                await MarkHandoffFailureAsync(entity.Id);
-            }
+                (_, jobId, token) => InstallModpackAsync(entity.Id, jobId, claim, request.SelectedOptionalFiles, token), cancellationToken, claim);
             return (entity, job);
         }
         catch
@@ -209,22 +199,7 @@ public sealed partial class ServerInstallerService(
         }
         var job = await operations.HandoffCommittedAsync(pending,
             (_, jobId, token) => InstallGateAsync(entity.Id, jobId, token), cancellationToken);
-        if (job.State == JobState.Failed) await MarkHandoffFailureAsync(entity.Id);
         return (entity, job);
-    }
-
-    private async Task MarkHandoffFailureAsync(Guid serverId)
-    {
-        try
-        {
-            await using var db = await stateFactory.CreateDbContextAsync(CancellationToken.None);
-            var server = await db.Servers.FindAsync([serverId], CancellationToken.None);
-            if (server is null) return;
-            server.State = ServerState.Error;
-            server.UpdatedAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync(CancellationToken.None);
-        }
-        catch (Exception exception) { logger.LogError(exception, "Could not mark unqueued install {ServerId} as failed", serverId); }
     }
 
     private async Task InstallGateAsync(Guid id, Guid jobId, CancellationToken cancellationToken)
