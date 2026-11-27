@@ -28,8 +28,12 @@ export function ServerAvatar({ server, className }: { server: Pick<ServerSummary
 
 function IconUploadControl({ label, pending, disabled = false, onUpload }: { label: string; pending: boolean; disabled?: boolean; onUpload: (file: File) => void }) {
   const inputRef = useRef<HTMLInputElement>(null)
-  const [imageUrl, setImageUrl] = useState<string>()
-  const [open, setOpen] = useState(false)
+  const [dialog, setDialog] = useState<
+    { phase: "closed" } | { phase: "cropping" | "closing"; url: string }
+  >({ phase: "closed" })
+  const imageUrl = dialog.phase === "closed" ? undefined : dialog.url
+  const closeCrop = () => setDialog((current) =>
+    current.phase === "cropping" ? { phase: "closing", url: current.url } : current)
   const [crop, setCrop] = useState({ x: 0, y: 0 })
   const [zoom, setZoom] = useState(1)
   const [croppedArea, setCroppedArea] = useState<Area>()
@@ -47,7 +51,7 @@ function IconUploadControl({ label, pending, disabled = false, onUpload }: { lab
         onUpload(new File([file], "server-icon.png", { type: "image/png" }))
         return
       }
-      setCrop({ x: 0, y: 0 }); setZoom(1); setCroppedArea(undefined); setImageUrl(url); setOpen(true)
+      setCrop({ x: 0, y: 0 }); setZoom(1); setCroppedArea(undefined); setDialog({ phase: "cropping", url })
     } catch {
       URL.revokeObjectURL(url)
       toast.error("The selected image could not be decoded.")
@@ -57,7 +61,7 @@ function IconUploadControl({ label, pending, disabled = false, onUpload }: { lab
   }
   const saveCrop = async () => {
     if (!imageUrl || !croppedArea) return
-    try { onUpload(await cropServerIcon(imageUrl, croppedArea)); setOpen(false) }
+    try { onUpload(await cropServerIcon(imageUrl, croppedArea)); closeCrop() }
     catch (error) { toast.error(error instanceof Error ? error.message : "The cropped icon could not be prepared.") }
   }
 
@@ -65,9 +69,11 @@ function IconUploadControl({ label, pending, disabled = false, onUpload }: { lab
     <Button icon={UploadIcon} loading={pending} disabled={disabled} onClick={() => inputRef.current?.click()}>{label}</Button>
     <input ref={inputRef} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Choose panel icon" tabIndex={-1} onChange={(event) => void chooseFile(event.target.files?.[0])} />
     <Modal
-      open={open}
-      onOpenChange={setOpen}
-      onOpenChangeComplete={(next) => { if (!next) setImageUrl(undefined) }}
+      open={dialog.phase === "cropping"}
+      onOpenChange={(open) => { if (!open) closeCrop() }}
+      onOpenChangeComplete={(open) => {
+        if (!open) setDialog((current) => current.phase === "closing" ? { phase: "closed" } : current)
+      }}
       title="Crop panel icon"
       description="Drag the image to choose a square area, then adjust the zoom. The result is saved as a reusable 64×64 PNG."
       footer={<><ModalClose /><Button variant="primary" loading={pending} disabled={!croppedArea} onClick={() => void saveCrop()}>Save to library</Button></>}

@@ -74,7 +74,7 @@ public sealed partial class ServerInstallerService(
             var job = await operations.HandoffCommittedAsync(pending,
                 request.Kind == ServerKind.CustomJar
                     ? (_, jobId, token) => InstallCustomJarAsync(entity.Id, jobId, claim!, token)
-                    : (_, jobId, token) => InstallAsync(entity.Id, jobId, request.IncludeExperimental, token), cancellationToken);
+                    : (_, jobId, token) => InstallAsync(entity.Id, jobId, request.IncludeExperimental, token), cancellationToken, claim);
             if (job.State == JobState.Failed)
             {
                 customJarClaim?.Dispose();
@@ -143,7 +143,7 @@ public sealed partial class ServerInstallerService(
                 await transaction.CommitAsync(cancellationToken);
             }
             var job = await operations.HandoffCommittedAsync(pending,
-                (_, jobId, token) => InstallModpackAsync(entity.Id, jobId, claim, request.SelectedOptionalFiles, token), cancellationToken);
+                (_, jobId, token) => InstallModpackAsync(entity.Id, jobId, claim, request.SelectedOptionalFiles, token), cancellationToken, claim);
             if (job.State == JobState.Failed)
             {
                 claim.Dispose();

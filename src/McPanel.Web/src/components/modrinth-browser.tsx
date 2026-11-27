@@ -1,9 +1,10 @@
+import { isTerminalJob } from "@/lib/job-lifecycle"
 import { useMemo, useRef, useState } from "react"
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Banner, Button, Checkbox, InputGroup, Label, LayerCard, Loader, Select, cn } from "@cloudflare/kumo"
 import { AlertTriangleFilledIcon, ExternalLinkIcon, LayoutGridIcon, MenuIcon, PackageIcon, SearchIcon } from "@/components/icons"
 import { api } from "@/lib/api"
-import type { ModrinthProjectDto, ServerSummaryDto } from "@/lib/contracts"
+import type { JobDto, ModrinthProjectDto, ServerSummaryDto } from "@/lib/contracts"
 import { toast } from "@/lib/toast"
 import { useRetained } from "@/hooks/use-retained"
 import { ProgressBar, SegmentedControl } from "@/components/controls"
@@ -16,7 +17,6 @@ import {
 
 type CatalogKind = "mod" | "plugin"
 type CatalogView = ModrinthProjectCardView
-type InstallJob = { id: string; state: string; progress: number; message?: string }
 
 const modLoaders = ["fabric", "forge", "neoforge"]
 const pluginLoaders = ["paper", "purpur", "spigot", "bukkit"]
@@ -62,7 +62,7 @@ export function ModrinthBrowser({ serverId, server, kind }: { serverId: string; 
   const dialogProject = useRetained(project)
   const [selectedVersionId, setSelectedVersionId] = useState("")
   const [dependencySelection, setDependencySelection] = useState<{ versionId: string; excludedProjectIds: string[] }>({ versionId: "", excludedProjectIds: [] })
-  const [activeJob, setActiveJob] = useState<InstallJob>()
+  const [activeJob, setActiveJob] = useState<JobDto>()
   const catalog = useQuery({ queryKey: ["catalog", false], queryFn: () => api.catalog(false), staleTime: 300_000 })
   const versionOptions = useMemo(() => {
     const source = catalog.data
@@ -107,12 +107,12 @@ export function ModrinthBrowser({ serverId, server, kind }: { serverId: string; 
         ? await api.installModrinthPlugin(serverId, target.id, versionId, selectedDependencyProjectIds)
         : await api.installModrinthMod(serverId, target.id, versionId, selectedDependencyProjectIds)
       setActiveJob(job)
-      while (!["Completed", "Failed"].includes(job.state)) {
+      while (!isTerminalJob(job.state)) {
         await new Promise((resolve) => window.setTimeout(resolve, 1_000))
         job = await api.job(job.id)
         setActiveJob(job)
       }
-      if (job.state === "Failed") throw new Error(job.error ?? `${label(kind)} installation failed`)
+      if (job.state !== "Completed") throw new Error(job.error ?? `${label(kind)} installation ${job.state.toLowerCase()}`)
       return job
     },
     onSuccess: (job) => {

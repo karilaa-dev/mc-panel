@@ -1,5 +1,9 @@
 # MC Panel Agent Instructions
 
+## Application state
+
+The [state machine inventory](STATE-MACHINES.md) links each workflow to its owner, transition rules and relevant tests. For lifecycle changes, check both the command path and the observation path. A queued job, an HTTP response and a server process can each be at a different stage.
+
 ## Server deployment
 
 - Deploy or start MC Panel only when the user explicitly asks for it or when the completed task changes runtime-affecting application or deployment code. Do not install, update, start, or restart the server for documentation, tests-only, agent-instruction, repository-metadata, ignore-rule, or cleanup-only changes.

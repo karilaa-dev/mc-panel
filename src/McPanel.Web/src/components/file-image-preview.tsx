@@ -8,8 +8,9 @@ import { EmptyState, InlineLoading } from "@/components/feedback"
 import { Modal, ModalClose } from "@/components/modal"
 
 function ImagePreview({ serverId, path, onDimensions }: { serverId: string; path: string; onDimensions: (value: string) => void }) {
-  const [source, setSource] = useState<string>()
-  const [problem, setProblem] = useState<string>()
+  const [preview, setPreview] = useState<
+    { phase: "loading" } | { phase: "ready"; url: string } | { phase: "failed"; error: string }
+  >({ phase: "loading" })
   const name = path.split("/").at(-1) ?? path
 
   useEffect(() => {
@@ -18,17 +19,17 @@ function ImagePreview({ serverId, path, onDimensions }: { serverId: string; path
     void api.downloadFile(serverId, path, controller.signal).then((blob) => {
       if (controller.signal.aborted) return
       objectUrl = URL.createObjectURL(new Blob([blob], { type: imageFileType(path) }))
-      setSource(objectUrl)
+      setPreview({ phase: "ready", url: objectUrl })
     }).catch((error: unknown) => {
-      if (!controller.signal.aborted) setProblem(error instanceof Error ? error.message : "The image could not be loaded.")
+      if (!controller.signal.aborted) setPreview({ phase: "failed", error: error instanceof Error ? error.message : "The image could not be loaded." })
     })
     return () => { controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl) }
   }, [serverId, path])
 
   return (
     <div className="image-preview flex min-h-64 flex-1 items-center justify-center overflow-hidden rounded-lg p-4 ring ring-kumo-line">
-      {problem ? <EmptyState inset size="sm" icon={<PhotoIcon />} title="Could not preview image" description={`${problem} You can still download the file.`} />
-        : source ? <img src={source} alt={name} className="max-h-[60dvh] max-w-full object-contain [image-rendering:auto]" onLoad={(event) => onDimensions(`${event.currentTarget.naturalWidth} × ${event.currentTarget.naturalHeight} pixels`)} onError={() => setProblem("This file is not a supported or readable image.")} />
+      {preview.phase === "failed" ? <EmptyState inset size="sm" icon={<PhotoIcon />} title="Could not preview image" description={`${preview.error} You can still download the file.`} />
+        : preview.phase === "ready" ? <img src={preview.url} alt={name} className="max-h-[60dvh] max-w-full object-contain [image-rendering:auto]" onLoad={(event) => onDimensions(`${event.currentTarget.naturalWidth} × ${event.currentTarget.naturalHeight} pixels`)} onError={() => setPreview({ phase: "failed", error: "This file is not a supported or readable image." })} />
           : <InlineLoading>Loading image…</InlineLoading>}
     </div>
   )
@@ -51,7 +52,7 @@ export function FileImagePreview({ serverId, path, onClose }: { serverId: string
         {shownPath && <LinkButton variant="primary" icon={DownloadIcon} href={api.fileDownloadUrl(serverId, shownPath)}>Download image</LinkButton>}
       </>}
     >
-      {shownPath && <ImagePreview key={shownPath} serverId={serverId} path={shownPath} onDimensions={(text) => setDimensions({ path: shownPath, text })} />}
+      {shownPath && <ImagePreview key={JSON.stringify([serverId, shownPath])} serverId={serverId} path={shownPath} onDimensions={(text) => setDimensions({ path: shownPath, text })} />}
     </Modal>
   )
 }

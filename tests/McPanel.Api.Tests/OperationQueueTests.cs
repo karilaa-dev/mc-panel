@@ -14,6 +14,34 @@ public sealed class OperationQueueTests : IDisposable
 {
     private readonly string _database = Path.Combine(Path.GetTempPath(), $"mcpanel-operation-queue-{Guid.NewGuid():N}.db");
 
+    [Theory]
+    [InlineData("Install")]
+    [InlineData("InstallModpack")]
+    [InlineData("GateInstall")]
+    public async Task Canceling_a_queued_install_releases_the_server_and_ignores_late_progress(string type)
+    {
+        var factory = new TestStateDbContextFactory(new DbContextOptionsBuilder<StateDbContext>()
+            .UseSqlite($"Data Source={_database};Cache=Shared").Options);
+        var server = new ServerEntity { Id = Guid.NewGuid(), Name = "test", Version = "1", JavaRuntimeId = "java" };
+        await using (var db = await factory.CreateDbContextAsync())
+        {
+            await db.Database.EnsureCreatedAsync();
+            db.Servers.Add(server);
+            await db.SaveChangesAsync();
+        }
+        var services = new ServiceCollection(); services.AddLogging(); services.AddSignalR();
+        await using var provider = services.BuildServiceProvider();
+        using var queue = new OperationQueue(provider, factory, provider.GetRequiredService<IHubContext<PanelHub>>(),
+            new SessionAudience(), new TestApplicationLifetime(), NullLogger<OperationQueue>.Instance);
+        var job = await queue.EnqueueAsync(type, server.Id, (_, _, _) => Task.CompletedTask, default);
+        var canceled = await queue.CancelAsync(job.Id, default);
+        await queue.ProgressAsync(job.Id, 75, "Obsolete worker", default);
+        Assert.Equal(JobState.Canceled, canceled.State);
+        Assert.Equal(canceled, await queue.GetAsync(job.Id, default));
+        await using var verify = await factory.CreateDbContextAsync();
+        Assert.Equal(ServerState.Error, (await verify.Servers.FindAsync(server.Id))!.State);
+    }
+
     [Fact]
     public async Task Immediate_operation_runs_while_all_workers_are_busy()
     {

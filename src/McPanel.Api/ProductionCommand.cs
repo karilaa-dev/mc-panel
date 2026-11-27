@@ -141,7 +141,7 @@ internal static class ProductionCommand
                     server.StartOnBoot = false; server.CrashRecovery = false; server.CrashAttempts = 0;
                 }
                 foreach (var schedule in await db.Schedules.ToListAsync(token)) { schedule.Enabled = false; schedule.IsRunning = false; }
-                foreach (var job in await db.Jobs.Where(x => x.State == JobState.Queued || x.State == JobState.Running).ToListAsync(token))
+                foreach (var job in await db.Jobs.Where(JobLifecycle.Active).ToListAsync(token))
                 { job.State = JobState.Interrupted; job.Error = "Recovered onto a new installation; inspect state before retrying."; }
                 foreach (var admin in await db.Admins.ToListAsync(token)) admin.SessionStamp = Guid.NewGuid().ToString("N");
                 db.AuditEvents.Add(new() { Actor = "local-recovery", Action = "panel-restore", Target = manifest.CapturedAt.ToString("O"), Outcome = "succeeded" });

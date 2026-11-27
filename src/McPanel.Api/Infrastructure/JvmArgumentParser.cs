@@ -4,6 +4,8 @@ namespace McPanel.Api.Infrastructure;
 
 public static class JvmArgumentParser
 {
+    private enum Mode { Unquoted, SingleQuoted, DoubleQuoted, EscapeUnquoted, EscapeDoubleQuoted }
+
     public static IReadOnlyList<string> Parse(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return [];
@@ -11,35 +13,35 @@ public static class JvmArgumentParser
 
         var values = new List<string>();
         var current = new StringBuilder();
-        char quote = '\0';
-        var escaping = false;
+        var mode = Mode.Unquoted;
         foreach (var character in text)
         {
-            if (escaping)
+            switch (mode)
             {
-                current.Append(character);
-                escaping = false;
-                continue;
+                case Mode.EscapeUnquoted:
+                case Mode.EscapeDoubleQuoted:
+                    current.Append(character);
+                    mode = mode == Mode.EscapeDoubleQuoted ? Mode.DoubleQuoted : Mode.Unquoted;
+                    break;
+                case Mode.SingleQuoted:
+                    if (character == '\'') mode = Mode.Unquoted;
+                    else current.Append(character);
+                    break;
+                case Mode.DoubleQuoted:
+                    if (character == '"') mode = Mode.Unquoted;
+                    else if (character == '\\') mode = Mode.EscapeDoubleQuoted;
+                    else current.Append(character);
+                    break;
+                case Mode.Unquoted:
+                    if (character == '\'') mode = Mode.SingleQuoted;
+                    else if (character == '"') mode = Mode.DoubleQuoted;
+                    else if (character == '\\') mode = Mode.EscapeUnquoted;
+                    else if (char.IsWhiteSpace(character)) Add(values, current);
+                    else current.Append(character);
+                    break;
             }
-            if (character == '\\' && quote != '\'')
-            {
-                escaping = true;
-                continue;
-            }
-            if (quote != '\0')
-            {
-                if (character == quote) quote = '\0'; else current.Append(character);
-                continue;
-            }
-            if (character is '\'' or '"') { quote = character; continue; }
-            if (char.IsWhiteSpace(character))
-            {
-                Add(values, current);
-                continue;
-            }
-            current.Append(character);
         }
-        if (escaping || quote != '\0') throw PanelProblems.Validation("JVM arguments contain an unmatched quote or escape.");
+        if (mode != Mode.Unquoted) throw PanelProblems.Validation("JVM arguments contain an unmatched quote or escape.");
         Add(values, current);
         return values;
     }

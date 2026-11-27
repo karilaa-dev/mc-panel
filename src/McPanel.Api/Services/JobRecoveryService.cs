@@ -15,9 +15,9 @@ public sealed class JobRecoveryService(IDbContextFactory<StateDbContext> factory
         using var retryLock = await keyedLock.AcquireAsync(id, token);
         await using var db = await factory.CreateDbContextAsync(token);
         var previous = await db.Jobs.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, token) ?? throw PanelProblems.NotFound("Job");
-        var existing = await db.Jobs.AsNoTracking().Where(x => x.RetryOf == id && (x.State == JobState.Queued || x.State == JobState.Running)).FirstOrDefaultAsync(token);
+        var existing = await db.Jobs.AsNoTracking().Where(x => x.RetryOf == id).Where(JobLifecycle.Active).FirstOrDefaultAsync(token);
         if (existing is not null) return (await queue.GetAsync(existing.Id, token))!;
-        if (previous.State is not (JobState.Failed or JobState.Interrupted or JobState.Canceled) || previous.InputJson is null || previous.ServerId is not { } serverId)
+        if (!JobLifecycle.CanRetry(previous) || previous.InputJson is null || previous.ServerId is not { } serverId)
             throw PanelProblems.Conflict("JOB_NOT_RETRYABLE", "This operation has no supported retry. Review its result and use the server controls.");
         var server = await db.Servers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == serverId, token) ?? throw PanelProblems.NotFound("Server");
         if (server.RecoveryRequired) throw PanelProblems.Conflict("RECOVERY_REQUIRED", server.RecoveryReason ?? "Repair the interrupted recovery before retrying.");

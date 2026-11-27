@@ -66,8 +66,7 @@ public sealed partial class PlayerService(
         var server = await db.Servers.SingleOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw PanelProblems.NotFound("Server");
         var processRunning = supervisor.IsRunning(id);
         var running = server.State == ServerState.Running && processRunning;
-        var stopped = (server.State is ServerState.Stopped or ServerState.Crashed) && !processRunning;
-        if (!running && !stopped) throw PanelProblems.Conflict("SERVER_BUSY", "Player lists cannot be changed in the server's current state.");
+        if (!ServerLifecycle.IsStable(server.State, processRunning)) throw PanelProblems.Conflict("SERVER_BUSY", "Player lists cannot be changed in the server's current state.");
         if (normalizedAction == "kick" && !running) throw PanelProblems.Conflict("SERVER_NOT_RUNNING", "Start the server before kicking a player.");
 
         var root = paths.Instance(id);

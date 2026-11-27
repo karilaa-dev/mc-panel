@@ -7,9 +7,23 @@ using Microsoft.Data.Sqlite;
 namespace McPanel.Api.Services;
 
 public sealed record RuntimeCapabilities(int ProtocolVersion, int ConsoleSchema, string Version, string[] Features);
-public sealed record RuntimeSaveLease(Guid ServerId, Guid Token, DateTimeOffset ExpiresAt);
+public sealed record RuntimeSaveLease(Guid ServerId, Guid Token, DateTimeOffset ExpiresAt)
+{
+    internal bool IsExpired(DateTimeOffset now) => now >= ExpiresAt;
+}
 public sealed record RuntimeRecoveryPolicy(Guid ServerId, bool Enabled);
 public sealed record RuntimeIncident(Guid ServerId, string Code, string Message, DateTimeOffset Timestamp, bool Resolved = false);
+
+internal static class CrashRecovery
+{
+    public static TimeSpan? Delay(int attempt, TimeSpan interval) => attempt switch
+    {
+        1 => interval,
+        2 => interval * 3,
+        3 => interval * 12,
+        _ => null
+    };
+}
 
 internal sealed partial class RuntimeEngine
 {
@@ -117,7 +131,7 @@ internal sealed partial class RuntimeEngine
                 await WriteAsync(managed, "save-off", deadline.Token);
                 await WriteAsync(managed, "save-all flush", deadline.Token);
                 await managed.SaveFlushed.Task.WaitAsync(deadline.Token);
-                if (DateTimeOffset.UtcNow >= lease.ExpiresAt) throw new TimeoutException("The save suspension expired during flush.");
+                if (lease.IsExpired(DateTimeOffset.UtcNow)) throw new TimeoutException("The save suspension expired during flush.");
                 return lease;
             }
             catch { await ResumeLeaseLockedAsync(lease, expired: true); throw; }
@@ -131,7 +145,7 @@ internal sealed partial class RuntimeEngine
         await gate.WaitAsync(token);
         try
         {
-            if (!_leases.TryGetValue(requested.ServerId, out var lease) || lease.Token != requested.Token || lease.ExpiresAt <= DateTimeOffset.UtcNow)
+            if (!_leases.TryGetValue(requested.ServerId, out var lease) || lease.Token != requested.Token || lease.IsExpired(DateTimeOffset.UtcNow))
                 throw new InvalidOperationException("The save suspension expired. Discard this snapshot.");
             var next = lease with { ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(Math.Clamp(Settings.BackupLeaseSeconds, 1, 120)) };
             await PersistLeaseAsync(next, token); _leases[lease.ServerId] = next;
@@ -148,7 +162,7 @@ internal sealed partial class RuntimeEngine
         {
             if (!_leases.TryGetValue(requested.ServerId, out var lease) || lease.Token != requested.Token)
                 throw new InvalidOperationException("The save suspension is no longer valid. Discard this snapshot.");
-            var expired = lease.ExpiresAt <= DateTimeOffset.UtcNow;
+            var expired = lease.IsExpired(DateTimeOffset.UtcNow);
             await ResumeLeaseLockedAsync(lease, expired);
             if (expired) throw new InvalidOperationException("The save suspension expired. Discard this snapshot.");
         }
@@ -220,7 +234,7 @@ internal sealed partial class RuntimeEngine
         var pending = CancellationTokenSource.CreateLinkedTokenSource(_maintenanceStop.Token);
         if (!_recoveries.TryAdd(id, pending)) { pending.Dispose(); return; }
         var attempt = _recoveryAttempts.AddOrUpdate(id, 1, (_, count) => count + 1);
-        if (attempt > 3)
+        if (CrashRecovery.Delay(attempt, RecoveryDelay) is not { } delay)
         {
             _recoveries.TryRemove(new KeyValuePair<Guid, CancellationTokenSource>(id, pending)); pending.Dispose();
             _ = RecordRuntimeIncidentAsync(id, "CRASH_RECOVERY_EXHAUSTED", "Minecraft exceeded three automatic recovery attempts. Inspect the console and start it manually."); return;
@@ -229,7 +243,7 @@ internal sealed partial class RuntimeEngine
         {
             try
             {
-                await Task.Delay(RecoveryDelay * new[] { 1, 3, 12 }[attempt - 1], pending.Token);
+                await Task.Delay(delay, pending.Token);
                 if (!_launches.TryGetValue(id, out var current) || !current.CrashRecovery || _active.ContainsKey(id)) return;
                 if (!_recoveries.TryGetValue(id, out var activeRecovery) || !ReferenceEquals(activeRecovery, pending)) return;
                 pending.Token.ThrowIfCancellationRequested();
@@ -272,11 +286,11 @@ internal sealed partial class RuntimeEngine
         {
             while (!token.IsCancellationRequested)
             {
-                await Task.WhenAll(_leases.Values.Where(x => x.ExpiresAt <= DateTimeOffset.UtcNow).Select(async lease =>
+                await Task.WhenAll(_leases.Values.Where(x => x.IsExpired(DateTimeOffset.UtcNow)).Select(async lease =>
                 {
                     var gate = _leaseLocks.GetOrAdd(lease.ServerId, _ => new(1, 1));
                     if (!await gate.WaitAsync(0, token)) return;
-                    try { if (_leases.TryGetValue(lease.ServerId, out var current) && current.ExpiresAt <= DateTimeOffset.UtcNow) await ResumeLeaseLockedAsync(current, expired: true); }
+                    try { if (_leases.TryGetValue(lease.ServerId, out var current) && current.IsExpired(DateTimeOffset.UtcNow)) await ResumeLeaseLockedAsync(current, expired: true); }
                     catch (Exception exception) { logger.LogWarning(exception, "Save resumption will be retried"); }
                     finally { gate.Release(); }
                 }));

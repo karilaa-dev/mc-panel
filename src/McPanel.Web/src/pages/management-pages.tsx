@@ -147,19 +147,23 @@ function ScheduleEditor({ initial, onSave }: { initial: ScheduleWriteDto; onSave
 export function SchedulesPage() {
   const { serverId = "" } = useParams()
   const queryClient = useQueryClient()
-  const [editing, setEditing] = useState<ScheduleDto | "new">()
+  const [dialog, setDialog] = useState<
+    { kind: "closed" } | { kind: "edit"; schedule: ScheduleDto | "new" } |
+    { kind: "delete"; schedule: ScheduleDto } | { kind: "history"; id: string }
+  >({ kind: "closed" })
+  const editing = dialog.kind === "edit" ? dialog.schedule : undefined
+  const deleting = dialog.kind === "delete" ? dialog.schedule : undefined
+  const historyId = dialog.kind === "history" ? dialog.id : undefined
   const shownEditing = useRetained(editing)
-  const [deleting, setDeleting] = useState<ScheduleDto>()
   const shownDeleting = useRetained(deleting)
   const schedules = useQuery({ queryKey: ["schedules", serverId], queryFn: () => api.schedules(serverId), refetchInterval: 5000 })
-  const [historyId, setHistoryId] = useState<string>()
   const shownHistoryId = useRetained(historyId)
   const history = useQuery({ queryKey: ["schedule-runs", serverId, shownHistoryId], queryFn: () => api.scheduleRuns(serverId, shownHistoryId!), enabled: Boolean(historyId), refetchInterval: 5000 })
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["schedules", serverId] })
   const run = useMutation({ mutationFn: (id: string) => api.runSchedule(serverId, id), onSuccess: () => { toast.success("Schedule queued"); void refresh() }, onError: (error) => toast.error(error.message) })
   const save = useMutation({
     mutationFn: (value: ScheduleWriteDto) => editing === "new" ? api.createSchedule(serverId, value) : api.updateSchedule(serverId, (editing as ScheduleDto).id, value),
-    onSuccess: () => { toast.success("Schedule saved"); setEditing(undefined); void refresh() },
+    onSuccess: () => { toast.success("Schedule saved"); setDialog((current) => current === dialog ? { kind: "closed" } : current); void refresh() },
     onError: (error) => toast.error(error.message),
   })
   const toggle = useMutation({
@@ -176,7 +180,7 @@ export function SchedulesPage() {
   const historyName = schedules.data?.find((schedule) => schedule.id === shownHistoryId)?.name
 
   return (
-    <Page title="Schedules" description="Time-based automations that run ordered Minecraft server actions." actions={<Button variant="primary" icon={PlusIcon} onClick={() => setEditing("new")}>New schedule</Button>}>
+    <Page title="Schedules" description="Time-based automations that run ordered Minecraft server actions." actions={<Button variant="primary" icon={PlusIcon} onClick={() => setDialog({ kind: "edit", schedule: "new" })}>New schedule</Button>}>
       <Section title="Schedules" description="Overlapping runs and runs missed during downtime are skipped." flush>
         <QueryFeedback query={schedules} />
         {schedules.isError && !schedules.data ? null : schedules.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-10" />)}</div> : schedules.data?.length ? <Table>
@@ -193,19 +197,19 @@ export function SchedulesPage() {
                 <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsIcon size={20} stroke={2} />} aria-label={`Manage ${schedule.name}`} />} />
                 <DropdownMenu.Content align="end">
                   <DropdownMenu.Item icon={PlayerPlayIcon} disabled={!schedule.enabled || run.isPending} onClick={() => run.mutate(schedule.id)}>Run now</DropdownMenu.Item>
-                  <DropdownMenu.Item icon={PencilIcon} onClick={() => setEditing(schedule)}>Edit</DropdownMenu.Item>
-                  <DropdownMenu.Item icon={HistoryIcon} onClick={() => setHistoryId(schedule.id)}>History</DropdownMenu.Item>
+                  <DropdownMenu.Item icon={PencilIcon} onClick={() => setDialog({ kind: "edit", schedule })}>Edit</DropdownMenu.Item>
+                  <DropdownMenu.Item icon={HistoryIcon} onClick={() => setDialog({ kind: "history", id: schedule.id })}>History</DropdownMenu.Item>
                   <DropdownMenu.Separator />
-                  <DropdownMenu.Item icon={TrashIcon} variant="danger" onClick={() => setDeleting(schedule)}>Delete</DropdownMenu.Item>
+                  <DropdownMenu.Item icon={TrashIcon} variant="danger" onClick={() => setDialog({ kind: "delete", schedule })}>Delete</DropdownMenu.Item>
                 </DropdownMenu.Content>
               </DropdownMenu>
             </Table.Cell>
           </Table.Row>)}</Table.Body>
-        </Table> : <EmptyState inset icon={<CalendarCheckIcon />} title="No schedules yet" description="Automate backups, restarts, updates, or console commands." action={<Button variant="primary" icon={PlusIcon} onClick={() => setEditing("new")}>New schedule</Button>} />}
+        </Table> : <EmptyState inset icon={<CalendarCheckIcon />} title="No schedules yet" description="Automate backups, restarts, updates, or console commands." action={<Button variant="primary" icon={PlusIcon} onClick={() => setDialog({ kind: "edit", schedule: "new" })}>New schedule</Button>} />}
       </Section>
       <Modal
         open={Boolean(historyId)}
-        onOpenChange={(open) => { if (!open) setHistoryId(undefined) }}
+        onOpenChange={(open) => { if (!open) setDialog({ kind: "closed" }) }}
         title="Schedule history"
         description={historyName ? `Recent runs of ${historyName}.` : "Recent runs and their recorded outcomes."}
         footer={<ModalClose>Close</ModalClose>}
@@ -217,7 +221,7 @@ export function SchedulesPage() {
       </Modal>
       <Modal
         open={Boolean(editing)}
-        onOpenChange={(open) => { if (!open) setEditing(undefined) }}
+        onOpenChange={(open) => { if (!open) setDialog((current) => current === dialog ? { kind: "closed" } : current) }}
         size="xl"
         title={shownEditing === "new" ? "New schedule" : "Edit schedule"}
         description="Choose when this ordered action sequence should run."
@@ -227,7 +231,7 @@ export function SchedulesPage() {
       </Modal>
       <ConfirmDialog
         open={Boolean(deleting)}
-        onOpenChange={(open) => { if (!open) setDeleting(undefined) }}
+        onOpenChange={(open) => { if (!open) setDialog({ kind: "closed" }) }}
         title={`Delete ${shownDeleting?.name ?? "schedule"}?`}
         description="The schedule and its action sequence are permanently removed."
         confirmLabel="Delete"

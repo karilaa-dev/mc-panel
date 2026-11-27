@@ -148,12 +148,7 @@ public sealed class ModrinthModInstallerService(
             var server = await db.Servers.SingleOrDefaultAsync(x => x.Id == serverId, cancellationToken)
                          ?? throw PanelProblems.NotFound("Server");
             var running = processStatus.IsRunning(serverId);
-            var stable = server.State switch
-            {
-                ServerState.Running => running,
-                ServerState.Stopped or ServerState.Crashed => !running,
-                _ => false
-            };
+            var stable = ServerLifecycle.IsStable(server.State, running);
             if (!stable)
                 throw PanelProblems.Conflict("SERVER_BUSY", $"{(plugin ? "Plugins" : "Mods")} cannot be changed while the server is changing state.");
             if (plugin ? ModrinthService.PluginLoader(server.Kind) is null : ModrinthService.Loader(server.Kind) is null)

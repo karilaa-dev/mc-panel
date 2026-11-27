@@ -1,3 +1,4 @@
+import { serverLifecycle } from "@/lib/server-lifecycle"
 import { Suspense, useCallback, useEffect, useRef, useState, type ComponentType } from "react"
 import { Link, Outlet, useLocation } from "react-router-dom"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
@@ -244,7 +245,7 @@ function ServerHeaderActions({ server, onOverview, compact }: { server: ServerSu
       {!onOverview && !pending && server.state === "Running" && (compact
         ? <Button size="sm" shape="square" icon={RefreshIcon} aria-label="Restart" disabled={lifecycle.busy} onClick={restart} />
         : <Button size="sm" icon={RefreshIcon} disabled={lifecycle.busy} onClick={restart}>Restart</Button>)}
-      {!onOverview && !pending && (server.state === "Stopped" || server.state === "Crashed") && (compact
+      {!onOverview && !pending && serverLifecycle[server.state]?.action === "start" && (compact
         ? <Button size="sm" shape="square" variant="primary" icon={PlayerPlayIcon} aria-label="Start" disabled={lifecycle.busy} onClick={start} />
         : <Button size="sm" variant="primary" icon={PlayerPlayIcon} disabled={lifecycle.busy} onClick={start}>Start</Button>)}
       {!onOverview && <ImmediateStopButton server={server} size="sm" compact={compact} />}

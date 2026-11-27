@@ -211,12 +211,7 @@ public sealed class ServerIconService(
 
     private static void EnsureStableState(ServerEntity server, bool processRunning)
     {
-        var consistent = server.State switch
-        {
-            ServerState.Running => processRunning,
-            ServerState.Stopped or ServerState.Crashed => !processRunning,
-            _ => false
-        };
+        var consistent = ServerLifecycle.IsStable(server.State, processRunning);
         if (!consistent) throw PanelProblems.Conflict("SERVER_BUSY", "The server icon cannot be changed in its current state.");
     }
 }

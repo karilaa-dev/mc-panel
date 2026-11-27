@@ -1114,8 +1114,7 @@ public sealed class GateProxyService(
         var manifest = releases.Installed(serverId);
         if (manifest is null || !File.Exists(manifest.Executable)) throw new PanelException(409, "GATE_NOT_INSTALLED", "Install Gate before starting it.");
         await AtomicConfigAsync(serverId, generated.PersistedJson, cancellationToken);
-        settings.ConfigurationDirty = false;
-        settings.LastApplyError = null;
+        settings.Applied();
         await db.SaveChangesAsync(cancellationToken);
         return Launch(gate, settings, manifest);
     }
@@ -1277,12 +1276,11 @@ public sealed class GateProxyService(
                 // than replacing configuration, so the atomic file activation above is the
                 // supported live-apply path.
             }
-            settings.ConfigurationDirty = false;
-            settings.LastApplyError = null;
+            settings.Applied();
         }
         catch (Exception exception)
         {
-            settings.LastApplyError = exception.Message.Length > 4096 ? exception.Message[..4096] : exception.Message;
+            settings.ApplyFailed(exception.Message);
             logger.LogWarning(exception, "Could not reconcile Gate server {ServerId}", serverId);
         }
         settings.UpdatedAt = DateTimeOffset.UtcNow;
@@ -1368,8 +1366,7 @@ public sealed class GateProxyService(
 
     private static void MarkDirty(GateSettingsEntity settings)
     {
-        settings.ConfigurationDirty = true;
-        settings.LastApplyError = null;
+        settings.QueueApply();
         settings.Revision = Guid.NewGuid().ToString("N");
         settings.UpdatedAt = DateTimeOffset.UtcNow;
     }

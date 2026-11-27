@@ -8,6 +8,7 @@ import { AppShell } from "@/components/app-shell"
 import { EmptyState } from "@/components/feedback"
 import { errorMessage } from "@/lib/errors"
 import { api } from "@/lib/api"
+import type { AuthStatusDto } from "@/lib/contracts"
 import { toastManager } from "@/lib/toast"
 
 const pageModules = {
@@ -77,6 +78,13 @@ function UnavailableScreen({ message, onRetry }: { message: string; onRetry: () 
   )
 }
 
+function sessionScreen(loading: boolean, status?: AuthStatusDto) {
+  if (loading) return { phase: "loading" } as const
+  if (!status) return { phase: "unavailable" } as const
+  if (status.authenticated) return { phase: "authenticated" } as const
+  return { phase: status.setupRequired ? "setup" : "login", status } as const
+}
+
 function AppRoutes() {
   const queryClient = useQueryClient()
   useEffect(() => {
@@ -91,12 +99,13 @@ function AppRoutes() {
     staleTime: 30_000,
     refetchInterval: 30_000,
   })
-  usePreloadPages(Boolean(auth.data?.authenticated))
+  const session = sessionScreen(auth.isLoading, auth.data)
+  usePreloadPages(session.phase === "authenticated")
 
-  if (auth.isLoading) return <LoadingScreen />
+  if (session.phase === "loading") return <LoadingScreen />
   // A failed background refresh keeps the app on screen; only a failed first load blocks it.
-  if (!auth.data) return <UnavailableScreen message={errorMessage(auth.error, "Could not reach MC Panel.")} onRetry={() => void auth.refetch()} />
-  if (!auth.data.authenticated) return <AuthScreen status={auth.data} />
+  if (session.phase === "unavailable") return <UnavailableScreen message={errorMessage(auth.error, "Could not reach MC Panel.")} onRetry={() => void auth.refetch()} />
+  if (session.phase === "setup" || session.phase === "login") return <AuthScreen status={session.status} />
 
   return (
     <Routes>

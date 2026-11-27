@@ -1,3 +1,4 @@
+import { jobPhase } from "@/lib/job-lifecycle"
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Badge, Button, Checkbox, LinkButton } from "@cloudflare/kumo"
@@ -24,7 +25,7 @@ export function InstanceExports() {
     onSuccess: () => { toast.message("Instance export queued"); void client.invalidateQueries({ queryKey: ["jobs"] }) },
     onError: (error) => toast.error(error.message),
   })
-  const busy = capture.isPending || exports.some((job) => job.state === "Queued" || job.state === "Running")
+  const busy = capture.isPending || exports.some((job) => jobPhase(job.state) === "active")
 
   return <Section
     title="Instance exports"

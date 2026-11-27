@@ -1,3 +1,5 @@
+import { useCustomJarUpload } from "@/hooks/use-custom-jar-upload"
+import { isTerminalJob } from "@/lib/job-lifecycle"
 import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useParams } from "react-router-dom"
@@ -5,7 +7,7 @@ import { Banner, Button, Checkbox, Input, Label, Select, Tabs } from "@cloudflar
 import { AlertTriangleFilledIcon, ArrowsExchangeIcon, CircleCheckFilledIcon, CubeIcon, InfoCircleFilledIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import { createClientRequestId } from "@/lib/client-request-id"
-import type { ChangeServerSoftwareRequest, CustomJarImportDto, ServerKind } from "@/lib/contracts"
+import type { ChangeServerSoftwareRequest, ServerKind } from "@/lib/contracts"
 import { recommendedJavaMajor } from "@/lib/java-version"
 import { serverKindLabel } from "@/lib/server-kind"
 import { toast } from "@/lib/toast"
@@ -18,6 +20,10 @@ type OfficialKind = "Vanilla" | "Paper" | "Fabric" | "Forge" | "NeoForge"
 
 export function ServerCoreSettingsSection() {
   const { serverId = "" } = useParams()
+  return <ServerCoreSettings key={serverId} serverId={serverId} />
+}
+
+function ServerCoreSettings({ serverId }: { serverId: string }) {
   const queryClient = useQueryClient()
   const server = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
   const software = useQuery({ queryKey: ["software", serverId], queryFn: () => api.software(serverId) })
@@ -32,10 +38,10 @@ export function ServerCoreSettingsSection() {
   const [loader, setLoader] = useState("")
   const [installer, setInstaller] = useState("")
   const [customSource, setCustomSource] = useState<"upload" | "existing">("upload")
-  const [customJar, setCustomJar] = useState<CustomJarImportDto>()
-  const [consumingCustomJarJobId, setConsumingCustomJarJobId] = useState("")
+  const jarUpload = useCustomJarUpload()
+  const customJar = jarUpload.data
+  const [jarClaim, setJarClaim] = useState<{ token: string; jobId: string }>()
   const [existingJar, setExistingJar] = useState("")
-  const [uploading, setUploading] = useState(false)
   const [createBackup, setCreateBackup] = useState(true)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [initializedServerId, setInitializedServerId] = useState("")
@@ -46,12 +52,12 @@ export function ServerCoreSettingsSection() {
     enabled: Boolean(changeJobId),
     refetchInterval: (query) => {
       const state = query.state.data?.state
-      return state === "Completed" || state === "Failed" ? false : 1_000
+      return isTerminalJob(state) ? false : 1_000
     },
   })
 
   useEffect(() => {
-    if (!changeJobId || changeJob.data?.state !== "Completed" && changeJob.data?.state !== "Failed") return
+    if (!changeJobId || !changeJob.data || !isTerminalJob(changeJob.data.state)) return
     if (changeJob.data.state === "Completed") {
       void queryClient.invalidateQueries({ queryKey: ["server", serverId] })
       void queryClient.invalidateQueries({ queryKey: ["software", serverId] })
@@ -94,8 +100,9 @@ export function ServerCoreSettingsSection() {
     ? runtime.major === 8 : runtime.major >= requiredJava)
   const selectedJava = compatibleJava.some((runtime) => runtime.id === javaRuntimeId)
     ? javaRuntimeId : (compatibleJava[0]?.id ?? "")
+  const awaitingJob = Boolean(changeJobId) && !isTerminalJob(changeJob.data?.state)
   const stopped = server.data?.state === "Stopped"
-  const customJarConsumed = consumingCustomJarJobId === changeJobId && changeJob.data?.state === "Completed"
+  const customJarConsumed = jarClaim?.token === customJar?.token && jarClaim?.jobId === changeJobId && changeJob.data?.state === "Completed"
   const availableCustomJar = customJarConsumed ? undefined : customJar
   const customReady = customSource === "upload" ? Boolean(availableCustomJar) : Boolean(existingJar)
   const targetDetail = mode === "CustomJar" ? (customSource === "upload" ? availableCustomJar?.fileName : existingJar)
@@ -128,7 +135,7 @@ export function ServerCoreSettingsSection() {
       clientRequestId: requestIdentity.id,
     }),
     onSuccess: (job) => {
-      if (changeIntent.customJarImportToken) setConsumingCustomJarJobId(job.id)
+      if (changeIntent.customJarImportToken) setJarClaim({ token: changeIntent.customJarImportToken, jobId: job.id })
       setRequestIdentity({ key: changeIntentKey, id: createClientRequestId() })
       setChangeJobId(job.id)
       setConfirmOpen(false)
@@ -138,24 +145,14 @@ export function ServerCoreSettingsSection() {
     onError: (error) => toast.error(error.message),
   })
 
-  async function upload(file: File) {
-    setUploading(true)
-    try {
-      const result = await api.uploadCustomJar(file)
-      setConsumingCustomJarJobId("")
-      setCustomJar(result)
-      toast.success("Custom JAR uploaded", { description: result.fileName })
-    } catch (error) {
-      setCustomJar(undefined)
-      toast.error(error instanceof Error ? error.message : "Could not upload the JAR.")
-    } finally { setUploading(false) }
-  }
-
   if (server.isLoading || software.isLoading) return <SectionSkeleton rows={5} />
   if (!server.data || !software.data) return <ErrorBanner title="Server core details unavailable" description={software.error instanceof Error ? software.error.message : "The server could not be loaded."} />
 
   const javaLabel = (major: number, vendor: string) => `Java ${major} · ${vendor}`
   return <>
+    {awaitingJob && (changeJob.isError
+      ? <ErrorBanner title="Server core change status unavailable" description={changeJob.error.message} onRetry={() => void changeJob.refetch()} />
+      : <Banner icon={<InfoCircleFilledIcon />} title="Server core change in progress" description={changeJob.data?.message ?? "Waiting for the operation result."} />)}
     <Section title="Current server core" description="The active launcher recorded by MC Panel.">
       <DetailList className="lg:grid-cols-4" items={[
         { label: "Core", value: serverKindLabel(software.data.kind) },
@@ -169,7 +166,7 @@ export function ServerCoreSettingsSection() {
       description="Official cores are downloaded from verified catalogs. Custom JARs need an executable manifest."
       footer={<div className="flex w-full items-center justify-between gap-3">
         <p className="text-sm text-kumo-subtle">{stopped ? "Worlds, properties, plugins, and mods stay in place." : "Stop the server to change its core."}</p>
-        <Button variant="primary" icon={ArrowsExchangeIcon} disabled={!stopped || !selectionsReady || uploading} onClick={() => setConfirmOpen(true)}>Review server core change</Button>
+        <Button variant="primary" icon={ArrowsExchangeIcon} disabled={!stopped || !selectionsReady || jarUpload.isPending || awaitingJob} onClick={() => setConfirmOpen(true)}>Review server core change</Button>
       </div>}
     >
       {!stopped && <Banner variant="alert" icon={<AlertTriangleFilledIcon />} title="Stop the server first" description="Server core changes are disabled until the server is fully stopped." />}
@@ -200,7 +197,7 @@ export function ServerCoreSettingsSection() {
           <Input label="Minecraft version" value={version} onChange={(event) => setVersion(event.target.value)} placeholder="For example, 1.21.8" />
           <Tabs variant="segmented" value={customSource} onValueChange={(value) => setCustomSource(value as "upload" | "existing")} tabs={[{ value: "upload", label: "Upload new JAR" }, { value: "existing", label: "Use existing JAR" }]} />
           {customSource === "upload" ? <div className="flex flex-col gap-3">
-            <FileInput key={customJarConsumed ? consumingCustomJarJobId : "custom-jar-input"} label="Executable JAR" accept=".jar,application/java-archive" pending={uploading} fileName={availableCustomJar?.fileName} onFile={(file) => void upload(file)} description="The upload token expires after one hour and is consumed by this change." />
+            <FileInput key={customJarConsumed ? changeJobId : "custom-jar-input"} label="Executable JAR" accept=".jar,application/java-archive" pending={jarUpload.isPending} fileName={availableCustomJar?.fileName} onFile={(file) => jarUpload.mutate(file)} description="The upload token expires after one hour and is consumed by this change." />
             {availableCustomJar && <Banner icon={<CircleCheckFilledIcon />} title={availableCustomJar.fileName} description="Ready to activate as custom-server.jar." />}
           </div> : <Choice label="Existing executable JAR" value={existingJar} choices={software.data.jarCandidates.map((item) => ({ value: item.path, label: item.path }))} onChange={setExistingJar} placeholder="Choose a JAR inside this server" />}
         </>}

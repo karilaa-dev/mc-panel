@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen, waitFor, within } from "@testing-library/react"
+import { act, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { createMemoryRouter, RouterProvider } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -77,6 +77,23 @@ describe("FilesPage mutation availability", () => {
       expect(screen.getByRole("button", { name: "New folder" })).toBeEnabled()
       expect(screen.getByRole("button", { name: "New file" })).toBeEnabled()
     })
+  })
+
+  it("keeps the current folder when a previous text file finishes opening", async () => {
+    mockedApi.server.mockResolvedValue(server("Stopped"))
+    mockedApi.files.mockResolvedValue(["notes.txt", "world"].map((name) => ({
+      name, path: name, size: 10, isDirectory: name === "world", modifiedAt: "2026-09-05T00:00:00Z",
+    })))
+    let finish!: (value: { content: string; revision: string }) => void
+    const read = new Promise<{ content: string; revision: string }>((resolve) => { finish = resolve })
+    mockedApi.readFile.mockReturnValueOnce(read)
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole("button", { name: "notes.txt" }))
+    await user.click(screen.getByRole("button", { name: "world" }))
+    await act(async () => { finish({ content: "old file", revision: "1" }) })
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Parent folder" })).toBeVisible()
   })
 
   it("supports Gate instance files while keeping forwarding keys protected", async () => {

@@ -251,7 +251,7 @@ static async Task InitializeAsync(IServiceProvider services)
             .RecoverInterruptedRestoresAsync(state, CancellationToken.None);
         var unrecoveredActivations = await scope.ServiceProvider.GetRequiredService<SoftwareActivationService>()
             .RecoverInterruptedAsync(state, CancellationToken.None);
-        var staleJobs = await state.Jobs.Where(x => x.State == JobState.Running || x.State == JobState.Queued).ToListAsync();
+        var staleJobs = await state.Jobs.Where(JobLifecycle.Active).ToListAsync();
         foreach (var job in staleJobs) { job.State = JobState.Interrupted; job.Progress = 100; job.Message = "Interrupted"; job.Error = "The panel restarted before this operation completed."; }
         var interruptedUpdates = await state.Servers.Where(x => x.State == ServerState.Updating).ToListAsync();
         foreach (var server in interruptedUpdates.Where(server => !unrecoveredActivations.Contains(server.Id)))

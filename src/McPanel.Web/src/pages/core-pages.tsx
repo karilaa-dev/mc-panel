@@ -1,3 +1,6 @@
+import { useCustomJarUpload } from "@/hooks/use-custom-jar-upload"
+import { canEditServer, serverLifecycle } from "@/lib/server-lifecycle"
+import { isTerminalJob, jobPhase } from "@/lib/job-lifecycle"
 import { lazy, Suspense, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react"
 import { useForm, useWatch } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -19,7 +22,7 @@ import {
   MEMORY_STEP_MB,
   memoryLimitMb,
 } from "@/lib/memory-allocation"
-import type { CustomJarImportDto, ModpackInspectionDto, RuntimeConfigurationDto, ServerKind, ServerPropertiesDto, ServerPropertyDefinitionDto, ServerPropertyDto, ServerState, ServerSummaryDto } from "@/lib/contracts"
+import type { ModpackInspectionDto, RuntimeConfigurationDto, ServerKind, ServerPropertiesDto, ServerPropertyDefinitionDto, ServerPropertyDto, ServerState, ServerSummaryDto } from "@/lib/contracts"
 import { serverKindLabel } from "@/lib/server-kind"
 import { toast } from "@/lib/toast"
 import { useUnsavedChanges } from "@/hooks/use-unsaved-changes"
@@ -43,17 +46,6 @@ const usage = (used: number, total: number) => `${gigabytes(used)} / ${gigabytes
 const duration = (seconds: number) => seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m` : `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`
 const gib = (mb: number) => `${(mb / 1024).toFixed(1)} GiB`
 const kindDescription = (server: Pick<ServerSummaryDto, "kind" | "version">) => server.kind === "Gate" ? `Gate Proxy · ${server.version}` : `${serverKindLabel(server.kind)} · Minecraft ${server.version}`
-const lifecycleStateLabels: Record<ServerState, string> = {
-  Installing: "Installing…",
-  Stopped: "Start",
-  Starting: "Starting…",
-  Running: "Stop",
-  Stopping: "Stopping…",
-  BackingUp: "Backing up…",
-  Updating: "Updating…",
-  Crashed: "Start",
-  Error: "Error",
-}
 
 function ServerCard({ server }: { server: ServerSummaryDto }) {
   const href = `/servers/${server.id}`
@@ -184,14 +176,27 @@ function ChoiceField({ label, children }: { label: string; children: (labelId: s
   return <div className="flex flex-col gap-2"><span id={labelId} className="text-base font-medium text-kumo-default">{label}</span>{children(labelId)}</div>
 }
 
+const creationSteps = {
+  type: { title: "Server type", description: "Choose what kind of server to create." },
+  version: { title: "Version", description: "Select the Minecraft version and loader builds." },
+  runtime: { title: "Java and memory", description: "Assign a compatible Java runtime and RAM." },
+  confirm: { title: "Name and confirm", description: "Name the server, choose its port, and accept the EULA." },
+  gate: { title: "Name and install", description: "Pick a verified Gate release and its listener." },
+}
+type CreationStep = keyof typeof creationSteps
+const creationPaths: Record<ServerCategory, CreationStep[]> = {
+  Regular: ["type", "version", "runtime", "confirm"],
+  Proxy: ["type", "gate"],
+}
+
 export function CreateServerPage() {
   const navigate = useNavigate()
-  const [step, setStep] = useState(1)
+  const [step, setStep] = useState<CreationStep>("type")
   const [category, setCategory] = useState<ServerCategory>("Regular")
   const [source, setSource] = useState<InstallSource>("Official")
   const [kind, setKind] = useState<ServerKind>("Paper")
-  const [customJar, setCustomJar] = useState<CustomJarImportDto>()
-  const [customJarUploading, setCustomJarUploading] = useState(false)
+  const jarUpload = useCustomJarUpload()
+  const customJar = jarUpload.data
   const [packInspection, setPackInspection] = useState<ModpackInspectionDto>()
   const [selectedOptionalFiles, setSelectedOptionalFiles] = useState<string[]>([])
   const [selectedVersion, setSelectedVersion] = useState("")
@@ -265,17 +270,16 @@ export function CreateServerPage() {
   const { register, handleSubmit, control, setValue, formState: { errors, isSubmitting } } = useForm<CreateFields>({ resolver: zodResolver(createSchema), defaultValues: { name: "My server", port: 25565, eulaAccepted: false } })
   const eula = useWatch({ control, name: "eulaAccepted" })
   const isGate = category === "Proxy"
-  const steps = isGate ? ["Server type", "Name and install"] : ["Server type", "Version", "Java and memory", "Name and confirm"]
-  const stepDescriptions = isGate
-    ? ["Choose what kind of server to create.", "Pick a verified Gate release and its listener."]
-    : ["Choose what kind of server to create.", "Select the Minecraft version and loader builds.", "Assign a compatible Java runtime and RAM.", "Name the server, choose its port, and accept the EULA."]
-  const totalSteps = steps.length
+  const steps = creationPaths[category]
+  const index = steps.indexOf(step)
+  const previous = steps[index - 1]
+  const next = steps[index + 1]
   const distributionReady = source === "Modpack" ? Boolean(packInspection)
     : source === "CustomJar" ? Boolean(customJar && version)
       : serverKind === "Fabric"
         ? Boolean(loaderVersion && installerVersion)
         : serverKind === "Forge" || serverKind === "NeoForge" ? Boolean(loaderVersion) : true
-  const canAdvance = step === 1 ? Boolean(source === "Modpack" || kind) : step === 2 ? Boolean(version && distributionReady) : step === 3 ? Boolean(javaId) && memoryCapacityAvailable : eula
+  const canAdvance = step === "type" ? Boolean(source === "Modpack" || kind) : step === "version" ? Boolean(version && distributionReady) : step === "runtime" ? Boolean(javaId) && memoryCapacityAvailable : eula
 
   async function submit(values: CreateFields) {
     try {
@@ -325,36 +329,23 @@ export function CreateServerPage() {
     } finally { setGateSubmitting(false) }
   }
 
-  async function uploadCustomJar(file: File) {
-    setCustomJarUploading(true)
-    try {
-      const uploaded = await api.uploadCustomJar(file)
-      setCustomJar(uploaded)
-      toast.success("Custom JAR uploaded", { description: uploaded.fileName })
-    } catch (error) {
-      setCustomJar(undefined)
-      toast.error(error instanceof Error ? error.message : "Could not upload the JAR.")
-    } finally { setCustomJarUploading(false) }
-  }
-
-  const finalStep = step === totalSteps
   const footer = <>
-    <Button disabled={step === 1 || isSubmitting || gateSubmitting} onClick={() => setStep((current) => current - 1)}>Back</Button>
-    {!finalStep ? <Button variant="primary" disabled={!canAdvance} onClick={() => setStep((current) => current + 1)}>Continue<ArrowRightIcon size={18} /></Button>
+    <Button disabled={!previous || isSubmitting || gateSubmitting} onClick={() => previous && setStep(previous)}>Back</Button>
+    {next ? <Button variant="primary" disabled={!canAdvance} onClick={() => setStep(next)}>Continue<ArrowRightIcon size={18} /></Button>
       : isGate ? <Button variant="primary" loading={gateSubmitting} disabled={!selectedGateVersion || gateVersions.isError} onClick={() => void submitGate()}>Create Gate server</Button>
         : <Button variant="primary" form="create-form" type="submit" loading={isSubmitting} disabled={!eula}>Create server</Button>}
   </>
 
   return <Page
     size="narrow"
-    title={isGate && step === 2 ? "Create Gate Proxy" : "Create server"}
+    title={step === "gate" ? "Create Gate Proxy" : "Create server"}
     description={isGate ? "Install a verified Minekube Gate proxy as a managed server." : "Install a verified server core, a custom JAR, or a Modrinth modpack."}
   >
     <div className="flex w-full max-w-3xl flex-col gap-5">
-      <Stepper steps={steps} current={step} />
-      <Section title={steps[step - 1]} description={stepDescriptions[step - 1]} footer={<div className="flex w-full items-center justify-between gap-3">{footer}</div>}>
+      <Stepper steps={steps.map((id) => creationSteps[id].title)} current={index + 1} />
+      <Section title={creationSteps[step].title} description={creationSteps[step].description} footer={<div className="flex w-full items-center justify-between gap-3">{footer}</div>}>
         <div>
-          {step === 1 && <FormStack>
+          {step === "type" && <FormStack>
             <ChoiceField label="Server category">{(labelId) => <ChoiceCards aria-labelledby={labelId} value={category} options={categoryOptions} onValueChange={(next) => { setCategory(next); if (next === "Regular") setSource("Official") }} />}</ChoiceField>
             {category === "Regular" ? <>
               <ChoiceField label="Installation source">{(labelId) => <ChoiceCards aria-labelledby={labelId} className="sm:grid-cols-3" value={source} options={sourceOptions} onValueChange={setSource} />}</ChoiceField>
@@ -362,7 +353,7 @@ export function CreateServerPage() {
             </> : <Banner icon={<InfoCircleFilledIcon />} title="Minekube Gate" description="Gate uses a separate two-step setup and keeps its files and forwarding secrets private." />}
           </FormStack>}
 
-          {step === 2 && isGate && <FormStack>
+          {step === "gate" && <FormStack>
             <Select
               label="Gate version"
               className="w-full"
@@ -379,15 +370,15 @@ export function CreateServerPage() {
             <SwitchField id="gate-start-on-boot" label="Start on boot" description="Start this Gate instance whenever the managed runtime starts." checked={gateStartOnBoot} onCheckedChange={setGateStartOnBoot} />
           </FormStack>}
 
-          {step === 2 && !isGate && source === "Modpack" && <ModpackPicker inspection={packInspection} selectedOptionalFiles={selectedOptionalFiles} onChange={(value, optional) => { setPackInspection(value); setSelectedOptionalFiles(optional) }} />}
+          {step === "version" && source === "Modpack" && <ModpackPicker inspection={packInspection} selectedOptionalFiles={selectedOptionalFiles} onChange={(value, optional) => { setPackInspection(value); setSelectedOptionalFiles(optional) }} />}
 
-          {step === 2 && !isGate && source === "CustomJar" && <FormStack>
+          {step === "version" && source === "CustomJar" && <FormStack>
             <Input label="Minecraft version" placeholder="For example, 1.21.8" value={selectedVersion} onChange={(event) => setSelectedVersion(event.target.value)} description="Required for Java compatibility and server metadata." />
-            <FileInput label="Executable server JAR" accept=".jar,application/java-archive" pending={customJarUploading} fileName={customJar?.fileName} onFile={(file) => void uploadCustomJar(file)} description="A readable ZIP-format JAR with a Main-Class manifest. Uploads expire after one hour and can only be used once." />
+            <FileInput label="Executable server JAR" accept=".jar,application/java-archive" pending={jarUpload.isPending} fileName={customJar?.fileName} onFile={(file) => jarUpload.mutate(file)} description="A readable ZIP-format JAR with a Main-Class manifest. Uploads expire after one hour and can only be used once." />
             {customJar && <Banner icon={<CircleCheckFilledIcon />} title={customJar.fileName} description="Ready to install as Custom JAR." />}
           </FormStack>}
 
-          {step === 2 && !isGate && source === "Official" && <FormStack>
+          {step === "version" && source === "Official" && <FormStack>
             <SwitchField id="experimental" label="Show experimental versions" description="Includes snapshots, unstable loader tools, and non-recommended builds." checked={showExperimental} onCheckedChange={setShowExperimental} />
             {showExperimental && <Banner variant="alert" icon={<AlertTriangleFilledIcon />} title="Experimental server core" description="Snapshots and unstable builds can corrupt worlds or break plugins. Back up important data before using them." />}
             {!catalogLoading && !versions.length
@@ -401,7 +392,7 @@ export function CreateServerPage() {
             {(serverKind === "Forge" || serverKind === "NeoForge") && <Select label={`${serverKind} version`} className="w-full" placeholder={`Choose ${serverKind} version`} items={visibleLoaderBuilds.map((item) => ({ value: item.version, label: `${item.version} · ${item.channel}${item.experimental ? " (experimental)" : ""}` }))} value={loaderVersion} onValueChange={(value) => value && setSelectedLoader(value as string)} />}
           </FormStack>}
 
-          {step === 3 && <FormStack>
+          {step === "runtime" && <FormStack>
             {compatibleJava.length
               ? <Select label="Java runtime" className="w-full" placeholder="Choose Java" items={compatibleJava.map((item) => ({ value: item.id, label: `Java ${item.major} · ${item.vendor}` }))} value={javaId} onValueChange={(value) => value && setSelectedJavaId(value as string)} />
               : <ErrorBanner title={`Java ${requiredJava}+ is required`} description="Install a compatible Java runtime on the host, then rescan from the Java page." />}
@@ -410,7 +401,7 @@ export function CreateServerPage() {
               : <ErrorBanner title="Not enough allocatable host RAM" description={`A server needs at least a 0.5 GiB heap, but the host has ${gib(hostTotalMemoryLimitMb)}.`} />}
           </FormStack>}
 
-          {step === 4 && !isGate && <form id="create-form" onSubmit={handleSubmit(submit)} noValidate className="flex flex-col gap-5">
+          {step === "confirm" && <form id="create-form" onSubmit={handleSubmit(submit)} noValidate className="flex flex-col gap-5">
             <div className="grid gap-5 sm:grid-cols-[minmax(0,1fr)_10rem]">
               <Input label="Server name" error={errors.name?.message} {...register("name")} />
               <Input label="Game port" type="number" error={errors.port?.message} {...register("port", { valueAsNumber: true })} />
@@ -446,20 +437,20 @@ export function ServerCreationPage() {
   const { serverId = "", jobId = "" } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const server = useQuery({
-    queryKey: ["server", serverId],
-    queryFn: () => api.server(serverId),
-    enabled: Boolean(serverId),
-    refetchInterval: 2_000,
-  })
   const job = useQuery({
     queryKey: ["job", jobId],
     queryFn: () => api.job(jobId),
     enabled: Boolean(jobId),
     refetchInterval: (query) => {
       const state = query.state.data?.state
-      return state === "Completed" || state === "Failed" ? false : 1_000
+      return isTerminalJob(state) ? false : 1_000
     },
+  })
+  const server = useQuery({
+    queryKey: ["server", serverId],
+    queryFn: () => api.server(serverId),
+    enabled: Boolean(serverId),
+    refetchInterval: isTerminalJob(job.data?.state) ? false : 2_000,
   })
 
   useEffect(() => {
@@ -469,22 +460,23 @@ export function ServerCreationPage() {
     navigate(`/servers/${serverId}`, { replace: true })
   }, [job.data?.state, navigate, queryClient, serverId])
 
-  const failed = ["Failed", "Interrupted", "Canceled"].includes(job.data?.state ?? "")
+  const stopped = jobPhase(job.data?.state) === "unsuccessful"
+  const canceled = job.data?.state === "Canceled"
   const progress = job.data?.progress ?? 0
-  const message = job.data?.message ?? (job.isLoading ? "Preparing installation" : "Waiting for an update")
+  const message = canceled ? "Installation canceled" : job.data?.message ?? (job.isLoading ? "Preparing installation" : "Waiting for an update")
   const serverName = server.data?.name ?? "your server"
 
-  return <Page size="narrow" title={`Creating ${serverName}`} description="MC Panel is downloading, verifying, and configuring the server. This page updates automatically.">
+  return <Page size="narrow" title={`Creating ${serverName}`} description={stopped ? "The installation has ended. Open the server to review its state." : "MC Panel is downloading, verifying, and configuring the server. This page updates automatically."}>
     <div className="w-full max-w-3xl">
       <Section
-        title={failed ? "Installation stopped" : "Installation in progress"}
+        title={stopped ? "Installation stopped" : "Installation in progress"}
         description={server.data ? `${kindDescription(server.data)} · Port ${server.data.port}` : `Installation job ${jobId.slice(0, 8)}`}
-        actions={failed ? <Badge variant="error" appearance="dot">Failed</Badge> : job.data?.state === "Queued" ? <Badge variant="neutral" appearance="dot">Queued</Badge> : <StatusBadge state="Installing" />}
+        actions={stopped ? <Badge variant="error" appearance="dot">{job.data?.state}</Badge> : job.data?.state === "Queued" ? <Badge variant="neutral" appearance="dot">Queued</Badge> : <StatusBadge state="Installing" />}
         footer={<div className="flex w-full flex-wrap items-center justify-between gap-3">
-          <p className="text-sm text-kumo-subtle">You can leave this page; installation continues in the background.</p>
+          {!stopped && <p className="text-sm text-kumo-subtle">You can leave this page; installation continues in the background.</p>}
           <div className="flex gap-2">
             {job.isError && <Button onClick={() => void job.refetch()}>Retry</Button>}
-            {failed ? <LinkButton href={`/servers/${serverId}`} variant="primary">Open server</LinkButton> : <LinkButton href="/" variant="secondary">View dashboard</LinkButton>}
+            {stopped ? <LinkButton href={`/servers/${serverId}`} variant="primary">Open server</LinkButton> : <LinkButton href="/" variant="secondary">View dashboard</LinkButton>}
           </div>
         </div>}
       >
@@ -492,11 +484,11 @@ export function ServerCreationPage() {
           {server.data ? <ServerAvatar server={server.data} className="size-12" /> : <Skeleton className="size-12" />}
           <div className="min-w-0">
             <p className="font-medium text-kumo-default">{job.data?.state === "Queued" ? "Queued" : message}</p>
-            <p className="text-sm text-kumo-subtle">{failed ? "Review the error below before opening the server." : "Large mod loaders can take a few minutes to finish."}</p>
+            <p className="text-sm text-kumo-subtle">{canceled ? "You can return to the server overview." : stopped ? "Review the error below before opening the server." : "Large mod loaders can take a few minutes to finish."}</p>
           </div>
         </div>
-        <ProgressBar label="Installation progress" value={progress} tone={failed ? "danger" : "default"} />
-        {failed && <ErrorBanner title="Could not create the server" description={job.data?.error ?? "The installation failed before it completed."} />}
+        <ProgressBar label="Installation progress" value={progress} tone={stopped ? "danger" : "default"} />
+        {stopped && !canceled && <ErrorBanner title="Could not create the server" description={job.data?.error ?? "The installation failed before it completed."} />}
         {job.isError && <ErrorBanner title="Progress is unavailable" description={job.error instanceof Error ? job.error.message : "Could not load the installation job."} />}
       </Section>
     </div>
@@ -529,11 +521,10 @@ export function ServerOverviewPage() {
   const pending = lifecycle.pendingAction
   const stopped = server.state === "Stopped"
   const running = server.state === "Running"
-  const canStart = server.state === "Stopped" || server.state === "Crashed"
   const canDelete = server.state === "Stopped" || server.state === "Error" || server.state === "Crashed"
-  const lifecycleAction = running ? "stop" : canStart ? "start" : undefined
-  const transitional = ["Installing", "Starting", "Stopping", "BackingUp", "Updating"].includes(server.state)
-  const primaryLabel = pending ? pendingLifecycleLabels[pending] : lifecycleStateLabels[server.state]
+  const lifecycleAction = serverLifecycle[server.state]?.action
+  const transitional = serverLifecycle[server.state]?.phase === "transition"
+  const primaryLabel = pending ? pendingLifecycleLabels[pending] : serverLifecycle[server.state]?.label ?? server.state
 
   return <Page
     title={<span className="flex min-w-0 items-center gap-3"><ServerAvatar server={server} className="size-10" /><span className="min-w-0">{server.name}</span></span>}
@@ -548,7 +539,7 @@ export function ServerOverviewPage() {
       <HintButton
         aria-label={primaryLabel}
         variant={running && !pending ? "secondary" : "primary"}
-        icon={pending || transitional ? undefined : running ? PlayerStopIcon : canStart ? PlayerPlayIcon : undefined}
+        icon={pending || transitional ? undefined : running ? PlayerStopIcon : lifecycleAction === "start" ? PlayerPlayIcon : undefined}
         loading={Boolean(pending) || transitional}
         disabled={lifecycle.busy || !lifecycleAction}
         hint={lifecycleAction || pending ? undefined : `No lifecycle action is available while the server is ${server.state.toLowerCase()}.`}
@@ -613,7 +604,7 @@ export function ServerIconPage() {
   const { serverId = "" } = useParams()
   const { data: server, isLoading } = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
   if (isLoading || !server) return <Page title="Server icon"><SectionSkeleton rows={4} /></Page>
-  const editable = (["Running", "Stopped", "Crashed"] as ServerState[]).includes(server.state)
+  const editable = canEditServer(server.state)
   return <Page title="Server icon" description="Choose the icon shown throughout the panel and advertised to Minecraft clients.">
     <Section title={server.name} description="Uploaded icons are saved to the panel library, so any server can reuse them.">
       {!editable && <Banner variant="secondary" icon={<InfoCircleFilledIcon />} title="Icon changes are paused" description={`The icon cannot be changed while the server is ${server.state.toLowerCase()}.`} />}
@@ -703,7 +694,7 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
   const [addSearch, setAddSearch] = useState("")
   const [pendingIncompatible, setPendingIncompatible] = useState<ServerPropertyDefinitionDto>()
   const [acknowledged, setAcknowledged] = useState<Set<string>>(() => new Set())
-  const canSave = serverState === "Stopped" || serverState === "Running" || serverState === "Crashed"
+  const canSave = canEditServer(serverState)
   const normalizedSearch = search.trim().toLowerCase()
   const filtered = entries.filter((entry) => `${entry.key} ${humanizePropertyKey(entry.key)} ${entry.section}`.toLowerCase().includes(normalizedSearch))
   const tabGroups = propertyTabs.map((tab) => ({ ...tab, entries: filtered.filter((entry) => propertyTabFor(entry) === tab.value) }))
@@ -882,7 +873,7 @@ function RuntimeSettingsEditor({ serverId, serverState, serverKind, initial, jav
   const heapMemoryMb = clampMemoryMb(initial.maximumMemoryMb, memoryLimitMb, MEMORY_MIN_MB)
   const [form, setForm] = useState<RuntimeConfigurationDto>({ ...initial, totalMemoryMb: heapMemoryMb, maximumMemoryMb: heapMemoryMb, initialMemoryMb: heapMemoryMb })
   const [confirmAikar, setConfirmAikar] = useState(false)
-  const canSave = serverState === "Stopped" || serverState === "Running" || serverState === "Crashed"
+  const canSave = canEditServer(serverState)
   const memoryValid = form.maximumMemoryMb >= MEMORY_MIN_MB && form.maximumMemoryMb <= memoryLimitMb && form.maximumMemoryMb % MEMORY_STEP_MB === 0
   const save = useMutation({
     mutationFn: () => api.saveRuntime(serverId, form),

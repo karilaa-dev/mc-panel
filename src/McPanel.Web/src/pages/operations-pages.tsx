@@ -1,3 +1,5 @@
+import { canEditServer } from "@/lib/server-lifecycle"
+import { isTerminalJob } from "@/lib/job-lifecycle"
 import {
   lazy,
   Suspense,
@@ -35,6 +37,12 @@ import { PlayerInventorySheet } from "@/components/player-inventory-sheet"
 import { Section } from "@/components/section"
 import type { TerminalHandle } from "@/components/terminal-view"
 
+const consolePhaseLabels = {
+  connecting: "Connecting", catchingUp: "Catching up", live: "Live",
+  reconnecting: "Reconnecting", closed: "Disconnected",
+}
+type ConsolePhase = keyof typeof consolePhaseLabels
+
 const TerminalView = lazy(() => import("@/components/terminal-view").then((module) => ({ default: module.TerminalView })))
 const CodeEditor = lazy(() => import("@/components/code-editor").then((module) => ({ default: module.CodeEditor })))
 
@@ -66,7 +74,7 @@ function ConsoleSession({ serverId }: { serverId: string }) {
   const historyIndexRef = useRef(0)
   const [command, setCommand] = useState("")
   const [search, setSearch] = useState("")
-  const [connected, setConnected] = useState(false)
+  const [connectionPhase, setConnectionPhase] = useState<ConsolePhase>("connecting")
   const [errorsOnly, setErrorsOnly] = useState(false)
 
   const writeEvents = useCallback((events: ConsoleEventDto[]) => {
@@ -83,8 +91,14 @@ function ConsoleSession({ serverId }: { serverId: string }) {
   }, [serverId, errorsOnly])
 
   useEffect(() => {
-    let disposed = false
-    let bufferingLiveEvents = true
+    let phase: ConsolePhase = "connecting"
+    // Each disconnect invalidates any backlog request still completing for the old connection.
+    let generation = 0
+    const closed = () => phase === "closed"
+    const transition = (next: ConsolePhase) => {
+      phase = next
+      setConnectionPhase(next)
+    }
     let retryTimer: ReturnType<typeof setTimeout> | undefined
     let releaseRetryDelay: (() => void) | undefined
     let stopRequested = false
@@ -108,7 +122,7 @@ function ConsoleSession({ serverId }: { serverId: string }) {
     }
     const waitForRetry = (attempt: number) => {
       const delay = initialConnectionRetryDelays[Math.min(attempt, initialConnectionRetryDelays.length - 1)]
-      if (disposed || delay === 0) return Promise.resolve()
+      if (closed() || delay === 0) return Promise.resolve()
       return new Promise<void>((resolve) => {
         const finish = () => {
           retryTimer = undefined
@@ -121,86 +135,86 @@ function ConsoleSession({ serverId }: { serverId: string }) {
     }
     const startWithRetry = async () => {
       let attempt = 0
-      while (!disposed) {
+      while (!closed()) {
         await waitForRetry(attempt)
-        if (disposed) return false
+        if (closed()) return false
         try {
           await connection.start()
-          return !disposed
+          return !closed()
         } catch {
           attempt += 1
         }
       }
       return false
     }
-    const catchUp = async () => {
+    const catchUp = async (attempt: number) => {
       try {
         const events = await api.consoleBacklog(serverId, sequenceRef.current)
-        if (!disposed) writeEvents(events)
+        if (!closed() && attempt === generation) writeEvents(events)
       } catch (error) {
-        if (!disposed) toast.error(error instanceof Error ? error.message : "Could not load console history.")
+        if (!closed() && attempt === generation) toast.error(error instanceof Error ? error.message : "Could not load console history.")
       }
     }
     const finishCatchUp = async () => {
-      await catchUp()
-      if (disposed) return
+      const attempt = ++generation
+      transition("catchingUp")
+      await catchUp(attempt)
+      if (closed() || generation !== attempt) return
       writeEvents(bufferedLiveEvents.splice(0))
-      bufferingLiveEvents = false
-      setConnected(true)
+      transition("live")
     }
     connection.on("ConsoleBatch", (events: ConsoleEventDto[]) => {
-      if (disposed) return
-      if (bufferingLiveEvents) bufferedLiveEvents.push(...events)
+      if (closed()) return
+      if (phase !== "live") bufferedLiveEvents.push(...events)
       else writeEvents(events)
     })
     connection.on("ServerStateChanged", () => {
-      if (disposed) return
+      if (closed()) return
       void queryClient.invalidateQueries({ queryKey: ["server", serverId] })
       void queryClient.invalidateQueries({ queryKey: ["servers"] })
     })
     connection.on("MetricsUpdated", (metrics: { host: HostStatusDto; servers: ServerSummaryDto[] }) => {
-      if (disposed) return
+      if (closed()) return
       queryClient.setQueryData(["host"], metrics.host)
       queryClient.setQueryData(["servers"], metrics.servers)
       const currentServer = metrics.servers.find((item) => item.id === serverId)
       if (currentServer) queryClient.setQueryData(["server", serverId], currentServer)
     })
     connection.on("JobUpdated", (job: JobDto) => {
-      if (disposed || !["Completed", "Failed", "Interrupted", "Canceled"].includes(job.state)) return
+      if (closed() || !isTerminalJob(job.state)) return
       void queryClient.invalidateQueries({ queryKey: ["server", serverId] })
       void queryClient.invalidateQueries({ queryKey: ["servers"] })
     })
     connection.on("SessionRevoked", () => {
-      if (disposed) return
-      disposed = true
+      if (closed()) return
+      transition("closed")
       cancelRetryDelay()
-      setConnected(false)
       void (async () => {
         await stopConnection().catch(() => undefined)
         window.location.reload()
       })()
     })
     connection.onreconnecting(() => {
-      if (disposed) return
-      bufferingLiveEvents = true
-      setConnected(false)
+      if (closed()) return
+      generation++
+      transition("reconnecting")
     })
     connection.onclose(() => {
-      if (disposed) return
-      setConnected(false)
-      bufferingLiveEvents = true
+      if (closed()) return
+      generation++
+      transition("reconnecting")
       void (async () => { if (await startWithRetry()) await finishCatchUp() })()
     })
     connection.onreconnected(() => {
-      if (!disposed) void finishCatchUp()
+      if (!closed()) void finishCatchUp()
     })
     void (async () => {
-      await catchUp()
-      if (disposed) return
+      await catchUp(generation)
+      if (closed()) return
       if (await startWithRetry()) await finishCatchUp()
     })()
     return () => {
-      disposed = true
+      phase = "closed"
       cancelRetryDelay()
       void stopConnection().catch(() => undefined)
     }
@@ -247,7 +261,7 @@ function ConsoleSession({ serverId }: { serverId: string }) {
     <Page
       title="Console"
       description={isGate ? "Live, durable Gate logs with reconnect recovery." : "Live, durable Minecraft output with command history and reconnect recovery."}
-      actions={<Badge variant={connected ? "success" : "warning"} appearance="dot">{connected ? "Live" : "Reconnecting"}</Badge>}
+      actions={<Badge variant={connectionPhase === "live" ? "success" : "warning"} appearance="dot">{consolePhaseLabels[connectionPhase]}</Badge>}
     >
       <Section
         title={isGate ? "Gate output" : "Server output"}
@@ -314,6 +328,16 @@ type FileOperation =
   | { type: "create-file" | "create-folder" }
   | { type: "move"; entry: FileEntryDto }
 
+type FileDraft = { path: string; content: string; original: string; revision: string }
+type FileDialog =
+  | { kind: "browsing" }
+  | { kind: "opening"; path: string }
+  | { kind: "editing"; draft: FileDraft }
+  | { kind: "operation"; operation: FileOperation; value: string }
+  | { kind: "preview"; path: string }
+  | { kind: "delete"; entry: FileEntryDto }
+  | { kind: "replace"; file: File }
+
 export function FilesPage() {
   const { serverId = "" } = useParams()
   return <ServerFiles key={serverId} serverId={serverId} />
@@ -323,21 +347,28 @@ function ServerFiles({ serverId }: { serverId: string }) {
   const queryClient = useQueryClient()
   const uploadRef = useRef<HTMLInputElement>(null)
   const [path, setPath] = useState("")
-  const [operation, setOperation] = useState<FileOperation>()
+  const [dialog, setDialog] = useState<FileDialog>({ kind: "browsing" })
+  const operation = dialog.kind === "operation" ? dialog.operation : undefined
+  const operationValue = dialog.kind === "operation" ? dialog.value : ""
+  const editing = dialog.kind === "editing" ? dialog.draft : undefined
+  const deleting = dialog.kind === "delete" ? dialog.entry : undefined
+  const replaceUpload = dialog.kind === "replace" ? dialog.file : undefined
   const shownOperation = useRetained(operation)
-  const [operationValue, setOperationValue] = useState("")
-  const [editing, setEditing] = useState<{ path: string; content: string; original: string; revision: string }>()
   const shownEditing = useRetained(editing)
-  const [previewing, setPreviewing] = useState<string>()
-  const [deleting, setDeleting] = useState<FileEntryDto>()
   const shownDeleting = useRetained(deleting)
-  const draft = useUnsavedChanges(Boolean(editing && editing.content !== editing.original))
-  const [replaceUpload, setReplaceUpload] = useState<File>()
   const shownReplaceUpload = useRetained(replaceUpload)
+  const draft = useUnsavedChanges(Boolean(editing && editing.content !== editing.original))
+
+  const close = (kind: FileDialog["kind"]) =>
+    setDialog((current) => current.kind === kind ? { kind: "browsing" } : current)
+  const browse = (directory: string) => {
+    setDialog({ kind: "browsing" })
+    setPath(directory)
+  }
   const server = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
   const queryKey = ["files", serverId, path]
   const files = useQuery({ queryKey, queryFn: () => api.files(serverId, path) })
-  const canModify = server.data?.state === "Stopped" || server.data?.state === "Running" || server.data?.state === "Crashed"
+  const canModify = canEditServer(server.data?.state)
   const modifyHint = server.isLoading
     ? "File changes are unavailable while the server state loads."
     : canModify
@@ -354,17 +385,22 @@ function ServerFiles({ serverId }: { serverId: string }) {
   const isGate = server.data?.kind === "Gate"
 
   async function openEditor(entry: FileEntryDto) {
+    const request = { kind: "opening", path: entry.path } as const
+    setDialog(request)
     try {
       const result = await api.readFile(serverId, entry.path)
-      setEditing({ path: entry.path, content: result.content, original: result.content, revision: result.revision })
+      setDialog((current) => current === request ? {
+        kind: "editing", draft: { path: entry.path, content: result.content, original: result.content, revision: result.revision },
+      } : current)
     } catch (error) {
+      setDialog((current) => current === request ? { kind: "browsing" } : current)
       toast.error(error instanceof Error ? error.message : "This file cannot be edited as text.")
     }
   }
 
   function openEntry(entry: FileEntryDto) {
-    if (entry.isDirectory) setPath(entry.path)
-    else if (imageFileType(entry.path)) setPreviewing(entry.path)
+    if (entry.isDirectory) browse(entry.path)
+    else if (imageFileType(entry.path)) setDialog({ kind: "preview", path: entry.path })
     else void openEditor(entry)
   }
 
@@ -377,15 +413,15 @@ function ServerFiles({ serverId }: { serverId: string }) {
     } else {
       mutate.mutate(() => api.createFile(serverId, join(value), operation.type === "create-folder"))
     }
-    setOperation(undefined)
+    close("operation")
   }
 
   const breadcrumb = <nav className="-ml-2 flex min-w-0 flex-wrap items-center gap-0.5 text-sm" aria-label="File path">
-    <Button size="sm" variant="ghost" icon={HomeIcon} onClick={() => setPath("")} aria-current={segments.length ? undefined : "location"}>Root</Button>
+    <Button size="sm" variant="ghost" icon={HomeIcon} onClick={() => browse("")} aria-current={segments.length ? undefined : "location"}>Root</Button>
     {segments.map((segment, index) => (
       <span key={`${segment}-${index}`} className="flex min-w-0 items-center gap-0.5">
         <ChevronRightIcon size={14} className="shrink-0 text-kumo-subtle" aria-hidden="true" />
-        <Button size="sm" variant="ghost" className="max-w-48" onClick={() => setPath(segments.slice(0, index + 1).join("/"))} aria-current={index === segments.length - 1 ? "location" : undefined}><span className="truncate">{segment}</span></Button>
+        <Button size="sm" variant="ghost" className="max-w-48" onClick={() => browse(segments.slice(0, index + 1).join("/"))} aria-current={index === segments.length - 1 ? "location" : undefined}><span className="truncate">{segment}</span></Button>
       </span>
     ))}
   </nav>
@@ -404,13 +440,13 @@ function ServerFiles({ serverId }: { serverId: string }) {
           disabled={!canModify}
           onChange={(event) => {
             const file = event.target.files?.[0]
-            if (file) { if (files.data?.some((entry) => entry.name === file.name)) setReplaceUpload(file); else mutate.mutate(() => api.uploadFile(serverId, path, file)) }
+            if (file) { if (files.data?.some((entry) => entry.name === file.name)) setDialog({ kind: "replace", file }); else mutate.mutate(() => api.uploadFile(serverId, path, file)) }
             event.target.value = ""
           }}
         />
         <HintButton icon={UploadIcon} disabled={!canModify} hint={modifyHint} onClick={() => uploadRef.current?.click()}>Upload</HintButton>
-        <HintButton icon={FolderPlusIcon} disabled={!canModify} hint={modifyHint} onClick={() => { setOperation({ type: "create-folder" }); setOperationValue("") }}>New folder</HintButton>
-        <HintButton variant="primary" icon={FilePlusIcon} disabled={!canModify} hint={modifyHint} onClick={() => { setOperation({ type: "create-file" }); setOperationValue("") }}>New file</HintButton>
+        <HintButton icon={FolderPlusIcon} disabled={!canModify} hint={modifyHint} onClick={() => { setDialog({ kind: "operation", operation: { type: "create-folder" }, value: "" }) }}>New folder</HintButton>
+        <HintButton variant="primary" icon={FilePlusIcon} disabled={!canModify} hint={modifyHint} onClick={() => { setDialog({ kind: "operation", operation: { type: "create-file" }, value: "" }) }}>New file</HintButton>
       </>}
     >
       {modifyHint && !server.isLoading && <Banner variant="secondary" icon={<InfoCircleFilledIcon />} title="File changes are paused" description={modifyHint} />}
@@ -428,7 +464,7 @@ function ServerFiles({ serverId }: { serverId: string }) {
               <Table.Body>
                 {segments.length > 0 && <Table.Row>
                   <Table.Cell colSpan={4}>
-                    <Button size="sm" variant="ghost" className="-ml-2" icon={ArrowBackUpIcon} onClick={() => setPath(segments.slice(0, -1).join("/"))}>Parent folder</Button>
+                    <Button size="sm" variant="ghost" className="-ml-2" icon={ArrowBackUpIcon} onClick={() => browse(segments.slice(0, -1).join("/"))}>Parent folder</Button>
                   </Table.Cell>
                 </Table.Row>}
                 {files.data?.map((entry) => {
@@ -447,15 +483,15 @@ function ServerFiles({ serverId }: { serverId: string }) {
                       <DropdownMenu>
                         <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsIcon size={20} stroke={2} />} aria-label={`Actions for ${entry.name}`} />} />
                         <DropdownMenu.Content align="end">
-                          {entry.isDirectory && <DropdownMenu.Item icon={FolderIcon} onClick={() => setPath(entry.path)}>Open folder</DropdownMenu.Item>}
+                          {entry.isDirectory && <DropdownMenu.Item icon={FolderIcon} onClick={() => browse(entry.path)}>Open folder</DropdownMenu.Item>}
                           {!entry.isDirectory && (image
-                            ? <DropdownMenu.Item icon={PhotoIcon} onClick={() => setPreviewing(entry.path)}>Preview image</DropdownMenu.Item>
+                            ? <DropdownMenu.Item icon={PhotoIcon} onClick={() => setDialog({ kind: "preview", path: entry.path })}>Preview image</DropdownMenu.Item>
                             : <DropdownMenu.Item icon={PencilIcon} onClick={() => void openEditor(entry)}>Edit text</DropdownMenu.Item>)}
                           {!entry.isDirectory && <DropdownMenu.LinkItem icon={DownloadIcon} href={api.fileDownloadUrl(serverId, entry.path)}>Download</DropdownMenu.LinkItem>}
                           {!entry.isDirectory && entry.name.toLowerCase().endsWith(".zip") && <DropdownMenu.Item icon={FileZipIcon} disabled={!canModify} onClick={() => mutate.mutate(() => api.extractFile(serverId, entry.path, path))}>Extract here</DropdownMenu.Item>}
-                          <DropdownMenu.Item icon={ArrowsLeftRightIcon} disabled={!canModify} onClick={() => { setOperation({ type: "move", entry }); setOperationValue(entry.path) }}>Move or rename</DropdownMenu.Item>
+                          <DropdownMenu.Item icon={ArrowsLeftRightIcon} disabled={!canModify} onClick={() => { setDialog({ kind: "operation", operation: { type: "move", entry }, value: entry.path }) }}>Move or rename</DropdownMenu.Item>
                           <DropdownMenu.Separator />
-                          <DropdownMenu.Item icon={TrashIcon} variant="danger" disabled={!canModify} onClick={() => setDeleting(entry)}>Delete</DropdownMenu.Item>
+                          <DropdownMenu.Item icon={TrashIcon} variant="danger" disabled={!canModify} onClick={() => setDialog({ kind: "delete", entry })}>Delete</DropdownMenu.Item>
                         </DropdownMenu.Content>
                       </DropdownMenu>
                     </Table.Cell>
@@ -470,33 +506,33 @@ function ServerFiles({ serverId }: { serverId: string }) {
 
       <Modal
         open={Boolean(operation)}
-        onOpenChange={(open) => { if (!open) setOperation(undefined) }}
+        onOpenChange={(open) => { if (!open) close("operation") }}
         size="lg"
         title={shownOperation?.type === "move" ? "Move or rename" : shownOperation?.type === "create-folder" ? "Create folder" : "Create file"}
         description="Paths are always resolved inside the managed server directory."
         footer={<><ModalClose /><HintButton type="submit" form="file-operation" variant="primary" disabled={!canModify || !operationValue.trim()} hint={modifyHint}>{shownOperation?.type === "move" ? "Move" : "Create"}</HintButton></>}
       >
         <form id="file-operation" onSubmit={submitOperation}>
-          <Input label={shownOperation?.type === "move" ? "Destination path" : "Name"} className="font-mono" value={operationValue} onChange={(event) => setOperationValue(event.target.value)} autoFocus />
+          <Input label={shownOperation?.type === "move" ? "Destination path" : "Name"} className="font-mono" value={operationValue} onChange={(event) => dialog.kind === "operation" && setDialog({ ...dialog, value: event.target.value })} autoFocus />
         </form>
       </Modal>
 
       <Modal
         open={Boolean(editing)}
-        onOpenChange={(open) => { if (!open) draft.confirmDiscard(() => setEditing(undefined)) }}
+        onOpenChange={(open) => { if (!open) draft.confirmDiscard(() => close("editing")) }}
         className="h-[calc(100dvh-4rem)] sm:h-[min(90dvh,56rem)] sm:w-[min(72rem,calc(100vw-4rem))] sm:max-h-[min(90dvh,56rem)]"
         bodyClassName="pb-0"
         title={<span className="block truncate" title={shownEditing?.path}>Edit {shownEditing?.path.split("/").at(-1)}</span>}
         description={editing && editing.content !== editing.original ? "Unsaved changes. Select Save file to write them to the server." : "Changes are saved when you select Save file."}
-        footer={<><ModalClose>Close</ModalClose><HintButton variant="primary" loading={mutate.isPending} disabled={!canModify || !editing} hint={modifyHint} onClick={() => editing && mutate.mutate(async () => { await api.saveFile(serverId, editing.path, editing.content, editing.revision); setEditing(undefined) })}>Save file</HintButton></>}
+        footer={<><ModalClose>Close</ModalClose><HintButton variant="primary" loading={mutate.isPending} disabled={!canModify || !editing} hint={modifyHint} onClick={() => editing && mutate.mutate(async () => { await api.saveFile(serverId, editing.path, editing.content, editing.revision); setDialog((current) => current === dialog ? { kind: "browsing" } : current) })}>Save file</HintButton></>}
       >
-        {shownEditing && <Suspense fallback={<Skeleton className="h-full min-h-0 flex-1" />}><CodeEditor fileName={shownEditing.path} value={shownEditing.content} onChange={(content) => editing && setEditing({ ...editing, content })} /></Suspense>}
+        {shownEditing && <Suspense fallback={<Skeleton className="h-full min-h-0 flex-1" />}><CodeEditor fileName={shownEditing.path} value={shownEditing.content} onChange={(content) => editing && setDialog({ kind: "editing", draft: { ...editing, content } })} /></Suspense>}
       </Modal>
-      <FileImagePreview serverId={serverId} path={previewing} onClose={() => setPreviewing(undefined)} />
+      <FileImagePreview serverId={serverId} path={dialog.kind === "preview" ? dialog.path : undefined} onClose={() => close("preview")} />
       {draft.dialog}
       <ConfirmDialog
         open={Boolean(deleting)}
-        onOpenChange={(open) => { if (!open) setDeleting(undefined) }}
+        onOpenChange={(open) => { if (!open) close("delete") }}
         title={`Delete ${shownDeleting?.name ?? "item"}?`}
         description={`This permanently removes the ${shownDeleting?.isDirectory ? "folder and everything inside it" : "file"} from the server.`}
         confirmLabel="Delete"
@@ -505,7 +541,7 @@ function ServerFiles({ serverId }: { serverId: string }) {
       />
       <ConfirmDialog
         open={Boolean(replaceUpload)}
-        onOpenChange={(open) => { if (!open) setReplaceUpload(undefined) }}
+        onOpenChange={(open) => { if (!open) close("replace") }}
         title={`Replace ${shownReplaceUpload?.name ?? "file"}?`}
         description="The existing file will be overwritten by this upload."
         confirmLabel="Replace file"
@@ -524,7 +560,7 @@ export function PlayersPage() {
   const [inventoryPlayer, setInventoryPlayer] = useState<PlayerDto>()
   const server = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
   const players = useQuery({ queryKey: ["players", serverId], queryFn: () => api.players(serverId), refetchInterval: 5_000 })
-  const canManage = server.data?.state === "Running" || server.data?.state === "Stopped" || server.data?.state === "Crashed"
+  const canManage = canEditServer(server.data?.state)
   const running = server.data?.state === "Running"
   const manageHint = server.isLoading ? "Player actions are unavailable while the server state loads." : canManage ? undefined : `Player lists cannot be changed while the server is ${server.data?.state.toLowerCase() ?? "unavailable"}.`
   const action = useMutation({

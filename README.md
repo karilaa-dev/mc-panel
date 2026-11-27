@@ -163,6 +163,8 @@ updates, backups, and recovery.
 
 ## Local development
 
+The [state machine inventory](STATE-MACHINES.md) maps server, job, recovery and browser transitions to their implementations and regression tests.
+
 Start a repo-local instance on port 8080:
 
 ```bash

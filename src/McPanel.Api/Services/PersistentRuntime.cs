@@ -246,8 +246,9 @@ internal sealed class RuntimeSocketService(
     private Socket? _listener;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private byte[]? _startupExecutableHash;
-    private int _upgradeRequested;
-    private int _draining;
+    private enum UpgradePhase { Serving, WaitingForIdle, Draining }
+    private int _upgradePhase;
+    private UpgradePhase Phase => (UpgradePhase)Volatile.Read(ref _upgradePhase);
     internal TimeSpan UpgradePollInterval { get; set; } = TimeSpan.FromSeconds(30);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -288,7 +289,7 @@ internal sealed class RuntimeSocketService(
                 var current = ExecutableHash();
                 var binaryChanged = _startupExecutableHash is not null && current is not null &&
                     !CryptographicOperations.FixedTimeEquals(_startupExecutableHash, current);
-                if (Volatile.Read(ref _upgradeRequested) == 0 && !binaryChanged) continue;
+                if (Phase == UpgradePhase.Serving && !binaryChanged) continue;
                 if (!await TryBeginDrainWhenIdleAsync(cancellationToken)) continue;
                 if (binaryChanged)
                     logger.LogInformation("Runtime binary changed and no servers are active; restarting onto the updated binary");
@@ -373,7 +374,7 @@ internal sealed class RuntimeSocketService(
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
-            if (Volatile.Read(ref _draining) != 0)
+            if (Phase == UpgradePhase.Draining)
                 throw new InvalidOperationException("The runtime is restarting and cannot start new workloads.");
             return RuntimeWire.Element(restart
                 ? await engine.RestartAsync(launch, cancellationToken)
@@ -391,7 +392,7 @@ internal sealed class RuntimeSocketService(
 
     private async Task<bool> UpgradeWhenIdleAsync(CancellationToken cancellationToken)
     {
-        Interlocked.Exchange(ref _upgradeRequested, 1);
+        Interlocked.CompareExchange(ref _upgradePhase, (int)UpgradePhase.WaitingForIdle, (int)UpgradePhase.Serving);
         return await TryBeginDrainWhenIdleAsync(cancellationToken);
     }
 
@@ -400,9 +401,9 @@ internal sealed class RuntimeSocketService(
         await _lifecycleGate.WaitAsync(cancellationToken);
         try
         {
-            if (Volatile.Read(ref _draining) != 0) return true;
+            if (Phase == UpgradePhase.Draining) return true;
             if (engine.Snapshot().Any(x => PersistentRuntimeClient.IsActive(x.State))) return false;
-            Volatile.Write(ref _draining, 1);
+            Volatile.Write(ref _upgradePhase, (int)UpgradePhase.Draining);
             return true;
         }
         finally { _lifecycleGate.Release(); }

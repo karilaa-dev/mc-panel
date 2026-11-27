@@ -30,7 +30,7 @@ public sealed class RecoveryBundleService(PanelPaths paths, IDbContextFactory<St
                     var retryCutoff = DateTimeOffset.UtcNow.AddMinutes(-5);
                     if ((latest is null || latest.CreatedAt < DateTimeOffset.UtcNow.AddMinutes(-options.Value.RecoveryIntervalMinutes) || latest.VerifiedAt is null && latest.CreatedAt < retryCutoff) &&
                         !await db.Jobs.AnyAsync(x => x.Type == "PanelRecovery" && x.CreatedAt > retryCutoff, stoppingToken) &&
-                        !await db.Jobs.AnyAsync(x => x.Type == "PanelRecovery" && (x.State == JobState.Queued || x.State == JobState.Running), stoppingToken))
+                        !await db.Jobs.Where(JobLifecycle.Active).AnyAsync(x => x.Type == "PanelRecovery", stoppingToken))
                         await QueueAsync(stoppingToken);
                 }
             }

@@ -97,6 +97,8 @@ public sealed class OperationsMonitor(IDbContextFactory<StateDbContext> factory,
         await db.Incidents.Where(x => x.ResolvedAt < historyCutoff).ExecuteDeleteAsync(token);
     }
 
+    private enum IncidentNotice { None, Opened, Resolved }
+
     private async Task DeliverAlertsAsync(CancellationToken token)
     {
         if (options.Value.AlertWebhookFile is not { Length: > 0 } file || !File.Exists(file)) return;
@@ -104,16 +106,24 @@ public sealed class OperationsMonitor(IDbContextFactory<StateDbContext> factory,
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != "https" || !string.IsNullOrEmpty(uri.UserInfo))
         { logger.LogWarning("Alert webhook credential must contain an HTTPS URL"); return; }
         await using var db = await factory.CreateDbContextAsync(token);
-        var pending = await db.Incidents.Where(x => x.NotifiedAt == null && x.ResolvedAt == null || x.NotifiedAt != null && x.ResolvedAt != null && x.RecoveryNotifiedAt == null).OrderBy(x => x.OpenedAt).Take(20).ToListAsync(token);
-        foreach (var incident in pending)
+        var pending = await db.Incidents.Select(incident => new
         {
+            Incident = incident,
+            Notice = incident.ResolvedAt == null && incident.NotifiedAt == null ? IncidentNotice.Opened
+                : incident.ResolvedAt != null && incident.NotifiedAt != null && incident.RecoveryNotifiedAt == null
+                    ? IncidentNotice.Resolved : IncidentNotice.None
+        }).Where(item => item.Notice != IncidentNotice.None)
+            .OrderBy(item => item.Incident.OpenedAt).Take(20).ToListAsync(token);
+        foreach (var item in pending)
+        {
+            var incident = item.Incident;
             using var request = new HttpRequestMessage(HttpMethod.Post, uri)
             {
-                Content = JsonContent.Create(new { id = incident.Id, code = incident.Code, serverId = incident.ServerId, status = incident.ResolvedAt is null ? "open" : "resolved", message = incident.Message, timestamp = incident.UpdatedAt })
+                Content = JsonContent.Create(new { id = incident.Id, code = incident.Code, serverId = incident.ServerId, status = item.Notice == IncidentNotice.Opened ? "open" : "resolved", message = incident.Message, timestamp = incident.UpdatedAt })
             };
             using var response = await clients.CreateClient("alerts").SendAsync(request, token);
             response.EnsureSuccessStatusCode();
-            if (incident.ResolvedAt is null) incident.NotifiedAt = DateTimeOffset.UtcNow;
+            if (item.Notice == IncidentNotice.Opened) incident.NotifiedAt = DateTimeOffset.UtcNow;
             else incident.RecoveryNotifiedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(token);
         }
