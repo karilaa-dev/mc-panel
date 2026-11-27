@@ -144,13 +144,21 @@ function ScheduleEditor({ initial, onSave }: { initial: ScheduleWriteDto; onSave
   )
 }
 
+type ScheduleEditorDialog = { kind: "edit"; schedule: ScheduleDto | "new" }
+
 export function SchedulesPage() {
   const { serverId = "" } = useParams()
+  return <ServerSchedules key={serverId} serverId={serverId} />
+}
+
+function ServerSchedules({ serverId }: { serverId: string }) {
   const queryClient = useQueryClient()
   const [dialog, setDialog] = useState<
-    { kind: "closed" } | { kind: "edit"; schedule: ScheduleDto | "new" } |
+    { kind: "closed" } | ScheduleEditorDialog |
     { kind: "delete"; schedule: ScheduleDto } | { kind: "history"; id: string }
   >({ kind: "closed" })
+  const close = (kind: typeof dialog.kind) =>
+    setDialog((current) => current.kind === kind ? { kind: "closed" } : current)
   const editing = dialog.kind === "edit" ? dialog.schedule : undefined
   const deleting = dialog.kind === "delete" ? dialog.schedule : undefined
   const historyId = dialog.kind === "history" ? dialog.id : undefined
@@ -162,8 +170,9 @@ export function SchedulesPage() {
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["schedules", serverId] })
   const run = useMutation({ mutationFn: (id: string) => api.runSchedule(serverId, id), onSuccess: () => { toast.success("Schedule queued"); void refresh() }, onError: (error) => toast.error(error.message) })
   const save = useMutation({
-    mutationFn: (value: ScheduleWriteDto) => editing === "new" ? api.createSchedule(serverId, value) : api.updateSchedule(serverId, (editing as ScheduleDto).id, value),
-    onSuccess: () => { toast.success("Schedule saved"); setDialog((current) => current === dialog ? { kind: "closed" } : current); void refresh() },
+    mutationFn: ({ target, value }: { target: ScheduleEditorDialog; value: ScheduleWriteDto }) =>
+      target.schedule === "new" ? api.createSchedule(serverId, value) : api.updateSchedule(serverId, target.schedule.id, value),
+    onSuccess: (_, { target }) => { toast.success("Schedule saved"); setDialog((current) => current === target ? { kind: "closed" } : current); void refresh() },
     onError: (error) => toast.error(error.message),
   })
   const toggle = useMutation({
@@ -209,7 +218,7 @@ export function SchedulesPage() {
       </Section>
       <Modal
         open={Boolean(historyId)}
-        onOpenChange={(open) => { if (!open) setDialog({ kind: "closed" }) }}
+        onOpenChange={(open) => { if (!open) close("history") }}
         title="Schedule history"
         description={historyName ? `Recent runs of ${historyName}.` : "Recent runs and their recorded outcomes."}
         footer={<ModalClose>Close</ModalClose>}
@@ -221,17 +230,17 @@ export function SchedulesPage() {
       </Modal>
       <Modal
         open={Boolean(editing)}
-        onOpenChange={(open) => { if (!open) setDialog((current) => current === dialog ? { kind: "closed" } : current) }}
+        onOpenChange={(open) => { if (!open) close("edit") }}
         size="xl"
         title={shownEditing === "new" ? "New schedule" : "Edit schedule"}
         description="Choose when this ordered action sequence should run."
         footer={<><ModalClose /><Button variant="primary" form="schedule-form" type="submit" loading={save.isPending}>Save schedule</Button></>}
       >
-        {editorValue && <ScheduleEditor key={shownEditing === "new" ? "new" : shownEditing?.id} initial={editorValue} onSave={(value) => save.mutate(value)} />}
+        {editorValue && <ScheduleEditor key={shownEditing === "new" ? "new" : shownEditing?.id} initial={editorValue} onSave={(value) => dialog.kind === "edit" && save.mutate({ target: dialog, value })} />}
       </Modal>
       <ConfirmDialog
         open={Boolean(deleting)}
-        onOpenChange={(open) => { if (!open) setDialog({ kind: "closed" }) }}
+        onOpenChange={(open) => { if (!open) close("delete") }}
         title={`Delete ${shownDeleting?.name ?? "schedule"}?`}
         description="The schedule and its action sequence are permanently removed."
         confirmLabel="Delete"

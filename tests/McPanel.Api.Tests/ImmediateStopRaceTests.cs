@@ -11,6 +11,24 @@ namespace McPanel.Api.Tests;
 
 public sealed partial class ApiValidationRegressionTests
 {
+    [Theory]
+    [InlineData(ServerState.BackingUp)]
+    [InlineData(ServerState.Updating)]
+    public async Task Regular_reconciliation_preserves_stopped_operation_state(ServerState operation)
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var services = _factory!.Services;
+        using var supervisor = ActivatorUtilities.CreateInstance<ProcessSupervisor>(services);
+        await using var db = await services.GetRequiredService<IDbContextFactory<StateDbContext>>().CreateDbContextAsync();
+        await db.Servers.Where(x => x.Id == _serverId).ExecuteUpdateAsync(set => set.SetProperty(x => x.State, operation));
+        await supervisor.ReconcilePersistentAsync([], false, default);
+        Assert.Equal(operation, (await ReadServerAsync()).State);
+        var stopped = new RuntimeServerSnapshot(_serverId, RuntimeProcessState.Stopped, null, null,
+            DateTimeOffset.UtcNow, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, false, 0);
+        await supervisor.ReconcilePersistentAsync([stopped], false, default);
+        Assert.Equal(operation, (await ReadServerAsync()).State);
+    }
+
     [Fact]
     public async Task Immediate_stop_cancels_restart_admitted_during_stop()
     {

@@ -387,7 +387,8 @@ public sealed class ProcessSupervisor(
                     await persistentRuntime.SetRecoveryPolicyAsync(server.Id, server.CrashRecovery && !server.RecoveryRequired, cancellationToken);
                 }
             }
-            else if (server.State is ServerState.Running or ServerState.Starting or ServerState.Stopping or ServerState.BackingUp or ServerState.Updating)
+            else if (server.State is ServerState.Running or ServerState.Starting or ServerState.Stopping ||
+                initial && server.State is (ServerState.BackingUp or ServerState.Updating))
             {
                 server.State = ServerState.Crashed; server.ProcessId = null;
             }

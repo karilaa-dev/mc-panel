@@ -41,8 +41,7 @@ public sealed class OperationQueue(
         catch (Exception exception)
         {
             logger.LogError(exception, "Committed job {JobId} could not be handed to the operation queue", job.Id);
-            try { unclaimedResource?.Dispose(); }
-            catch (Exception cleanup) { logger.LogWarning(cleanup, "Could not release staged input for {JobId}", job.Id); }
+            ReleaseStagedInput(job.Id, unclaimedResource);
             job.State = JobState.Failed;
             job.Progress = 100;
             job.Message = "Queue handoff failed";
@@ -160,6 +159,7 @@ public sealed class OperationQueue(
         await foreach (var item in _channel.Reader.ReadAllAsync(stoppingToken))
         {
             using var execution = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            var stagedInput = item.UnclaimedResource;
             _activeCancellation[item.JobId] = execution;
             try
             {
@@ -168,13 +168,10 @@ public sealed class OperationQueue(
                     var claimed = await db.Jobs.Where(x => x.Id == item.JobId).Where(JobLifecycle.Claimable)
                         .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.State, JobState.Running)
                             .SetProperty(x => x.Progress, 1).SetProperty(x => x.Message, "Running").SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), stoppingToken);
-                    if (claimed == 0)
-                    {
-                        item.UnclaimedResource?.Dispose();
-                        continue;
-                    }
+                    if (claimed == 0) continue;
                 }
                 execution.Token.ThrowIfCancellationRequested();
+                stagedInput = null; // The installer now owns the claim.
                 await item.Action(serviceProvider, item.JobId, execution.Token);
                 await SetStateAsync(item.JobId, JobState.Completed, 100, "Completed", null, stoppingToken);
             }
@@ -191,8 +188,18 @@ public sealed class OperationQueue(
                 logger.LogError(exception, "Operation {JobId} failed", item.JobId);
                 await TrySetTerminalAsync(item.JobId, JobState.Failed, "Failed", exception.Message);
             }
-            finally { _activeCancellation.TryRemove(item.JobId, out _); }
+            finally
+            {
+                _activeCancellation.TryRemove(item.JobId, out _);
+                ReleaseStagedInput(item.JobId, stagedInput);
+            }
         }
+    }
+
+    private void ReleaseStagedInput(Guid id, IDisposable? resource)
+    {
+        try { resource?.Dispose(); }
+        catch (Exception error) { logger.LogWarning(error, "Could not release staged input for {JobId}", id); }
     }
 
     private async Task TrySetTerminalAsync(Guid id, JobState state, string message, string error)
@@ -215,29 +222,40 @@ public sealed class OperationQueue(
         await using var transaction = await db.Database.BeginTransactionAsync(token);
         var changed = await db.Jobs.Where(x => x.Id == id).Where(JobLifecycle.Cancelable)
             .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.CancellationRequested, true)
+                .SetProperty(x => x.Progress, x => x.State == JobState.Queued ? 100 : x.Progress)
+                .SetProperty(x => x.Message, x => x.State == JobState.Queued ? "Canceled" : x.Message)
                 .SetProperty(x => x.State, x => x.State == JobState.Queued ? JobState.Canceled : x.State)
                 .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), token);
         if (changed == 0) throw PanelProblems.Conflict("JOB_NOT_CANCELABLE", "This operation has completed or cannot be safely canceled while running.");
-        var job = await db.Jobs.AsNoTracking().SingleAsync(x => x.Id == id, token);
-        // A canceled queued install never reaches the installer that normally releases
-        // the Installing state. Commit both transitions together before notifying callers.
-        if (job.State == JobState.Canceled && job.ServerId is { } serverId && job.Type is "Install" or "InstallModpack" or "GateInstall")
-            await db.Servers.Where(x => x.Id == serverId && x.State == ServerState.Installing)
-                .ExecuteUpdateAsync(set => set.SetProperty(x => x.State, ServerState.Error)
-                    .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), token);
+        await ReleaseUnfinishedInstallAsync(db, id, token);
         await transaction.CommitAsync(token);
         if (_activeCancellation.TryGetValue(id, out var execution))
         { try { await execution.CancelAsync(); } catch (ObjectDisposedException) { } }
+        await PublishCurrentAsync(id, token);
         return (await GetAsync(id, token))!;
     }
+
+    // A worker can fail or be canceled before the installer ever runs.
+    private static Task ReleaseUnfinishedInstallAsync(StateDbContext db, Guid jobId, CancellationToken token) =>
+        db.Servers.Where(server => server.State == ServerState.Installing && db.Jobs.Any(job =>
+            job.Id == jobId && job.ServerId == server.Id && job.State != JobState.Running &&
+            (job.Type == "Install" || job.Type == "InstallModpack" || job.Type == "GateInstall")))
+            .ExecuteUpdateAsync(set => set.SetProperty(server => server.State, ServerState.Error)
+                .SetProperty(server => server.UpdatedAt, DateTimeOffset.UtcNow), token);
 
     private async Task SetStateAsync(Guid id, JobState state, int progress, string message, string? error, CancellationToken cancellationToken)
     {
         await using var db = await stateFactory.CreateDbContextAsync(cancellationToken);
+        await using var transaction = state == JobState.Completed ? null : await db.Database.BeginTransactionAsync(cancellationToken);
         var changed = await db.Jobs.Where(x => x.Id == id).Where(JobLifecycle.CanFinishAs(state))
             .ExecuteUpdateAsync(set => set.SetProperty(x => x.State, state).SetProperty(x => x.Progress, progress)
                 .SetProperty(x => x.Message, message).SetProperty(x => x.Error, error)
                 .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), cancellationToken);
+        if (transaction is not null)
+        {
+            if (changed != 0) await ReleaseUnfinishedInstallAsync(db, id, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
         if (changed != 0) await PublishCurrentAsync(id, cancellationToken);
     }
 

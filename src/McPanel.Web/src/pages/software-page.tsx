@@ -40,6 +40,7 @@ function ServerCoreSettings({ serverId }: { serverId: string }) {
   const [customSource, setCustomSource] = useState<"upload" | "existing">("upload")
   const jarUpload = useCustomJarUpload()
   const customJar = jarUpload.data
+  const resetUpload = jarUpload.reset
   const [jarClaim, setJarClaim] = useState<{ token: string; jobId: string }>()
   const [existingJar, setExistingJar] = useState("")
   const [createBackup, setCreateBackup] = useState(true)
@@ -62,8 +63,16 @@ function ServerCoreSettings({ serverId }: { serverId: string }) {
       void queryClient.invalidateQueries({ queryKey: ["server", serverId] })
       void queryClient.invalidateQueries({ queryKey: ["software", serverId] })
       void queryClient.invalidateQueries({ queryKey: ["runtime", serverId] })
-    } else toast.error("Server core change failed", { description: changeJob.data.error ?? changeJob.data.message })
+    } else {
+      const outcome = changeJob.data.state.toLowerCase()
+      toast.error(`Server core change ${outcome}`, { description: changeJob.data.error ?? changeJob.data.message })
+    }
   }, [changeJob.data, changeJobId, queryClient, serverId])
+
+  useEffect(() => {
+    if (jarClaim && changeJob.data?.state === "Completed" && jarClaim.jobId === changeJob.data.id && jarClaim.token === customJar?.token)
+      resetUpload()
+  }, [changeJob.data, jarClaim, customJar, resetUpload])
 
   if (software.data && initializedServerId !== serverId) {
     setInitializedServerId(serverId)
@@ -102,10 +111,8 @@ function ServerCoreSettings({ serverId }: { serverId: string }) {
     ? javaRuntimeId : (compatibleJava[0]?.id ?? "")
   const awaitingJob = Boolean(changeJobId) && !isTerminalJob(changeJob.data?.state)
   const stopped = server.data?.state === "Stopped"
-  const customJarConsumed = jarClaim?.token === customJar?.token && jarClaim?.jobId === changeJobId && changeJob.data?.state === "Completed"
-  const availableCustomJar = customJarConsumed ? undefined : customJar
-  const customReady = customSource === "upload" ? Boolean(availableCustomJar) : Boolean(existingJar)
-  const targetDetail = mode === "CustomJar" ? (customSource === "upload" ? availableCustomJar?.fileName : existingJar)
+  const customReady = customSource === "upload" ? Boolean(customJar) : Boolean(existingJar)
+  const targetDetail = mode === "CustomJar" ? (customSource === "upload" ? customJar?.fileName : existingJar)
     : kind === "Paper" ? `build ${selectedBuild}`
     : kind === "Fabric" ? `loader ${selectedLoader}, installer ${selectedInstaller}`
     : kind === "Forge" || kind === "NeoForge" ? `loader ${selectedLoader}` : undefined
@@ -121,7 +128,7 @@ function ServerCoreSettings({ serverId }: { serverId: string }) {
     ...(kind === "Paper" && mode === "Official" && selectedBuild ? { build: selectedBuild } : {}),
     ...(kind === "Fabric" && mode === "Official" ? { loaderVersion: selectedLoader, installerVersion: selectedInstaller } : {}),
     ...((kind === "Forge" || kind === "NeoForge") && mode === "Official" ? { loaderVersion: selectedLoader } : {}),
-    ...(mode === "CustomJar" && customSource === "upload" && availableCustomJar ? { customJarImportToken: availableCustomJar.token } : {}),
+    ...(mode === "CustomJar" && customSource === "upload" && customJar ? { customJarImportToken: customJar.token } : {}),
     ...(mode === "CustomJar" && customSource === "existing" ? { existingJarPath: existingJar } : {}),
   }
   const changeIntentKey = JSON.stringify(changeIntent)
@@ -130,12 +137,9 @@ function ServerCoreSettings({ serverId }: { serverId: string }) {
     setRequestIdentity({ key: changeIntentKey, id: createClientRequestId() })
 
   const change = useMutation({
-    mutationFn: () => api.changeSoftware(serverId, {
-      ...changeIntent,
-      clientRequestId: requestIdentity.id,
-    }),
-    onSuccess: (job) => {
-      if (changeIntent.customJarImportToken) setJarClaim({ token: changeIntent.customJarImportToken, jobId: job.id })
+    mutationFn: (request: ChangeServerSoftwareRequest) => api.changeSoftware(serverId, request),
+    onSuccess: (job, request) => {
+      if (request.customJarImportToken) setJarClaim({ token: request.customJarImportToken, jobId: job.id })
       setRequestIdentity({ key: changeIntentKey, id: createClientRequestId() })
       setChangeJobId(job.id)
       setConfirmOpen(false)
@@ -197,8 +201,8 @@ function ServerCoreSettings({ serverId }: { serverId: string }) {
           <Input label="Minecraft version" value={version} onChange={(event) => setVersion(event.target.value)} placeholder="For example, 1.21.8" />
           <Tabs variant="segmented" value={customSource} onValueChange={(value) => setCustomSource(value as "upload" | "existing")} tabs={[{ value: "upload", label: "Upload new JAR" }, { value: "existing", label: "Use existing JAR" }]} />
           {customSource === "upload" ? <div className="flex flex-col gap-3">
-            <FileInput key={customJarConsumed ? changeJobId : "custom-jar-input"} label="Executable JAR" accept=".jar,application/java-archive" pending={jarUpload.isPending} fileName={availableCustomJar?.fileName} onFile={(file) => jarUpload.mutate(file)} description="The upload token expires after one hour and is consumed by this change." />
-            {availableCustomJar && <Banner icon={<CircleCheckFilledIcon />} title={availableCustomJar.fileName} description="Ready to activate as custom-server.jar." />}
+            <FileInput label="Executable JAR" accept=".jar,application/java-archive" pending={jarUpload.isPending} fileName={customJar?.fileName} onFile={(file) => jarUpload.mutate(file)} description="The upload token expires after one hour and is consumed by this change." />
+            {customJar && <Banner icon={<CircleCheckFilledIcon />} title={customJar.fileName} description="Ready to activate as custom-server.jar." />}
           </div> : <Choice label="Existing executable JAR" value={existingJar} choices={software.data.jarCandidates.map((item) => ({ value: item.path, label: item.path }))} onChange={setExistingJar} placeholder="Choose a JAR inside this server" />}
         </>}
         <Choice label="Java runtime" value={selectedJava} choices={compatibleJava.map((item) => ({ value: item.id, label: javaLabel(item.major, item.vendor) }))} onChange={setJavaRuntimeId} placeholder={`Choose Java ${requiredJava}+`} />
@@ -215,7 +219,7 @@ function ServerCoreSettings({ serverId }: { serverId: string }) {
       dismissible={!change.isPending}
       title={`Change to ${serverKindLabel(targetKind)}?`}
       description={`Minecraft ${selectedVersion} · Java ${compatibleJava.find((item) => item.id === selectedJava)?.major ?? requiredJava}${targetDetail ? ` · ${targetDetail}` : ""}`}
-      footer={<><ModalClose disabled={change.isPending} /><Button variant="primary" icon={ArrowsExchangeIcon} loading={change.isPending} onClick={() => change.mutate()}>Change server core</Button></>}
+      footer={<><ModalClose disabled={change.isPending} /><Button variant="primary" icon={ArrowsExchangeIcon} loading={change.isPending} onClick={() => change.mutate({ ...changeIntent, clientRequestId: requestIdentity.id })}>Change server core</Button></>}
     >
       <Banner variant={createBackup ? "default" : "alert"} icon={<InfoCircleFilledIcon />} title={createBackup ? "Backup required before activation" : "No backup selected"} description={createBackup ? "The backup must complete successfully before any launch files change." : "The change starts without creating a new recovery point."} />
       <p className="text-sm text-kumo-subtle">MC Panel stages new launch files outside the instance, rolls activation back on failure, and preserves worlds and other existing content.</p>

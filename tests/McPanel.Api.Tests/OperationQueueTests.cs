@@ -37,7 +37,48 @@ public sealed class OperationQueueTests : IDisposable
         var canceled = await queue.CancelAsync(job.Id, default);
         await queue.ProgressAsync(job.Id, 75, "Obsolete worker", default);
         Assert.Equal(JobState.Canceled, canceled.State);
+        Assert.Equal("Canceled", canceled.Message);
+        Assert.Equal(100, canceled.Progress);
         Assert.Equal(canceled, await queue.GetAsync(job.Id, default));
+        await using var verify = await factory.CreateDbContextAsync();
+        Assert.Equal(ServerState.Error, (await verify.Servers.FindAsync(server.Id))!.State);
+    }
+
+    [Fact]
+    public async Task Failed_worker_claim_releases_queue_owned_input()
+    {
+        var factory = new TestStateDbContextFactory(new DbContextOptionsBuilder<StateDbContext>()
+            .UseSqlite($"Data Source={_database};Cache=Shared").Options);
+        var server = new ServerEntity { Id = Guid.NewGuid(), Name = "test", Version = "1", JavaRuntimeId = "java" };
+        var job = OperationQueue.CreatePending("InstallModpack", server.Id);
+        await using (var db = await factory.CreateDbContextAsync())
+        {
+            await db.Database.EnsureCreatedAsync();
+            db.Servers.Add(server);
+            db.Jobs.Add(job);
+            await db.SaveChangesAsync();
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TRIGGER fail_claim BEFORE UPDATE OF State ON Jobs WHEN NEW.State = 'Running'
+                BEGIN SELECT RAISE(ABORT, 'Could not claim job'); END;
+                """);
+        }
+        var services = new ServiceCollection(); services.AddLogging(); services.AddSignalR();
+        await using var provider = services.BuildServiceProvider();
+        using var queue = new OperationQueue(provider, factory, provider.GetRequiredService<IHubContext<PanelHub>>(),
+            new SessionAudience(), new TestApplicationLifetime(), NullLogger<OperationQueue>.Instance);
+        using var stagedInput = new MemoryStream();
+        var invoked = false;
+        await queue.HandoffCommittedAsync(job, (_, _, _) => { invoked = true; return Task.CompletedTask; }, default, stagedInput);
+        await queue.StartAsync(default);
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            while ((await queue.GetAsync(job.Id, timeout.Token))?.State != JobState.Failed)
+                await Task.Delay(10, timeout.Token);
+        }
+        finally { await queue.StopAsync(default); }
+        Assert.False(invoked);
+        Assert.False(stagedInput.CanRead);
         await using var verify = await factory.CreateDbContextAsync();
         Assert.Equal(ServerState.Error, (await verify.Servers.FindAsync(server.Id))!.State);
     }

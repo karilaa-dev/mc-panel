@@ -48,7 +48,7 @@ internal static class ServerLifecycle
         server.RecoveryRequired ? ServerState.Error : observed switch
         {
             RuntimeProcessState.Starting => ServerState.Starting,
-            RuntimeProcessState.Running when preserveOperation && server.State is ServerState.BackingUp or ServerState.Updating => server.State,
+            RuntimeProcessState.Running or RuntimeProcessState.Stopped when preserveOperation && server.State is ServerState.BackingUp or ServerState.Updating => server.State,
             RuntimeProcessState.Running => ServerState.Running,
             RuntimeProcessState.Stopping => ServerState.Stopping,
             RuntimeProcessState.Crashed => ServerState.Crashed,

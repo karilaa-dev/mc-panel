@@ -233,7 +233,12 @@ public sealed class SoftwareActivationService(
         {
             if (_phase != ActivationPhase.CommitRecorded) return;
             _phase = ActivationPhase.Activating;
-            WriteManifest();
+            try { WriteManifest(); }
+            catch
+            {
+                _phase = ActivationPhase.CommitRecorded;
+                throw;
+            }
         }
 
         public void Rollback()

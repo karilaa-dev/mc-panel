@@ -284,6 +284,7 @@ function ConsoleSession({ serverId }: { serverId: string }) {
           </InputGroup>
           <label className="flex cursor-pointer items-center gap-2 px-1 text-sm text-kumo-default">
             <Switch size="sm" aria-label="Errors only" checked={errorsOnly} onCheckedChange={(value) => {
+              setConnectionPhase("connecting")
               setErrorsOnly(value)
               terminalRef.current?.clear()
               sequenceRef.current = 0
@@ -328,10 +329,11 @@ type FileOperation =
   | { type: "create-file" | "create-folder" }
   | { type: "move"; entry: FileEntryDto }
 
-type FileDraft = { path: string; content: string; original: string; revision: string }
+type FileDraft = { path: string; content: string; baseline: { content: string; revision?: string } }
 type FileDialog =
   | { kind: "browsing" }
   | { kind: "opening"; path: string }
+  | { kind: "readFailed"; path: string; message: string }
   | { kind: "editing"; draft: FileDraft }
   | { kind: "operation"; operation: FileOperation; value: string }
   | { kind: "preview"; path: string }
@@ -357,7 +359,7 @@ function ServerFiles({ serverId }: { serverId: string }) {
   const shownEditing = useRetained(editing)
   const shownDeleting = useRetained(deleting)
   const shownReplaceUpload = useRetained(replaceUpload)
-  const draft = useUnsavedChanges(Boolean(editing && editing.content !== editing.original))
+  const draft = useUnsavedChanges(Boolean(editing && editing.content !== editing.baseline.content))
 
   const close = (kind: FileDialog["kind"]) =>
     setDialog((current) => current.kind === kind ? { kind: "browsing" } : current)
@@ -390,12 +392,29 @@ function ServerFiles({ serverId }: { serverId: string }) {
     try {
       const result = await api.readFile(serverId, entry.path)
       setDialog((current) => current === request ? {
-        kind: "editing", draft: { path: entry.path, content: result.content, original: result.content, revision: result.revision },
+        kind: "editing", draft: { path: entry.path, content: result.content, baseline: result },
       } : current)
     } catch (error) {
-      setDialog((current) => current === request ? { kind: "browsing" } : current)
-      toast.error(error instanceof Error ? error.message : "This file cannot be edited as text.")
+      const message = error instanceof Error ? error.message : "This file cannot be edited as text."
+      setDialog((current) => current === request ? { kind: "readFailed", path: entry.path, message } : current)
     }
+  }
+
+  async function saveDraft(submitted: FileDraft) {
+    let revision = submitted.baseline.revision
+    if (revision === undefined) {
+      // A successful PUT returns 204. A draft edited during that write needs its new revision.
+      const saved = await api.readFile(serverId, submitted.path)
+      if (saved.content !== submitted.baseline.content)
+        throw new Error("This file changed since your last save. Your draft is preserved.")
+      revision = saved.revision
+    }
+    await api.saveFile(serverId, submitted.path, submitted.content, revision)
+    setDialog((current) => {
+      if (current.kind !== "editing" || current.draft.baseline !== submitted.baseline) return current
+      if (current.draft.content === submitted.content) return { kind: "browsing" }
+      return { kind: "editing", draft: { ...current.draft, baseline: { content: submitted.content } } }
+    })
   }
 
   function openEntry(entry: FileEntryDto) {
@@ -449,6 +468,7 @@ function ServerFiles({ serverId }: { serverId: string }) {
         <HintButton variant="primary" icon={FilePlusIcon} disabled={!canModify} hint={modifyHint} onClick={() => { setDialog({ kind: "operation", operation: { type: "create-file" }, value: "" }) }}>New file</HintButton>
       </>}
     >
+      {dialog.kind === "readFailed" && <Banner variant="error" role="alert" title={`Could not open ${dialog.path}`} description={dialog.message} />}
       {modifyHint && !server.isLoading && <Banner variant="secondary" icon={<InfoCircleFilledIcon />} title="File changes are paused" description={modifyHint} />}
       <Section
         title={breadcrumb}
@@ -523,8 +543,8 @@ function ServerFiles({ serverId }: { serverId: string }) {
         className="h-[calc(100dvh-4rem)] sm:h-[min(90dvh,56rem)] sm:w-[min(72rem,calc(100vw-4rem))] sm:max-h-[min(90dvh,56rem)]"
         bodyClassName="pb-0"
         title={<span className="block truncate" title={shownEditing?.path}>Edit {shownEditing?.path.split("/").at(-1)}</span>}
-        description={editing && editing.content !== editing.original ? "Unsaved changes. Select Save file to write them to the server." : "Changes are saved when you select Save file."}
-        footer={<><ModalClose>Close</ModalClose><HintButton variant="primary" loading={mutate.isPending} disabled={!canModify || !editing} hint={modifyHint} onClick={() => editing && mutate.mutate(async () => { await api.saveFile(serverId, editing.path, editing.content, editing.revision); setDialog((current) => current === dialog ? { kind: "browsing" } : current) })}>Save file</HintButton></>}
+        description={editing && editing.content !== editing.baseline.content ? "Unsaved changes. Select Save file to write them to the server." : "Changes are saved when you select Save file."}
+        footer={<><ModalClose>Close</ModalClose><HintButton variant="primary" loading={mutate.isPending} disabled={!canModify || !editing || mutate.isPending} hint={modifyHint} onClick={() => editing && mutate.mutate(() => saveDraft(editing))}>Save file</HintButton></>}
       >
         {shownEditing && <Suspense fallback={<Skeleton className="h-full min-h-0 flex-1" />}><CodeEditor fileName={shownEditing.path} value={shownEditing.content} onChange={(content) => editing && setDialog({ kind: "editing", draft: { ...editing, content } })} /></Suspense>}
       </Modal>
