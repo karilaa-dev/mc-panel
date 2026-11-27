@@ -130,6 +130,8 @@ public sealed partial class ApiValidationRegressionTests : IAsyncLifetime
     [InlineData(true)]
     public async Task Instance_exports_include_only_selected_files_and_restore_after_panel_backup(bool all)
     {
+        // StartOnBoot is export fixture metadata. Finish the test host's startup worker before seeding it.
+        await _factory!.Services.GetRequiredService<ProcessSupervisor>().StopAsync(CancellationToken.None);
         var secondId = Guid.NewGuid();
         var factory = _factory!.Services.GetRequiredService<IDbContextFactory<StateDbContext>>();
         await using (var db = await factory.CreateDbContextAsync())
