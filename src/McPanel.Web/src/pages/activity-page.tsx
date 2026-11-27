@@ -38,7 +38,7 @@ export function ActivityPage() {
 
   return <Page title="Activity" description="Recent operations, issues to resolve, and administrator actions.">
     <section aria-labelledby="attention-title" className="flex flex-col gap-3">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
         <h2 id="attention-title" className="text-lg font-semibold text-kumo-strong">Needs attention</h2>
         {open.length > 0 && <Badge variant="error">{open.length}</Badge>}
       </div>
@@ -65,27 +65,27 @@ export function ActivityPage() {
     </section>
     <Section title="Operations" description="Track progress and review completed or failed tasks." flush>
       <QueryFeedback query={jobs} />
-      {jobs.isLoading ? <TableSkeleton /> : jobs.data?.length ? <Table>
-        <Table.Header><Table.Row><Table.Head>Operation</Table.Head><Table.Head>Outcome</Table.Head><Table.Head>Details</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
+      {jobs.isLoading ? <TableSkeleton /> : jobs.data?.length ? <Table className="record-table record-with-status">
+        <Table.Header><Table.Row><th scope="col">Operation</th><th scope="col">Outcome</th><th scope="col">Details</th><th scope="col"><span className="sr-only">Actions</span></th></Table.Row></Table.Header>
         <Table.Body>{jobs.data.map((job) => <Table.Row key={job.id}>
-          <Table.Cell className="min-w-44">
+          <Table.Cell data-field="title" className="min-w-44">
             <div className="flex flex-col gap-0.5">
               <span className="font-medium">{operationTitle(job.type)}</span>
               <span className="text-xs text-kumo-subtle">{[serverName(job.serverId), job.createdAt ? formatTime(job.createdAt) : undefined].filter(Boolean).join(" · ")}</span>
             </div>
           </Table.Cell>
-          <Table.Cell className="min-w-36">
-            <div className="flex flex-col gap-2">
+          <Table.Cell data-field="status" className="min-w-36">
+            <div className="flex flex-col items-start gap-2">
               <JobStateBadge job={job} />
-              {job.state === "Running" && <ProgressBar label="Progress" value={job.progress} className="w-36" />}
+              {job.state === "Running" && <ProgressBar label="Progress" value={job.progress} className="w-32 max-w-full" />}
             </div>
           </Table.Cell>
-          <Table.Cell className="max-w-md whitespace-normal">
+          <Table.Cell data-label="Details" data-field="wide" className="max-w-md whitespace-normal">
             {job.message && <p className="text-sm">{job.message}</p>}
             {job.error && <p className="text-sm text-kumo-danger [overflow-wrap:anywhere]">{job.error}</p>}
             {!job.message && !job.error && <span className="text-sm text-kumo-subtle">—</span>}
           </Table.Cell>
-          <Table.Cell className="text-right"><div className="flex flex-wrap justify-end gap-1.5">
+          <Table.Cell data-field="actions" className="text-right"><div className="flex flex-wrap justify-end gap-1.5">
             {job.serverId && <LinkButton size="sm" variant="ghost" icon={Terminal2Icon} href={`/servers/${job.serverId}/console`}>Console</LinkButton>}
             {(job.type === "ServerExport" || job.type === "InstancesExport") && job.state === "Completed" && <LinkButton size="sm" variant="secondary" icon={DownloadIcon} href={api.exportDownloadUrl(job.id)} download>Download export</LinkButton>}
             {job.canCancel && <Button size="sm" variant="secondary-destructive" disabled={action.isPending} onClick={() => action.mutate({ id: job.id, operation: "cancel" })}>Cancel</Button>}
@@ -96,13 +96,13 @@ export function ActivityPage() {
     </Section>
     <Section title="Administrative history" description="A record of changes made through the panel." flush>
       <QueryFeedback query={audit} />
-      {audit.isLoading ? <TableSkeleton /> : audit.data?.length ? <Table>
-        <Table.Header><Table.Row><Table.Head>Time</Table.Head><Table.Head>Actor</Table.Head><Table.Head>Action</Table.Head><Table.Head>Outcome</Table.Head></Table.Row></Table.Header>
+      {audit.isLoading ? <TableSkeleton /> : audit.data?.length ? <Table className="record-table">
+        <Table.Header><Table.Row><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Action</th><th scope="col">Outcome</th></Table.Row></Table.Header>
         <Table.Body>{audit.data.map((event) => <Table.Row key={event.id}>
-          <Table.Cell className="whitespace-nowrap text-kumo-subtle">{formatTime(event.timestamp)}</Table.Cell>
-          <Table.Cell>{event.actor}</Table.Cell>
-          <Table.Cell className="min-w-52 whitespace-normal"><span className="font-medium">{event.action}</span>{event.target && <span className="ml-1.5 font-mono text-xs text-kumo-subtle [overflow-wrap:anywhere]">{event.target}</span>}</Table.Cell>
-          <Table.Cell><Badge variant={/fail|denied|error/i.test(event.outcome) ? "error" : "neutral"}>{event.outcome}</Badge></Table.Cell>
+          <Table.Cell data-label="Time" className="whitespace-nowrap text-kumo-subtle">{formatTime(event.timestamp)}</Table.Cell>
+          <Table.Cell data-label="Actor">{event.actor}</Table.Cell>
+          <Table.Cell data-field="title" className="min-w-52 whitespace-normal"><span className="font-medium">{event.action}</span>{event.target && <span className="block font-mono text-xs text-kumo-subtle [overflow-wrap:anywhere]">{event.target}</span>}</Table.Cell>
+          <Table.Cell data-field="status"><Badge variant={/fail|denied|error/i.test(event.outcome) ? "error" : "neutral"}>{event.outcome}</Badge></Table.Cell>
         </Table.Row>)}</Table.Body>
       </Table> : !audit.isError && <EmptyState inset size="sm" icon={<HistoryIcon />} title="No administrative history" description="Changes made through the panel are recorded here." />}
     </Section>

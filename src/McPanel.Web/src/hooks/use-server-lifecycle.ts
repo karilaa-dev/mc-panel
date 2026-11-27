@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react"
-import { useMutation, useQueryClient } from "@tanstack/react-query"
+import { useEffect } from "react"
+import { skipToken, useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import type { ServerState, ServerSummaryDto } from "@/lib/contracts"
 import { toast } from "@/lib/toast"
@@ -13,7 +13,13 @@ export const pendingLifecycleLabels: Record<LifecycleAction, string> = {
   update: "Updating…",
 }
 
-type LifecycleRequest = { serverId: string; action: LifecycleAction; from: ServerState }
+type LifecycleRequest = { serverId: string; action: LifecycleAction; from: ServerState; expiresAt: number }
+
+const intentKey = (serverId?: string) => ["server-lifecycle-intent", serverId] as const
+
+function clearIntent(client: QueryClient, request: LifecycleRequest) {
+  client.setQueryData<LifecycleRequest | null>(intentKey(request.serverId), (latest) => latest === request ? null : latest)
+}
 
 /**
  * Runs lifecycle actions and keeps the requested transition visible until the server reports
@@ -23,17 +29,28 @@ type LifecycleRequest = { serverId: string; action: LifecycleAction; from: Serve
  */
 export function useServerLifecycle(server?: Pick<ServerSummaryDto, "id" | "state">) {
   const queryClient = useQueryClient()
-  const [pending, setPending] = useState<LifecycleRequest>()
-  const current = pending && server && pending.serverId === server.id ? pending : undefined
-  if (current && server && server.state !== current.from) setPending(undefined)
+  const serverId = server?.id
+  const state = server?.state
+  const mutationKey = ["server-lifecycle", serverId]
+  const requestInFlight = useIsMutating({ mutationKey, exact: true }) > 0
+  const { data: pending } = useQuery<LifecycleRequest | null>({
+    queryKey: intentKey(serverId), queryFn: skipToken, structuralSharing: false,
+  })
+  const current = pending?.from === state ? pending : null
 
   useEffect(() => {
     if (!pending) return
-    const timeout = setTimeout(() => setPending((latest) => latest === pending ? undefined : latest), 20_000)
+    const remaining = pending.expiresAt - Date.now()
+    if (state !== pending.from || remaining <= 0) {
+      clearIntent(queryClient, pending)
+      return
+    }
+    const timeout = setTimeout(() => clearIntent(queryClient, pending), remaining)
     return () => clearTimeout(timeout)
-  }, [pending])
+  }, [pending, queryClient, state])
 
   const mutation = useMutation({
+    mutationKey,
     mutationFn: ({ serverId, action }: LifecycleRequest) => api.lifecycle(serverId, action),
     onSuccess: (job, { serverId }) => {
       toast.message("Operation queued", { description: job.message ?? `Operation ${job.id.slice(0, 8)}` })
@@ -41,12 +58,11 @@ export function useServerLifecycle(server?: Pick<ServerSummaryDto, "id" | "state
       void queryClient.invalidateQueries({ queryKey: ["server", serverId] })
     },
     onError: (error, request) => {
-      setPending((latest) => latest === request ? undefined : latest)
+      clearIntent(queryClient, request)
       toast.error(error.message)
     },
   })
 
-  const requestInFlight = mutation.isPending && mutation.variables?.serverId === server?.id
   // The observed state can change before the HTTP response arrives, or vice versa.
   const phase = current
     ? requestInFlight ? "submitting" : "awaitingObservation"
@@ -54,9 +70,9 @@ export function useServerLifecycle(server?: Pick<ServerSummaryDto, "id" | "state
   return {
     phase,
     run: (action: LifecycleAction) => {
-      if (!server) return
-      const request = { serverId: server.id, action, from: server.state }
-      setPending(request)
+      if (!server || current || queryClient.isMutating({ mutationKey, exact: true })) return
+      const request = { serverId: server.id, action, from: server.state, expiresAt: Date.now() + 20_000 }
+      queryClient.setQueryData(intentKey(server.id), request)
       mutation.mutate(request)
     },
     pendingAction: current?.action,

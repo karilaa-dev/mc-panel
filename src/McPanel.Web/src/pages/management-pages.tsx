@@ -76,7 +76,7 @@ function describeTrigger(schedule: ScheduleDto) {
     const days = (schedule.daysOfWeek ?? []).map((day) => weekDays.find((item) => item.value === String(day))?.label).filter(Boolean).join(", ")
     return `${days || "Weekly"} at ${schedule.timeOfDay ?? "—"}`
   }
-  if (schedule.frequency === "Cron") return schedule.cron ?? "Cron"
+  if (schedule.frequency === "Cron") return schedule.cron ? `Cron · ${schedule.cron}` : "Cron"
   return schedule.runAt ? `Once · ${formatDate(schedule.runAt)}` : "Once"
 }
 
@@ -196,16 +196,16 @@ function ServerSchedules({ serverId }: { serverId: string }) {
     <Page title="Schedules" description="Time-based automations that run ordered Minecraft server actions." actions={<Button variant="primary" icon={PlusIcon} onClick={() => setDialog({ kind: "edit", schedule: "new" })}>New schedule</Button>}>
       <Section title="Schedules" description="Overlapping runs and runs missed during downtime are skipped." flush>
         <QueryFeedback query={schedules} />
-        {schedules.isError && !schedules.data ? null : schedules.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-10" />)}</div> : schedules.data?.length ? <Table>
-          <Table.Header><Table.Row><Table.Head>Name</Table.Head><Table.Head>Trigger</Table.Head><Table.Head>Actions</Table.Head><Table.Head>Next run</Table.Head><Table.Head>Last result</Table.Head><Table.Head>Enabled</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
+        {schedules.isError && !schedules.data ? null : schedules.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-10" />)}</div> : schedules.data?.length ? <Table className="record-table">
+          <Table.Header><Table.Row><th scope="col">Name</th><th scope="col">Trigger</th><th scope="col">Steps</th><th scope="col">Next run</th><th scope="col">Last result</th><th scope="col">Enabled</th><th scope="col"><span className="sr-only">Actions</span></th></Table.Row></Table.Header>
           <Table.Body>{schedules.data.map((schedule) => <Table.Row key={schedule.id}>
-            <Table.Cell><div className="flex flex-col gap-0.5"><span className="font-medium">{schedule.name}</span><span className="text-xs text-kumo-subtle">{schedule.timeZone}</span></div></Table.Cell>
-            <Table.Cell><div className="flex flex-col items-start gap-1"><Badge variant="neutral">{schedule.frequency}</Badge><span className="text-xs whitespace-nowrap text-kumo-subtle">{describeTrigger(schedule)}</span></div></Table.Cell>
-            <Table.Cell><span className="text-sm">{schedule.actions.map((action) => actionLabel(action.action)).join(" → ")}</span></Table.Cell>
-            <Table.Cell className="whitespace-nowrap">{schedule.enabled ? formatDate(schedule.nextRunAt) : <span className="text-kumo-subtle">Paused</span>}</Table.Cell>
-            <Table.Cell><div className="flex flex-col items-start gap-0.5"><span className="text-sm">{schedule.lastResult ?? "Never run"}</span>{schedule.lastRunAt && <span className="text-xs text-kumo-subtle">{formatDate(schedule.lastRunAt)}</span>}</div></Table.Cell>
-            <Table.Cell><Switch aria-label={`Enable ${schedule.name}`} checked={schedule.enabled} onCheckedChange={(enabled) => toggle.mutate({ id: schedule.id, enabled })} /></Table.Cell>
-            <Table.Cell className="text-right">
+            <Table.Cell data-field="title"><div className="flex flex-col gap-0.5"><span className="font-medium">{schedule.name}</span><span className="text-xs text-kumo-subtle">{schedule.timeZone}</span></div></Table.Cell>
+            <Table.Cell data-label="Trigger">{describeTrigger(schedule)}</Table.Cell>
+            <Table.Cell data-label="Steps"><span className="text-sm">{schedule.actions.map((action) => actionLabel(action.action)).join(" → ")}</span></Table.Cell>
+            <Table.Cell data-label="Next run" className="whitespace-nowrap">{schedule.enabled ? formatDate(schedule.nextRunAt) : <span className="text-kumo-subtle">Paused</span>}</Table.Cell>
+            <Table.Cell data-label="Last result"><div className="flex flex-col items-start gap-0.5"><span className="text-sm">{schedule.lastResult ?? "Never run"}</span>{schedule.lastRunAt && <span className="text-xs text-kumo-subtle">{formatDate(schedule.lastRunAt)}</span>}</div></Table.Cell>
+            <Table.Cell data-label="Enabled"><Switch aria-label={`Enable ${schedule.name}`} checked={schedule.enabled} onCheckedChange={(enabled) => toggle.mutate({ id: schedule.id, enabled })} /></Table.Cell>
+            <Table.Cell data-field="menu" className="text-right">
               <DropdownMenu>
                 <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsIcon size={20} stroke={2} />} aria-label={`Manage ${schedule.name}`} />} />
                 <DropdownMenu.Content align="end">
@@ -273,23 +273,23 @@ export function JavaPage() {
   return (
     <Page title="Java runtimes" description="Detected from JAVA_HOME, PATH, alternatives, /usr/lib/jvm, and common /opt locations." actions={<Button variant="primary" icon={RefreshIcon} loading={rescan.isPending} onClick={() => rescan.mutate()}>Rescan system</Button>}>
       <Section title="Discovered runtimes" description="Every executable is canonicalized and probed with Java’s version properties before use." flush>
-        {runtimes.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 2 }, (_, index) => <Skeleton key={index} className="h-10" />)}</div> : runtimes.data?.length ? <Table>
-          <Table.Header><Table.Row><Table.Head>Java</Table.Head><Table.Head>Vendor</Table.Head><Table.Head>Architecture</Table.Head><Table.Head>Path</Table.Head><Table.Head>Source</Table.Head></Table.Row></Table.Header>
+        {runtimes.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 2 }, (_, index) => <Skeleton key={index} className="h-10" />)}</div> : runtimes.data?.length ? <Table className="record-table">
+          <Table.Header><Table.Row><th scope="col">Java</th><th scope="col">Vendor</th><th scope="col">Architecture</th><th scope="col">Path</th><th scope="col">Source</th></Table.Row></Table.Header>
           <Table.Body>{runtimes.data.map((runtime) => <Table.Row key={runtime.id}>
-            <Table.Cell><div className="flex flex-col items-start gap-1"><Badge variant="info">Java {runtime.major}</Badge><span className="text-xs text-kumo-subtle">{runtime.version}</span></div></Table.Cell>
-            <Table.Cell>{runtime.vendor}</Table.Cell>
-            <Table.Cell>{runtime.architecture}</Table.Cell>
-            <Table.Cell className="max-w-md truncate font-mono text-xs" title={runtime.path}>{runtime.path}</Table.Cell>
-            <Table.Cell><Badge variant="outline">{runtime.isCustom ? "Manual" : "System"}</Badge></Table.Cell>
+            <Table.Cell data-field="title"><div className="flex flex-col items-start gap-1"><Badge variant="info">Java {runtime.major}</Badge><span className="text-xs text-kumo-subtle">{runtime.version}</span></div></Table.Cell>
+            <Table.Cell data-label="Vendor">{runtime.vendor}</Table.Cell>
+            <Table.Cell data-label="Architecture">{runtime.architecture}</Table.Cell>
+            <Table.Cell data-label="Path" data-field="wide" className="max-w-md truncate font-mono text-xs" title={runtime.path}>{runtime.path}</Table.Cell>
+            <Table.Cell data-field="status"><Badge variant="outline">{runtime.isCustom ? "Manual" : "System"}</Badge></Table.Cell>
           </Table.Row>)}</Table.Body>
         </Table> : <EmptyState inset icon={<CoffeeIcon />} title="No Java installation found" description="Install Java on the host, then rescan. MC Panel never invokes sudo or installs Java." />}
       </Section>
       <Section title="Add a known Java path" description="The path is still resolved, executed, and validated before it is saved.">
-        <form className="flex flex-col gap-3 sm:flex-row sm:items-end" onSubmit={(event) => { event.preventDefault(); if (customPath.trim()) add.mutate() }}>
+        <form className="flex flex-col gap-3 @xl/section:flex-row @xl/section:items-end" onSubmit={(event) => { event.preventDefault(); if (customPath.trim()) add.mutate() }}>
           <div className="flex-1">
             <Input label="Java executable" className="font-mono" placeholder="/opt/jdk-21/bin/java" value={customPath} onChange={(event) => setCustomPath(event.target.value)} description="Only an exact executable path is accepted. Startup never uses a shell." />
           </div>
-          <Button type="submit" className="sm:mb-6" loading={add.isPending} disabled={!customPath.trim()}>Validate and add</Button>
+          <Button type="submit" className="@xl/section:mb-6" loading={add.isPending} disabled={!customPath.trim()}>Validate and add</Button>
         </form>
       </Section>
     </Page>
@@ -359,7 +359,7 @@ export function PanelSettingsPage() {
           </Section>
           {settings.isLoading ? <SectionSkeleton rows={3} /> : settings.data && <PanelSystemSettings key={settings.data.revision} value={settings.data} pending={saveSettings.isPending} onSave={(value) => saveSettings.mutate(value)} />}
         </>}
-        {selectedTab === "backups" && <div className="grid gap-x-4 gap-y-6 xl:grid-cols-2"><PanelBackups /><InstanceExports /></div>}
+        {selectedTab === "backups" && <div className="grid gap-x-4 gap-y-6 @5xl:grid-cols-2"><PanelBackups /><InstanceExports /></div>}
         {selectedTab === "appearance" && <Section title="Appearance" description="Stored locally in this browser. Press D anywhere outside a text field to toggle light and dark.">
           <div className="flex flex-col gap-2">
             <Label>Theme</Label>

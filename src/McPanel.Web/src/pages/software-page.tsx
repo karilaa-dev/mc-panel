@@ -158,7 +158,7 @@ function ServerCoreSettings({ serverId }: { serverId: string }) {
       ? <ErrorBanner title="Server core change status unavailable" description={changeJob.error.message} onRetry={() => void changeJob.refetch()} />
       : <Banner icon={<InfoCircleFilledIcon />} title="Server core change in progress" description={changeJob.data?.message ?? "Waiting for the operation result."} />)}
     <Section title="Current server core" description="The active launcher recorded by MC Panel.">
-      <DetailList className="lg:grid-cols-4" items={[
+      <DetailList className="@3xl/section:grid-cols-4" items={[
         { label: "Core", value: serverKindLabel(software.data.kind) },
         { label: "Minecraft", value: software.data.version },
         { label: "Launcher", value: software.data.launchTarget, mono: true },
@@ -168,7 +168,7 @@ function ServerCoreSettings({ serverId }: { serverId: string }) {
     <Section
       title="Change server core"
       description="Official cores are downloaded from verified catalogs. Custom JARs need an executable manifest."
-      footer={<div className="flex w-full items-center justify-between gap-3">
+      footer={<div className="flex w-full flex-col items-start gap-2 @xl/section:flex-row @xl/section:items-center @xl/section:justify-between @xl/section:gap-4">
         <p className="text-sm text-kumo-subtle">{stopped ? "Worlds, properties, plugins, and mods stay in place." : "Stop the server to change its core."}</p>
         <Button variant="primary" icon={ArrowsExchangeIcon} disabled={!stopped || !selectionsReady || jarUpload.isPending || awaitingJob} onClick={() => setConfirmOpen(true)}>Review server core change</Button>
       </div>}
@@ -188,7 +188,7 @@ function ServerCoreSettings({ serverId }: { serverId: string }) {
             <Label>Server core</Label>
             <SegmentedControl aria-label="Server core" value={kind} onValueChange={(values) => values[0] && setKind(values[0])} options={(["Vanilla", "Paper", "Fabric", "Forge", "NeoForge"] as OfficialKind[]).map((item) => ({ value: item, label: item }))} />
           </div>
-          <div className="grid gap-5 sm:grid-cols-2">
+          <div className="grid gap-5 @xl/section:grid-cols-2">
             <Choice label="Minecraft version" value={selectedVersion} loading={catalog.isLoading} choices={versions.map((item) => ({ value: item, label: item }))} onChange={setVersion} placeholder="Choose version" />
             {kind === "Paper" && <Choice label="Paper build" value={selectedBuild} choices={paperBuilds.map((item) => ({ value: item.id, label: `${item.id} · ${item.channel}` }))} onChange={setBuild} />}
             {kind === "Fabric" && <>

@@ -260,16 +260,15 @@ function ConsoleSession({ serverId }: { serverId: string }) {
   return (
     <Page
       title="Console"
-      description={isGate ? "Live, durable Gate logs with reconnect recovery." : "Live, durable Minecraft output with command history and reconnect recovery."}
-      actions={<Badge variant={connectionPhase === "live" ? "success" : "warning"} appearance="dot">{consolePhaseLabels[connectionPhase]}</Badge>}
+      description={isGate ? "Live, durable Gate logs with reconnect recovery." : "Follow server output and send Minecraft commands."}
     >
       <Section
-        title={isGate ? "Gate output" : "Server output"}
-        description="History is kept by the panel and resumes from the last received line. Warnings and errors are highlighted."
+        title={<>{isGate ? "Gate output" : "Server output"}<Badge variant={connectionPhase === "live" ? "success" : "warning"} appearance="dot">{consolePhaseLabels[connectionPhase]}</Badge></>}
+        description="Logs resume after reconnecting. Warnings and errors are highlighted."
         contentClassName="gap-3"
       >
         <div className="flex flex-wrap items-center gap-2">
-          <InputGroup className="min-w-56 flex-1 sm:max-w-sm" size="sm">
+          <InputGroup className="w-full @xl/section:max-w-sm @xl/section:flex-1" size="sm">
             <InputGroup.Addon><SearchIcon className="text-kumo-subtle" /></InputGroup.Addon>
             <InputGroup.Input
               aria-label="Search console"
@@ -296,7 +295,7 @@ function ConsoleSession({ serverId }: { serverId: string }) {
             <Button size="sm" variant="ghost" icon={TrashIcon} onClick={() => terminalRef.current?.clear()}>Clear view</Button>
           </div>
         </div>
-        <div className="h-[min(65vh,42rem)] min-h-96 overflow-hidden rounded-lg bg-kumo-base p-3 ring ring-kumo-line">
+        <div className="h-[clamp(10rem,calc(100dvh_-_31rem),42rem)] @xl/section:h-[clamp(12rem,calc(100dvh_-_28rem),42rem)] overflow-hidden rounded-lg bg-kumo-base p-3 ring ring-kumo-line">
           <Suspense fallback={<Skeleton className="h-full" />}><TerminalView onReady={onTerminalReady} label={isGate ? "Gate proxy console output" : "Minecraft server console output"} /></Suspense>
         </div>
         {!isGate && <form onSubmit={submit}>
@@ -479,11 +478,11 @@ function ServerFiles({ serverId }: { serverId: string }) {
         <QueryFeedback query={files} />
         {files.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-8" />)}</div> : files.isError && !files.data ? null : (
           <div className="max-h-[65vh] overflow-auto">
-            <Table className="[&_td]:py-1.5">
-              <Table.Header className="sticky top-0 z-1"><Table.Row><Table.Head>Name</Table.Head><Table.Head className="w-28">Size</Table.Head><Table.Head className="w-48">Modified</Table.Head><Table.Head className="w-14"><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
+            <Table className="record-table file-list">
+              <Table.Header className="sticky top-0 z-1"><Table.Row><th scope="col">Name</th><th scope="col" className="w-[15%]">Size</th><th scope="col" className="w-[32%]">Modified</th><th scope="col" className="w-14"><span className="sr-only">Actions</span></th></Table.Row></Table.Header>
               <Table.Body>
                 {segments.length > 0 && <Table.Row>
-                  <Table.Cell colSpan={4}>
+                  <Table.Cell data-field="wide" colSpan={4}>
                     <Button size="sm" variant="ghost" className="-ml-2" icon={ArrowBackUpIcon} onClick={() => browse(segments.slice(0, -1).join("/"))}>Parent folder</Button>
                   </Table.Cell>
                 </Table.Row>}
@@ -491,15 +490,15 @@ function ServerFiles({ serverId }: { serverId: string }) {
                   const image = imageFileType(entry.path)
                   const EntryIcon = entry.isDirectory ? FolderFilledIcon : image ? PhotoIcon : FileIcon
                   return <Table.Row key={entry.path}>
-                    <Table.Cell>
-                      <button type="button" className="-ml-2 flex max-w-md min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-base text-kumo-default hover:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:outline-none" onClick={() => openEntry(entry)}>
+                    <Table.Cell data-field="title">
+                      <button type="button" className="-ml-2 flex w-fit max-w-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-kumo-default hover:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:outline-none" onClick={() => openEntry(entry)}>
                         <EntryIcon size={18} className={entry.isDirectory ? "shrink-0 text-(--color-kumo-brand)" : "shrink-0 text-kumo-subtle"} aria-hidden="true" />
-                        <span className="truncate">{entry.name}</span>
+                        <span className="truncate" title={entry.name}>{entry.name}</span>
                       </button>
                     </Table.Cell>
-                    <Table.Cell className="whitespace-nowrap text-kumo-subtle tabular-nums">{entry.isDirectory ? "—" : formatBytes(entry.size)}</Table.Cell>
-                    <Table.Cell className="whitespace-nowrap text-kumo-subtle">{formatDate(entry.modifiedAt)}</Table.Cell>
-                    <Table.Cell className="text-right">
+                    <Table.Cell data-label="Size" className="whitespace-nowrap text-kumo-subtle tabular-nums">{entry.isDirectory ? "—" : formatBytes(entry.size)}</Table.Cell>
+                    <Table.Cell data-label="Modified" className="whitespace-nowrap text-kumo-subtle">{formatDate(entry.modifiedAt)}</Table.Cell>
+                    <Table.Cell data-field="menu" className="text-right">
                       <DropdownMenu>
                         <DropdownMenu.Trigger render={<Button variant="ghost" size="sm" shape="square" icon={<DotsIcon size={20} stroke={2} />} aria-label={`Actions for ${entry.name}`} />} />
                         <DropdownMenu.Content align="end">
@@ -613,13 +612,13 @@ export function PlayersPage() {
       {manageHint && !server.isLoading && <Banner variant="secondary" icon={<InfoCircleFilledIcon />} title="Player lists are read-only right now" description={manageHint} />}
       <div role="tabpanel" aria-label={activeLabel}>
         {tab === "players" && <Section title="Known players" description="List actions work while the server is running, stopped, or crashed. Kicking requires a running server." flush>
-          {players.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-10" />)}</div> : data.length ? <Table>
-            <Table.Header><Table.Row><Table.Head>Player</Table.Head><Table.Head>Status</Table.Head><Table.Head>Access</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
+          {players.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-10" />)}</div> : data.length ? <Table className="record-table record-with-status">
+            <Table.Header><Table.Row><th scope="col" className="w-1/3">Player</th><th scope="col" className="w-1/6">Status</th><th scope="col">Access</th><th scope="col"><span className="sr-only">Actions</span></th></Table.Row></Table.Header>
             <Table.Body>{data.map((player) => <Table.Row key={player.uuid ?? player.name}>
-              <Table.Cell><div className="flex min-w-0 flex-col gap-0.5"><span className="font-medium">{player.name}</span>{player.uuid && <span className="truncate font-mono text-xs text-kumo-subtle">{player.uuid}</span>}</div></Table.Cell>
-              <Table.Cell><Badge variant={player.online ? "success" : "neutral"} appearance="dot">{player.online ? "Online" : "Offline"}</Badge></Table.Cell>
-              <Table.Cell><div className="flex flex-wrap gap-1">{player.operator && <Badge variant="purple">Operator</Badge>}{player.whitelisted && <Badge variant="info">Whitelisted</Badge>}{player.banned && <Badge variant="error">Banned</Badge>}{!player.operator && !player.whitelisted && !player.banned && <span className="text-sm text-kumo-subtle">—</span>}</div></Table.Cell>
-              <Table.Cell className="text-right"><div className="flex justify-end gap-2">
+              <Table.Cell data-field="title"><div className="flex min-w-0 flex-col gap-0.5"><span className="font-medium">{player.name}</span>{player.uuid && <span className="font-mono text-xs text-kumo-subtle [overflow-wrap:anywhere]">{player.uuid}</span>}</div></Table.Cell>
+              <Table.Cell data-field="status"><Badge variant={player.online ? "success" : "neutral"} appearance="dot">{player.online ? "Online" : "Offline"}</Badge></Table.Cell>
+              <Table.Cell data-label="Access" data-field="wide"><div className="flex flex-wrap gap-1.5">{player.operator && <Badge variant="purple">Operator</Badge>}{player.whitelisted && <Badge variant="info">Whitelisted</Badge>}{player.banned && <Badge variant="error">Banned</Badge>}{!player.operator && !player.whitelisted && !player.banned && <span className="text-sm text-kumo-subtle">—</span>}</div></Table.Cell>
+              <Table.Cell data-field="actions" className="text-right"><div className="flex justify-end gap-2">
                 <HintButton size="sm" icon={ArchiveIcon} disabled={!player.uuid} hint={player.uuid ? "View the saved inventory" : "A known UUID is required"} onClick={() => setInventoryPlayer(player)}>Inventory</HintButton>
                 <DropdownMenu>
                   <DropdownMenu.Trigger render={<HintButton size="sm" icon={DotsIcon} disabled={!canManage || action.isPending} hint={manageHint}>Manage</HintButton>} />
@@ -660,12 +659,12 @@ function PlayerListTab({ title, description, players, addLabel, removeLabel, add
       </div>
       <HintButton type="submit" variant="primary" loading={pending} disabled={!canManage || !valid} hint={hint}>{addLabel}</HintButton>
     </form>
-    {players.length ? <Table>
-      <Table.Header><Table.Row><Table.Head>Player</Table.Head><Table.Head>UUID</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
+    {players.length ? <Table className="record-table">
+      <Table.Header><Table.Row><th scope="col">Player</th><th scope="col">UUID</th><th scope="col"><span className="sr-only">Actions</span></th></Table.Row></Table.Header>
       <Table.Body>{players.map((player) => <Table.Row key={player.uuid ?? player.name}>
-        <Table.Cell className="font-medium">{player.name}</Table.Cell>
-        <Table.Cell className="font-mono text-xs text-kumo-subtle">{player.uuid ?? "Unknown"}</Table.Cell>
-        <Table.Cell className="text-right"><HintButton size="sm" variant="secondary-destructive" disabled={!canManage || pending} hint={hint} onClick={() => onAction(player.name, removeAction)}>{removeLabel}</HintButton></Table.Cell>
+        <Table.Cell data-field="title" className="font-medium">{player.name}</Table.Cell>
+        <Table.Cell data-label="UUID" data-field="wide" className="font-mono text-xs text-kumo-subtle">{player.uuid ?? "Unknown"}</Table.Cell>
+        <Table.Cell data-field="actions" className="text-right"><HintButton size="sm" variant="secondary-destructive" disabled={!canManage || pending} hint={hint} onClick={() => onAction(player.name, removeAction)}>{removeLabel}</HintButton></Table.Cell>
       </Table.Row>)}</Table.Body>
     </Table> : <EmptyState inset size="sm" icon={<UsersIcon />} title={`No ${title.toLowerCase()}`} description="Add a player by nickname to get started." />}
   </Section>
@@ -715,14 +714,14 @@ export function BackupsPage() {
       {createHint && !server.isLoading && <Banner variant="secondary" icon={<InfoCircleFilledIcon />} title="Backups are paused" description={createHint} />}
       <Section title="Backup archive" description={canRestore ? "Restoring always creates a safety backup first." : "Stop the server to restore a backup. Restoring always creates a safety backup first."} flush>
         <QueryFeedback query={backups} />
-        {backups.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-10" />)}</div> : backups.isError && !backups.data ? null : backups.data?.length ? <Table>
-          <Table.Header><Table.Row><Table.Head>Created</Table.Head><Table.Head>Reason</Table.Head><Table.Head>Size</Table.Head><Table.Head>Status</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
+        {backups.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-10" />)}</div> : backups.isError && !backups.data ? null : backups.data?.length ? <Table className="record-table">
+          <Table.Header><Table.Row><th scope="col">Created</th><th scope="col">Reason</th><th scope="col">Size</th><th scope="col">Status</th><th scope="col"><span className="sr-only">Actions</span></th></Table.Row></Table.Header>
           <Table.Body>{backups.data.map((backup) => <Table.Row key={backup.id}>
-            <Table.Cell className="whitespace-nowrap">{formatDate(backup.createdAt)}</Table.Cell>
-            <Table.Cell><span className="flex flex-wrap items-center gap-1.5">{backup.reason}{backup.pinned && <Badge variant="outline" icon={<PinIcon className="size-3.5!" />}>Pinned</Badge>}</span></Table.Cell>
-            <Table.Cell className="whitespace-nowrap tabular-nums">{formatBytes(backup.size)}</Table.Cell>
-            <Table.Cell><Badge variant={backup.state === "Completed" ? "success" : backup.state === "Failed" ? "error" : "neutral"} appearance="dot">{backup.state}</Badge></Table.Cell>
-            <Table.Cell className="text-right"><div className="flex justify-end gap-1">
+            <Table.Cell data-label="Created" data-field="title" className="whitespace-nowrap">{formatDate(backup.createdAt)}</Table.Cell>
+            <Table.Cell data-label="Reason"><span className="flex flex-wrap items-center gap-x-3 gap-y-1">{backup.reason}{backup.pinned && <Badge variant="outline" icon={<PinIcon className="size-3.5!" />}>Pinned</Badge>}</span></Table.Cell>
+            <Table.Cell data-label="Size" className="whitespace-nowrap tabular-nums">{formatBytes(backup.size)}</Table.Cell>
+            <Table.Cell data-field="status"><Badge variant={backup.state === "Completed" ? "success" : backup.state === "Failed" ? "error" : "neutral"} appearance="dot">{backup.state}</Badge></Table.Cell>
+            <Table.Cell data-field="actions" className="text-right"><div className="flex justify-end gap-1">
               <LinkButton variant="ghost" size="sm" shape="square" icon={<DownloadIcon size={18} />} aria-label={`Download ${backup.fileName}`} href={api.backupDownloadUrl(serverId, backup.id)} />
               <ConfirmDialog
                 trigger={<HintButton size="sm" icon={HistoryIcon} disabled={!canRestore} hint={canRestore ? undefined : restoreHint} aria-label={`Restore ${backup.fileName}`}>Restore</HintButton>}

@@ -35,6 +35,14 @@ try {
     await page.getByText('Panel backup failed', {exact:true}).waitFor();
     assert.equal(await page.getByText('Machine recovery', {exact:true}).count(),0);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Activity overflows');
+    const operations = page.getByRole('region', {name:'Operations', exact:true});
+    await operations.getByText('Failed', {exact:true}).first().waitFor();
+    const tableFits = await operations.locator('table').evaluate(table => {
+      const panel = table.closest('section').getBoundingClientRect();
+      const row = table.tBodies[0].rows[0].getBoundingClientRect();
+      return row.left >= panel.left - 1 && row.right <= panel.right + 1;
+    });
+    assert.ok(tableFits, `Operation details extend beyond the panel at ${width}px`);
     await page.screenshot({path:join(evidence,`activity-${theme}-${width}.png`), fullPage:true});
     await page.getByRole('link',{name:'Panel backups',exact:true}).click();
     await page.getByRole('button',{name:'Create panel backup'}).waitFor();

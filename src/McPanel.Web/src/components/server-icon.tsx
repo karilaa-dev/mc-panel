@@ -101,8 +101,10 @@ function IconUploadControl({ label, pending, disabled = false, onUpload }: { lab
   </>
 }
 
+const libraryGrid = "grid grid-cols-[repeat(auto-fill,minmax(min(100%,4.5rem),1fr))] gap-2.5"
+
 function LibrarySkeleton() {
-  return <div className="grid grid-cols-4 gap-3 sm:grid-cols-6 md:grid-cols-8">{Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="aspect-square" />)}</div>
+  return <div className={libraryGrid}>{Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="aspect-square" />)}</div>
 }
 
 export function ServerIconEditor({ server, disabled = false }: { server: ServerSummaryDto; disabled?: boolean }) {
@@ -156,7 +158,7 @@ export function ServerIconEditor({ server, disabled = false }: { server: ServerS
         <p className="text-sm text-kumo-subtle">Reuse an icon without uploading it again.</p>
       </div>
       {library.isLoading ? <LibrarySkeleton /> : library.data?.length ? (
-        <div className="grid grid-cols-4 gap-3 sm:grid-cols-6 md:grid-cols-8">
+        <div className={libraryGrid}>
           {library.data.map((icon, index) => {
             const current = server.iconRevision === icon.revision
             return <button
@@ -202,7 +204,7 @@ export function PanelIconExplorer() {
       <IconUploadControl label="Upload icon" pending={upload.isPending} disabled={remove.isPending} onUpload={(file) => upload.mutate(file)} />
     </div>
     {library.isLoading ? <LibrarySkeleton /> : library.data?.length ? (
-      <div className="grid grid-cols-3 gap-3 sm:grid-cols-5 md:grid-cols-8">
+      <div className={libraryGrid}>
         {library.data.map((icon, index) => <div key={icon.revision} className="group relative aspect-square overflow-hidden rounded-lg bg-kumo-base p-1.5 ring ring-kumo-line">
           <img className="size-full rounded-[18%] object-cover [image-rendering:pixelated]" src={api.panelIconUrl(icon.revision)} alt={`Panel icon ${index + 1}`} />
           <ConfirmDialog

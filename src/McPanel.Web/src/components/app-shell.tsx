@@ -1,9 +1,9 @@
 import { serverLifecycle } from "@/lib/server-lifecycle"
-import { Suspense, useCallback, useEffect, useRef, useState, type ComponentType } from "react"
+import { Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type ComponentType } from "react"
 import { Link, Outlet, useLocation } from "react-router-dom"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Breadcrumbs, Button, DropdownMenu, LinkProvider, Sidebar, SkeletonLine, cn, useSidebar } from "@cloudflare/kumo"
-import { ActivityIcon, AdjustmentsHorizontalIcon, ArchiveIcon, CalendarCheckIcon, CoffeeIcon, CpuIcon, DeviceDesktopIcon, FolderIcon, GaugeIcon, LayoutDashboardIcon, LogoutIcon, MenuIcon, MoonIcon, PackageIcon, PhotoIcon, PlayerPlayIcon, PlugIcon, PlusIcon, RefreshIcon, SelectorIcon, SettingsIcon, ShareIcon, SignRightIcon, SunIcon, Terminal2Icon, UserCircleIcon, UsersIcon } from "@/components/icons"
+import { ActivityIcon, AdjustmentsHorizontalIcon, ArchiveIcon, CalendarCheckIcon, CoffeeIcon, CpuIcon, DeviceDesktopIcon, FolderIcon, GaugeIcon, LayoutDashboardIcon, LogoutIcon, MenuIcon, MoonIcon, PackageIcon, PhotoIcon, PlayerStopIcon, PlayerPlayIcon, PlugIcon, PlusIcon, RefreshIcon, SelectorIcon, SettingsIcon, ShareIcon, SignRightIcon, SunIcon, Terminal2Icon, UserCircleIcon, UsersIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import type { ServerSummaryDto } from "@/lib/contracts"
 import { toast } from "@/lib/toast"
@@ -81,7 +81,7 @@ function NavigationLink({ item, href }: { item: NavigationItem; href: string }) 
   const { pathname } = useLocation()
   const active = href === "/" ? pathname === "/" : pathname === href
   return (
-    <Sidebar.MenuButton icon={<item.icon className={navigationIcon} />} href={href} itemId={href} active={active} tooltip={item.label} aria-current={active ? "page" : undefined}>
+    <Sidebar.MenuButton className="aria-[current=page]:font-semibold" icon={<item.icon className={navigationIcon} />} href={href} itemId={href} active={active} tooltip={item.label} aria-current={active ? "page" : undefined}>
       {item.label}
     </Sidebar.MenuButton>
   )
@@ -90,7 +90,9 @@ function NavigationLink({ item, href }: { item: NavigationItem; href: string }) 
 /** A roster row. The status dot sits on the avatar so it stays put when the sidebar collapses to icons. */
 function ServerLink({ server, selected }: { server: ServerSummaryDto; selected: boolean }) {
   const { pathname } = useLocation()
-  const href = `/servers/${server.id}`
+  const section = pathname.match(/^\/servers\/[^/]+(\/[^/]+)$/)?.[1]
+  const destination = serverNavigation(server).find((item) => item.path === section)
+  const href = `/servers/${server.id}${destination?.path ?? ""}`
   const avatar = (
     <span className="relative flex size-4.5 shrink-0">
       <ServerAvatar server={server} className="size-full rounded-[5px]" />
@@ -100,12 +102,13 @@ function ServerLink({ server, selected }: { server: ServerSummaryDto; selected: 
           "absolute -right-[3px] -bottom-[3px] size-2 rounded-full ring-2 ring-(--sidebar-bg)",
           "group-hover/menu-button:ring-(--sidebar-active-bg) group-focus-visible/menu-button:ring-(--sidebar-active-bg) group-data-[active]/menu-button:ring-(--sidebar-active-bg)",
           statusTone(server.state),
+          (server.state === "Crashed" || server.state === "Error") && "rotate-45 rounded-[1px]",
         )}
       />
     </span>
   )
   return (
-    <Sidebar.MenuButton icon={avatar} href={href} active={selected} tooltip={`${server.name} · ${server.state}`} aria-current={pathname === href ? "page" : undefined}>
+    <Sidebar.MenuButton icon={avatar} href={href} aria-description={server.state === "BackingUp" ? "Backing up" : server.state} active={selected} tooltip={`${server.name} · ${server.state}`} aria-current={selected ? "true" : undefined}>
       {server.name}
     </Sidebar.MenuButton>
   )
@@ -153,11 +156,11 @@ function AccountMenu() {
   return (
     <DropdownMenu>
       <DropdownMenu.Trigger render={
-        <button type="button" className="flex h-8.5 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 text-sm font-medium text-kumo-default hover:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:outline-none data-[popup-open]:bg-kumo-tint" />
+        <button type="button" aria-label="Administrator" className="flex h-8.5 min-w-0 flex-1 group-data-[state=collapsed]/sidebar:flex-none cursor-pointer items-center gap-2 rounded-lg px-2 text-sm font-medium text-kumo-default hover:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:outline-none data-[popup-open]:bg-kumo-tint" />
       }>
         <UserCircleIcon size={20} className="shrink-0 text-kumo-subtle" />
-        <span className="truncate">Administrator</span>
-        <SelectorIcon size={16} className="ml-auto shrink-0 text-kumo-subtle" />
+        <span className="truncate group-data-[state=collapsed]/sidebar:hidden">Administrator</span>
+        <SelectorIcon size={16} className="ml-auto shrink-0 text-kumo-subtle group-data-[state=collapsed]/sidebar:hidden" />
       </DropdownMenu.Trigger>
       <DropdownMenu.Content side="top" align="end" className="min-w-52">
         <DropdownMenu.Group>
@@ -222,7 +225,7 @@ function AppSidebar({ servers, serversLoading, currentServer, serverId }: { serv
       <div className="shrink-0 border-t border-kumo-line px-[11px] py-2 transition-[padding] duration-(--sidebar-animation-duration) group-not-data-[state=collapsed]/sidebar:px-3.5">
         <Sidebar.Menu>{systemItems.map((item) => <NavigationLink key={item.path} item={item} href={item.path} />)}</Sidebar.Menu>
       </div>
-      <Sidebar.Footer className="gap-1 px-[11px] group-not-data-[state=collapsed]/sidebar:px-2.5">
+      <Sidebar.Footer className="gap-1 px-[11px] group-not-data-[state=collapsed]/sidebar:px-2.5 group-data-[state=collapsed]/sidebar:h-auto group-data-[state=collapsed]/sidebar:flex-col group-data-[state=collapsed]/sidebar:py-2">
         <Sidebar.Trigger />
         <AccountMenu />
       </Sidebar.Footer>
@@ -230,30 +233,37 @@ function AppSidebar({ servers, serversLoading, currentServer, serverId }: { serv
   )
 }
 
-/** Lifecycle shortcuts for server sub-pages. On phones they collapse to icon buttons so the breadcrumb keeps its room. */
-function ServerHeaderActions({ server, onOverview, compact }: { server: ServerSummaryDto; onOverview: boolean; compact: boolean }) {
+/** Keep the normal stop and restart paths visible on server work pages. */
+function ServerHeaderActions({ server, compact }: { server: ServerSummaryDto; compact: boolean }) {
   const lifecycle = useServerLifecycle(server)
   const pending = lifecycle.pendingAction
-  const restart = () => lifecycle.run("restart")
-  const start = () => lifecycle.run("start")
+  const action = serverLifecycle[server.state]?.action
   return (
-    <div className="flex shrink-0 items-center gap-2">
-      <span className="hidden sm:inline-flex"><StatusBadge state={server.state} /></span>
-      {!onOverview && pending && (compact
-        ? <Button size="sm" shape="square" loading aria-label={pendingLifecycleLabels[pending]} />
-        : <Button size="sm" loading>{pendingLifecycleLabels[pending]}</Button>)}
-      {!onOverview && !pending && server.state === "Running" && (compact
-        ? <Button size="sm" shape="square" icon={RefreshIcon} aria-label="Restart" disabled={lifecycle.busy} onClick={restart} />
-        : <Button size="sm" icon={RefreshIcon} disabled={lifecycle.busy} onClick={restart}>Restart</Button>)}
-      {!onOverview && !pending && serverLifecycle[server.state]?.action === "start" && (compact
-        ? <Button size="sm" shape="square" variant="primary" icon={PlayerPlayIcon} aria-label="Start" disabled={lifecycle.busy} onClick={start} />
-        : <Button size="sm" variant="primary" icon={PlayerPlayIcon} disabled={lifecycle.busy} onClick={start}>Start</Button>)}
-      {!onOverview && <ImmediateStopButton server={server} size="sm" compact={compact} />}
+    <div className="flex shrink-0 items-center gap-2 @max-3xl:col-span-full">
+      <span className="mr-auto"><StatusBadge state={server.state} /></span>
+      {pending ? <Button size="sm" loading>{pendingLifecycleLabels[pending]}</Button> : <>
+        {action && <Button size="sm" variant={action === "start" ? "primary" : "secondary"}
+          icon={action === "start" ? PlayerPlayIcon : PlayerStopIcon} disabled={lifecycle.busy} onClick={() => lifecycle.run(action)}>
+          {serverLifecycle[server.state].label}
+        </Button>}
+        {server.state === "Running" && <Button size="sm" icon={RefreshIcon} disabled={lifecycle.busy} onClick={() => lifecycle.run("restart")}>Restart</Button>}
+      </>}
+      <ImmediateStopButton server={server} size="sm" compact={compact} />
     </div>
   )
 }
 
 function AppHeader({ currentServer, serverId }: { currentServer?: ServerSummaryDto; serverId?: string }) {
+  const headerRef = useRef<HTMLElement>(null)
+  useLayoutEffect(() => {
+    const header = headerRef.current
+    if (!header) return
+    const measure = () => header.parentElement?.style.setProperty("--panel-header-height", `${header.offsetHeight}px`)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(header, { box: "border-box" })
+    return () => observer.disconnect()
+  }, [])
   const { pathname } = useLocation()
   const { isMobile, setOpenMobile } = useSidebar()
   const serverSection = serverId ? serverItems.find((item) => pathname === `/servers/${serverId}${item.path}`) : undefined
@@ -264,13 +274,13 @@ function AppHeader({ currentServer, serverId }: { currentServer?: ServerSummaryD
   const onOverview = Boolean(serverId && pathname === `/servers/${serverId}`)
 
   return (
-    <header className="sticky top-0 z-10 shrink-0 border-b border-kumo-line bg-kumo-canvas/85 backdrop-blur-md">
-      <div className={cn(contentFrame, "flex h-14 items-center gap-3")}>
+    <header ref={headerRef} className="@container sticky top-0 z-10 shrink-0 border-b border-kumo-line bg-kumo-canvas/85 backdrop-blur-md">
+      <div className={cn(contentFrame, "flex min-h-14 items-center gap-3", currentServer && !onOverview && "@max-3xl:grid @max-3xl:gap-y-1 @max-3xl:py-2", isMobile && "@max-3xl:grid-cols-[auto_minmax(0,1fr)]")}>
         {isMobile && <Button variant="ghost" shape="square" size="sm" className="-ml-1" icon={<MenuIcon size={20} />} aria-label="Open navigation" onClick={() => setOpenMobile(true)} />}
         <Breadcrumbs className="min-w-0 flex-1">
           {currentServer && pathname !== `/servers/${currentServer.id}` ? <>
             <Breadcrumbs.Link href={`/servers/${currentServer.id}`} icon={<ServerAvatar server={currentServer} className="size-4 rounded-[4px] ring-0" />}>
-              <span className="max-w-48 truncate">{currentServer.name}</span>
+              <span className="max-w-28 truncate sm:max-w-48">{currentServer.name}</span>
             </Breadcrumbs.Link>
             <Breadcrumbs.Separator />
           </> : currentServer ? <>
@@ -281,7 +291,7 @@ function AppHeader({ currentServer, serverId }: { currentServer?: ServerSummaryD
             {onOverview && currentServer ? currentServer.name : pageName}
           </Breadcrumbs.Current>
         </Breadcrumbs>
-        {currentServer && <ServerHeaderActions server={currentServer} onOverview={onOverview} compact={isMobile} />}
+        {currentServer && !onOverview && <ServerHeaderActions server={currentServer} compact={isMobile} />}
       </div>
     </header>
   )
@@ -298,12 +308,13 @@ export function AppShell() {
   return (
     <LinkProvider component={RouterLink}>
       <Sidebar.Provider defaultOpen={defaultOpen} collapsible="icon" onOpenChange={persistSidebar}>
+        <a href="#main-content" className="sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:not-sr-only focus:rounded-lg focus:bg-kumo-base focus:px-4 focus:py-2 focus:text-kumo-strong">Skip to content</a>
         <MobileSidebarCloser />
         <AppSidebar servers={servers} serversLoading={serversLoading} currentServer={currentServer} serverId={serverId} />
         <div className="flex min-h-svh min-w-0 flex-1 flex-col bg-kumo-canvas">
           <AppHeader currentServer={currentServer} serverId={serverId} />
-          <main className="flex min-w-0 flex-1 flex-col">
-            <Suspense fallback={<PageFallback />}><Outlet /></Suspense>
+          <main id="main-content" tabIndex={-1} className="flex scroll-mt-[var(--panel-header-height)] min-w-0 flex-1 flex-col">
+            <Suspense fallback={<PageFallback />}><Outlet key={serverId} /></Suspense>
           </main>
         </div>
       </Sidebar.Provider>

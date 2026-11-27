@@ -67,10 +67,10 @@ describe("FilesPage mutation availability", () => {
 
     const create = await screen.findByRole("button", { name: "New file" })
     await waitFor(() => {
-      expect(create).toBeDisabled()
+      expect(create).toHaveAttribute("aria-disabled", "true")
       expect(screen.getByText("Files cannot be changed while the server is updating.")).toBeVisible()
-      expect(screen.getByRole("button", { name: "Upload" })).toBeDisabled()
-      expect(screen.getByRole("button", { name: "New folder" })).toBeDisabled()
+      expect(screen.getByRole("button", { name: "Upload" })).toHaveAttribute("aria-disabled", "true")
+      expect(screen.getByRole("button", { name: "New folder" })).toHaveAttribute("aria-disabled", "true")
     })
   })
 

@@ -485,7 +485,7 @@ function ServerListSettings({
               serverName={serverName}
               onChange={(value) => setClassic("motd", value)}
             />
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 @xl/section:grid-cols-2">
               <NumberField
                 id="gate-show-max"
                 label="Displayed maximum players"
@@ -503,7 +503,7 @@ function ServerListSettings({
                 onChange={(value) => setClassic("favicon", value || null)}
               />
             </div>
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 @xl/section:grid-cols-2">
               <BooleanField
                 id="gate-announce-forge"
                 label="Announce Forge compatibility"
@@ -588,7 +588,7 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
           description="Custom artifacts, downloads, and the internal listener."
         >
           <div className="flex flex-col gap-5">
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 @xl/section:grid-cols-2">
               <TextField
                 id="gate-via-bind"
                 label="Internal bind"
@@ -606,7 +606,7 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
                 onChange={(value) => setClassic("viaVersion", value || null)}
               />
             </div>
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 @xl/section:grid-cols-2">
               <TextField
                 id="gate-via-library"
                 label="Library override"
@@ -690,7 +690,7 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
             {classic.bedrockEnabled && (
               <>
                 
-                <div className="grid gap-4 sm:grid-cols-3">
+                <div className="grid gap-4 @3xl/section:grid-cols-3">
                   <TextField
                     id="gate-geyser-listen"
                     label="Geyser listen address"
@@ -744,7 +744,7 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
                       setClassic("bedrockManagedJarUrl", value || null)
                     }
                   />
-                  <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="grid gap-4 @xl/section:grid-cols-2">
                     <TextField
                       id="gate-geyser-data"
                       label="Geyser data directory"
@@ -778,7 +778,7 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
                 </>
               ) : (
                 <>
-                  <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="grid gap-4 @xl/section:grid-cols-2">
                     <TextField
                       id="gate-geyserlite-library"
                       label="Geyserlite library override"
@@ -800,7 +800,7 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
                       }
                     />
                   </div>
-                  <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="grid gap-4 @xl/section:grid-cols-2">
                     <TextField
                       id="gate-geyserlite-mirror"
                       label="Geyserlite mirror"
@@ -887,7 +887,7 @@ function CompatibilitySettings({ gate, form, setClassic }: GateFeatureProps) {
                   label="Floodgate-aware backends"
                   description="Only checked backends receive Floodgate identity. Each must be configured with the same Floodgate key."
                 />
-                <div className="grid gap-2 sm:grid-cols-2">
+                <div className="grid gap-2 @xl/section:grid-cols-2">
                   {gate.routes.map((route) => {
                                         const checked =
                       classic.bedrockBackendFloodgateServerIds.includes(
@@ -951,7 +951,7 @@ function NetworkSettings({ form, setClassic }: GateFeatureProps) {
                 setClassic("failoverOnUnexpectedServerDisconnect", value)
               }
             />
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 @xl/section:grid-cols-2">
               <TextField
                 id="gate-connect-timeout"
                 label="Connection timeout"
@@ -981,7 +981,7 @@ function NetworkSettings({ form, setClassic }: GateFeatureProps) {
       <Section title="Traffic limits" description="Limit connections, logins, and packet traffic.">
           <div className="flex flex-col gap-5">
             
-            <div className="grid gap-4 lg:grid-cols-2">
+            <div className="grid gap-4 @3xl/section:grid-cols-2">
               <QuotaFields
                 prefix="connections"
                 title="Connection quota"
@@ -1015,7 +1015,7 @@ function NetworkSettings({ form, setClassic }: GateFeatureProps) {
                 }
               />
             </div>
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="grid gap-4 @3xl/section:grid-cols-3">
               <TextField
                 id="gate-packet-window"
                 label="Packet window"
@@ -1089,7 +1089,7 @@ function NetworkSettings({ form, setClassic }: GateFeatureProps) {
       >
         <div className="flex flex-col gap-5">
           
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 @xl/section:grid-cols-2">
             <NumberField
               id="gate-compression-threshold"
               label="Compression threshold"
@@ -1346,7 +1346,7 @@ function QuotaFields({
           onChange={onEnabled}
         />
         {enabled && (
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 @3xl/section:grid-cols-3">
             <NumberField
               id={`gate-${prefix}-ops`}
               label="Operations / second"

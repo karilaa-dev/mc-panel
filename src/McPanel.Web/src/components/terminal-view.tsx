@@ -98,5 +98,5 @@ export function TerminalView({ onReady, label = "Server console output" }: { onR
     return () => cancelAnimationFrame(frame)
   }, [resolvedTheme])
 
-  return <div ref={container} className="h-full min-h-80 w-full overflow-hidden bg-kumo-base" role="log" aria-label={label} />
+  return <div ref={container} className="h-full min-h-0 w-full overflow-hidden bg-kumo-base" role="log" aria-label={label} />
 }

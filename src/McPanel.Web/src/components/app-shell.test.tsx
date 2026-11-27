@@ -140,7 +140,9 @@ describe("AppShell", () => {
     await user.click(await header.findByRole("button", { name: "Start" }))
     expect(await header.findByText("Starting…")).toBeVisible()
 
-    await user.click(screen.getByRole("link", { name: "Second console" }))
+    const secondServer = screen.getByRole("link", { name: "Second server" })
+    expect(secondServer).toHaveAttribute("href", "/servers/server-2/console")
+    await user.click(secondServer)
     await waitFor(() => expect(header.getAllByText("Second server")[0]).toBeVisible())
     expect(header.queryByText("Starting…")).not.toBeInTheDocument()
     await user.click(header.getByRole("button", { name: "Start" }))
@@ -153,6 +155,41 @@ describe("AppShell", () => {
     expect(mockedApi.lifecycle).toHaveBeenNthCalledWith(1, "server-1", "start")
     expect(mockedApi.lifecycle).toHaveBeenNthCalledWith(2, "server-2", "start")
     resolveSecond()
+  })
+
+  it("keeps restart pending when returning to Console through Overview", async () => {
+    mockedApi.servers.mockResolvedValue([{
+      id: "server-1", name: "Survival", kind: "Paper", version: "1.21", state: "Running", port: 25565,
+      memoryMb: 2048, playerCount: 0, maxPlayers: 20, cpuPercent: 0, memoryUsedMb: 0, uptimeSeconds: 100,
+      restartRequired: false, startOnBoot: true,
+    }])
+    mockedApi.lifecycle.mockReturnValueOnce(new Promise(() => {}))
+    const user = userEvent.setup()
+    renderShell("/servers/server-1/console")
+    const header = within(screen.getByRole("banner"))
+    await user.click(await header.findByRole("button", { name: "Restart" }))
+    await user.click(screen.getByRole("link", { name: "Overview" }))
+    await screen.findByRole("heading", { name: "Server destination" })
+    await user.click(screen.getByRole("link", { name: "Console" }))
+    expect(await header.findByText("Restarting…")).toBeVisible()
+    expect(header.queryByRole("button", { name: "Restart" })).not.toBeInTheDocument()
+    expect(mockedApi.lifecycle).toHaveBeenCalledTimes(1)
+  })
+
+  it("offers graceful stop and requires confirmation to force-stop a running server", async () => {
+    mockedApi.servers.mockResolvedValue([{
+      id: "server-1", name: "Survival", kind: "Paper", version: "1.21", state: "Running", port: 25565,
+      memoryMb: 2048, playerCount: 0, maxPlayers: 20, cpuPercent: 0, memoryUsedMb: 0, uptimeSeconds: 100,
+      restartRequired: false, startOnBoot: true,
+    }])
+    const user = userEvent.setup()
+    renderShell("/servers/server-1/console")
+    await user.click(await screen.findByRole("button", { name: "Stop immediately" }))
+    const dialog = await screen.findByRole("alertdialog", { name: "Stop Survival immediately?" })
+    expect(mockedApi.kill).not.toHaveBeenCalled()
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }))
+    await user.click(screen.getByRole("button", { name: "Stop" }))
+    await waitFor(() => expect(mockedApi.lifecycle).toHaveBeenCalledWith("server-1", "stop"))
   })
 
   it("keeps immediate stop available in the console header while starting", async () => {
