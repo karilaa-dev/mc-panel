@@ -93,6 +93,7 @@ function ServerLink({ server, selected }: { server: ServerSummaryDto; selected: 
   const section = pathname.match(/^\/servers\/[^/]+(\/[^/]+)$/)?.[1]
   const destination = serverNavigation(server).find((item) => item.path === section)
   const href = `/servers/${server.id}${destination?.path ?? ""}`
+  const stateLabel = server.state === "BackingUp" ? "Backing up" : server.state
   const avatar = (
     <span className="relative flex size-4.5 shrink-0">
       <ServerAvatar server={server} className="size-full rounded-[5px]" />
@@ -108,7 +109,7 @@ function ServerLink({ server, selected }: { server: ServerSummaryDto; selected: 
     </span>
   )
   return (
-    <Sidebar.MenuButton icon={avatar} href={href} aria-description={server.state === "BackingUp" ? "Backing up" : server.state} active={selected} tooltip={`${server.name} · ${server.state}`} aria-current={selected ? "true" : undefined}>
+    <Sidebar.MenuButton icon={avatar} href={href} aria-description={stateLabel} active={selected} tooltip={`${server.name} · ${stateLabel}`} aria-current={selected ? "true" : undefined}>
       {server.name}
     </Sidebar.MenuButton>
   )
@@ -244,7 +245,7 @@ function ServerHeaderActions({ server: summary, compact }: { server: ServerSumma
   const pending = lifecycle.pendingAction
   const action = serverLifecycle[server.state]?.action
   return (
-    <div className="flex shrink-0 items-center gap-2 @max-3xl:col-span-full">
+    <div className="flex min-w-0 flex-wrap items-center gap-2 @max-3xl:col-span-full">
       <span className="mr-auto"><StatusBadge state={server.state} /></span>
       {pending ? <Button size="sm" loading>{pendingLifecycleLabels[pending]}</Button> : <>
         {action && <Button size="sm" variant={action === "start" ? "primary" : "secondary"}
@@ -303,6 +304,7 @@ function AppHeader({ currentServer, serverId }: { currentServer?: ServerSummaryD
 }
 
 export function AppShell() {
+  const mainRef = useRef<HTMLElement>(null)
   const location = useLocation()
   const serverId = location.pathname.match(/^\/servers\/([^/]+)/)?.[1]
   const { data: servers = [], isPending: serversLoading } = useQuery({ queryKey: ["servers"], queryFn: api.servers, refetchInterval: 5_000 })
@@ -313,12 +315,19 @@ export function AppShell() {
   return (
     <LinkProvider component={RouterLink}>
       <Sidebar.Provider defaultOpen={defaultOpen} collapsible="icon" onOpenChange={persistSidebar}>
-        <a href="#main-content" className="sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:not-sr-only focus:rounded-lg focus:bg-kumo-base focus:px-4 focus:py-2 focus:text-kumo-strong">Skip to content</a>
+        <a href="#main-content" className="sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:not-sr-only focus:rounded-lg focus:bg-kumo-base focus:px-4 focus:py-2 focus:text-kumo-strong"
+          onClick={(event) => {
+            if (!mainRef.current) return
+            event.preventDefault()
+            mainRef.current.focus({ preventScroll: true })
+            mainRef.current.scrollIntoView({ block: "start" })
+          }}
+        >Skip to content</a>
         <MobileSidebarCloser />
         <AppSidebar servers={servers} serversLoading={serversLoading} currentServer={currentServer} serverId={serverId} />
         <div className="flex min-h-svh min-w-0 flex-1 flex-col bg-kumo-canvas">
           <AppHeader currentServer={currentServer} serverId={serverId} />
-          <main id="main-content" tabIndex={-1} className="flex scroll-mt-[var(--panel-header-height)] min-w-0 flex-1 flex-col">
+          <main ref={mainRef} id="main-content" tabIndex={-1} className="flex scroll-mt-[var(--panel-header-height)] min-w-0 flex-1 flex-col">
             <Suspense fallback={<PageFallback />}><Outlet key={serverId} /></Suspense>
           </main>
         </div>

@@ -15,6 +15,7 @@ vi.mock("@/lib/api", () => ({
     server: vi.fn(),
     logout: vi.fn(),
     lifecycle: vi.fn(),
+    job: vi.fn(),
     kill: vi.fn(),
   },
 }))
@@ -48,6 +49,7 @@ describe("AppShell", () => {
     mockedApi.server.mockImplementation(async (id) => (await mockedApi.servers()).find((server) => server.id === id)!)
     mockedApi.logout.mockResolvedValue(undefined)
     mockedApi.lifecycle.mockResolvedValue({ id: "job-12345678", type: "Start", state: "Queued", progress: 0 })
+    mockedApi.job.mockImplementation(async (id) => ({ id, type: "Start", state: "Queued", progress: 0 }))
   })
 
   afterEach(() => {

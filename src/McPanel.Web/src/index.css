@@ -96,11 +96,11 @@
 
     thead th:first-child { @apply rounded-tl-xl; }
     thead th:last-child { @apply w-28 rounded-tr-xl; }
-    thead th:nth-child(2) { width: 14%; }
-    thead th:nth-child(3) { width: 21%; }
+    thead th:nth-child(2) { width: 15%; }
+    thead th:nth-child(3) { width: 18%; }
     thead th:nth-child(4) { width: 11%; }
     thead th:nth-child(5) { width: 15%; }
-    thead th:nth-child(6) { width: 8%; }
+    thead th:nth-child(6) { width: 10%; }
     :where(tbody tr + tr) > * { @apply border-t border-kumo-line; }
     .roster-action { text-align: end; }
     .roster-label { display: none; }
@@ -113,17 +113,18 @@
       thead, .roster-wide-label { display: none; }
       tr {
         @apply grid items-center gap-x-3 gap-y-2.5 px-4 py-3;
-        grid-template-columns: minmax(min-content, 1fr) minmax(0, 1.25fr) minmax(5.25rem, 0.9fr);
+        grid-template-columns: minmax(min-content, 1fr) minmax(0, 0.85fr) 1.25rem minmax(5.25rem, 0.9fr);
         grid-template-areas:
-          "identity identity status"
-          "online   memory   uptime"
-          "address  address  action";
+          "identity identity status  status"
+          "online   memory   memory  uptime"
+          "address  address  address action";
       }
 
       tbody tr + tr { @apply border-t border-kumo-line; }
       tr > :is(th, td) { @apply min-w-0 border-0 p-0; }
       .roster-identity { grid-area: identity; }
       .roster-status { grid-area: status; justify-self: end; text-align: end; }
+      .roster-status p { justify-content: end; }
       .roster-address { grid-area: address; }
       .roster-online { grid-area: online; }
       .roster-memory { grid-area: memory; }
@@ -141,6 +142,7 @@
         "address  online memory uptime";
     }
     .server-roster .roster-status { justify-self: start; text-align: start; }
+    .server-roster .roster-status p { justify-content: start; }
   }
 
   .image-preview {
@@ -171,6 +173,10 @@
     &.file-list { table-layout: fixed; }
   }
 
+  @container section (width >= 48rem) {
+    table.record-table tbody + tbody > tr:first-child > td { @apply border-t border-kumo-hairline; }
+  }
+
   @container section (width < 48rem) {
     table.record-table {
       &, tbody { display: block; }
@@ -178,7 +184,7 @@
       tbody tr {
         @apply relative grid grid-cols-2 items-start gap-x-4 gap-y-2 px-4 py-3;
       }
-      &.record-with-status tbody tr { grid-template-columns: minmax(0, 1fr) auto; }
+      tbody tr:has(> [data-field="status"]) { grid-template-columns: minmax(0, 1fr) fit-content(45%); }
       tbody tr + tr, tbody + tbody { @apply border-t border-kumo-hairline; }
       tbody tr > td,
       tbody tr > td:first-child,
@@ -188,7 +194,7 @@
       }
       td[data-label]::before {
         content: attr(data-label);
-        @apply block font-sans text-xs font-normal text-kumo-subtle;
+        @apply mb-1 block font-sans text-xs font-normal text-kumo-subtle;
       }
       td:is([data-field="title"], [data-field="wide"], [data-field="actions"]) {
         grid-column: 1 / -1;

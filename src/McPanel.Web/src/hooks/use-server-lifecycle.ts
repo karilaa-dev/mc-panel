@@ -2,6 +2,7 @@ import { useEffect } from "react"
 import { skipToken, useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import type { ServerState, ServerSummaryDto } from "@/lib/contracts"
+import { isTerminalJob, jobPhase } from "@/lib/job-lifecycle"
 import { toast } from "@/lib/toast"
 
 export type LifecycleAction = "start" | "stop" | "restart" | "update"
@@ -13,7 +14,7 @@ export const pendingLifecycleLabels: Record<LifecycleAction, string> = {
   update: "Updating…",
 }
 
-type LifecycleRequest = { serverId: string; action: LifecycleAction; from: ServerState; expiresAt: number }
+type LifecycleRequest = { serverId: string; action: LifecycleAction; from: ServerState; expiresAt: number; jobId?: string }
 
 const intentKey = (serverId?: string) => ["server-lifecycle-intent", serverId] as const
 
@@ -37,22 +38,33 @@ export function useServerLifecycle(server?: Pick<ServerSummaryDto, "id" | "state
     queryKey: intentKey(serverId), queryFn: skipToken, structuralSharing: false,
   })
   const current = pending?.from === state ? pending : null
+  const jobId = current?.jobId
+  const { data: job } = useQuery({
+    queryKey: ["job", jobId],
+    queryFn: jobId ? () => api.job(jobId) : skipToken,
+    staleTime: 0,
+    refetchInterval: (query) => jobId && !isTerminalJob(query.state.data?.state) ? 2_000 : false,
+  })
+  const unsuccessful = jobPhase(job?.state) === "unsuccessful"
 
   useEffect(() => {
     if (!pending) return
     const remaining = pending.expiresAt - Date.now()
-    if (state !== pending.from || remaining <= 0) {
+    if (state !== pending.from || unsuccessful || remaining <= 0) {
       clearIntent(queryClient, pending)
       return
     }
     const timeout = setTimeout(() => clearIntent(queryClient, pending), remaining)
     return () => clearTimeout(timeout)
-  }, [pending, queryClient, state])
+  }, [pending, queryClient, state, unsuccessful])
 
   const mutation = useMutation({
     mutationKey,
     mutationFn: ({ serverId, action }: LifecycleRequest) => api.lifecycle(serverId, action),
-    onSuccess: (job, { serverId }) => {
+    onSuccess: (job, request) => {
+      const { serverId } = request
+      queryClient.setQueryData<LifecycleRequest | null>(intentKey(serverId), (latest) =>
+        latest === request ? { ...request, jobId: job.id } : latest)
       toast.message("Operation queued", { description: job.message ?? `Operation ${job.id.slice(0, 8)}` })
       void queryClient.invalidateQueries({ queryKey: ["servers"] })
       void queryClient.invalidateQueries({ queryKey: ["server", serverId] })

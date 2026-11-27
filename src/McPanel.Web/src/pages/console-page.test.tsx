@@ -187,7 +187,7 @@ describe("ConsolePage command availability", () => {
     expect(await screen.findByText("Gate output")).toBeVisible()
     expect(screen.getByRole("log", { name: "Gate proxy console output" })).toBeVisible()
     expect(screen.queryByRole("textbox", { name: "Console command" })).not.toBeInTheDocument()
-    expect(screen.getByText("Live, durable Gate logs with reconnect recovery.")).toBeVisible()
+    expect(screen.getByRole("region", { name: "Gate output" })).toBeVisible()
   })
 
   it("fetches and displays a line emitted during the initial handshake gap exactly once", async () => {

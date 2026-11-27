@@ -65,7 +65,7 @@ export function ActivityPage() {
     </section>
     <Section title="Operations" description="Track progress and review completed or failed tasks." flush>
       <QueryFeedback query={jobs} />
-      {jobs.isLoading ? <TableSkeleton /> : jobs.data?.length ? <Table className="record-table record-with-status">
+      {jobs.isLoading ? <TableSkeleton /> : jobs.data?.length ? <Table className="record-table">
         <Table.Header><Table.Row><th scope="col">Operation</th><th scope="col">Outcome</th><th scope="col">Details</th><th scope="col"><span className="sr-only">Actions</span></th></Table.Row></Table.Header>
         <Table.Body>{jobs.data.map((job) => <Table.Row key={job.id}>
           <Table.Cell data-field="title" className="min-w-44">
@@ -75,15 +75,13 @@ export function ActivityPage() {
             </div>
           </Table.Cell>
           <Table.Cell data-field="status" className="min-w-36">
-            <div className="flex flex-col items-start gap-2">
-              <JobStateBadge job={job} />
-              {job.state === "Running" && <ProgressBar label="Progress" value={job.progress} className="w-32 max-w-full" />}
-            </div>
+            <JobStateBadge job={job} />
           </Table.Cell>
           <Table.Cell data-label="Details" data-field="wide" className="max-w-md whitespace-normal">
             {job.message && <p className="text-sm">{job.message}</p>}
             {job.error && <p className="text-sm text-kumo-danger [overflow-wrap:anywhere]">{job.error}</p>}
-            {!job.message && !job.error && <span className="text-sm text-kumo-subtle">—</span>}
+            {job.state === "Running" ? <ProgressBar label="Progress" value={job.progress} className="max-w-64 not-first:mt-2" />
+              : !job.message && !job.error && <span className="text-sm text-kumo-subtle">—</span>}
           </Table.Cell>
           <Table.Cell data-field="actions" className="text-right"><div className="flex flex-wrap justify-end gap-1.5">
             {job.serverId && <LinkButton size="sm" variant="ghost" icon={Terminal2Icon} href={`/servers/${job.serverId}/console`}>Console</LinkButton>}

@@ -260,11 +260,11 @@ function ConsoleSession({ serverId }: { serverId: string }) {
   return (
     <Page
       title="Console"
-      description={isGate ? "Live, durable Gate logs with reconnect recovery." : "Follow server output and send Minecraft commands."}
+      description={isGate ? "Follow Gate logs across reconnects. Warnings and errors are highlighted." : "Send Minecraft commands and follow logs across reconnects. Warnings and errors are highlighted."}
     >
       <Section
-        title={<>{isGate ? "Gate output" : "Server output"}<Badge variant={connectionPhase === "live" ? "success" : "warning"} appearance="dot">{consolePhaseLabels[connectionPhase]}</Badge></>}
-        description="Logs resume after reconnecting. Warnings and errors are highlighted."
+        title={isGate ? "Gate output" : "Server output"}
+        actions={<Badge variant={connectionPhase === "live" ? "success" : "warning"} appearance="dot">{consolePhaseLabels[connectionPhase]}</Badge>}
         contentClassName="gap-3"
       >
         <div className="flex flex-wrap items-center gap-2">
@@ -612,7 +612,7 @@ export function PlayersPage() {
       {manageHint && !server.isLoading && <Banner variant="secondary" icon={<InfoCircleFilledIcon />} title="Player lists are read-only right now" description={manageHint} />}
       <div role="tabpanel" aria-label={activeLabel}>
         {tab === "players" && <Section title="Known players" description="List actions work while the server is running, stopped, or crashed. Kicking requires a running server." flush>
-          {players.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-10" />)}</div> : data.length ? <Table className="record-table record-with-status">
+          {players.isLoading ? <div className="flex flex-col gap-3 p-4">{Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-10" />)}</div> : data.length ? <Table className="record-table">
             <Table.Header><Table.Row><th scope="col" className="w-1/3">Player</th><th scope="col" className="w-1/6">Status</th><th scope="col">Access</th><th scope="col"><span className="sr-only">Actions</span></th></Table.Row></Table.Header>
             <Table.Body>{data.map((player) => <Table.Row key={player.uuid ?? player.name}>
               <Table.Cell data-field="title"><div className="flex min-w-0 flex-col gap-0.5"><span className="font-medium">{player.name}</span>{player.uuid && <span className="font-mono text-xs text-kumo-subtle [overflow-wrap:anywhere]">{player.uuid}</span>}</div></Table.Cell>
