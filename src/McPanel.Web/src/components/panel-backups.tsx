@@ -49,7 +49,7 @@ export function PanelBackups() {
       {recovery.data.points.length === 0
         ? <p className="text-sm text-kumo-subtle">No panel backups yet. Create one before moving to a new machine.</p>
         : <ul className="flex flex-col divide-y divide-kumo-hairline rounded-lg ring ring-kumo-hairline">
-          {recovery.data.points.map((point) => <li key={point.id} className="flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+          {recovery.data.points.map((point) => <li key={point.id} className="flex flex-col gap-3 px-3 py-3 @md/section:flex-row @md/section:items-center @md/section:justify-between">
             <div className="flex min-w-0 flex-col gap-1.5">
               <time dateTime={point.createdAt} className="text-sm font-medium text-kumo-default">{new Date(point.createdAt).toLocaleString()}</time>
               <div className="flex flex-wrap gap-1.5">
@@ -58,7 +58,7 @@ export function PanelBackups() {
               </div>
               {point.error && <p className="text-sm text-kumo-danger [overflow-wrap:anywhere]">Remote copy failed: {point.error}</p>}
             </div>
-            <LinkButton className="self-start sm:self-auto" size="sm" variant="secondary" icon={DownloadIcon} href={api.recoveryDownloadUrl(point.id)} download>Download</LinkButton>
+            <LinkButton className="self-start @md/section:self-auto" size="sm" variant="secondary" icon={DownloadIcon} href={api.recoveryDownloadUrl(point.id)} download>Download</LinkButton>
           </li>)}
         </ul>}
     </div>}

@@ -1,4 +1,3 @@
-import { Fragment } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Badge, Button, Table, cn } from "@cloudflare/kumo"
 import { CircleCheckFilledIcon, RefreshIcon } from "@/components/icons"
@@ -42,26 +41,26 @@ export function GateBackendChecks({ serverId, form }: { serverId: string; form: 
         : checks.isPending ? <InlineLoading>Checking backend settings…</InlineLoading>
           : checks.isError ? <ErrorBanner title="Backend checks unavailable" description={checks.error.message} onRetry={() => void checks.refetch()} />
             : visibleChecks.length > 0 ? <>
-              <Table aria-label="Backend mismatches">
-                <Table.Header><Table.Row><Table.Head>Backend</Table.Head><Table.Head>Setting and fix</Table.Head><Table.Head>Current</Table.Head><Table.Head>Expected</Table.Head></Table.Row></Table.Header>
-                <Table.Body>{visibleChecks.map((check) => {
-                  const backendCell = <Table.Cell rowSpan={Math.max(check.settings.length, 1)} className="max-w-40 align-top whitespace-normal">
+              <Table className="record-table" aria-label="Backend mismatches">
+                <Table.Header><Table.Row><th scope="col">Backend</th><th scope="col">Setting and fix</th><th scope="col">Current</th><th scope="col">Expected</th></Table.Row></Table.Header>
+                {visibleChecks.map((check) => {
+                  const backendCell = <Table.Cell data-field="title" rowSpan={Math.max(check.settings.length, 1)} className="max-w-40 align-top whitespace-normal">
                     <span className="font-medium">{check.serverName}</span>
                     <div className="mt-1"><Badge variant={check.problems.length ? "error" : "warning"}>{check.problems.length ? "Needs changes" : "Review required"}</Badge></div>
                   </Table.Cell>
-                  return <Fragment key={`${check.backendKind}-${check.serverId}`}>
+                  return <Table.Body key={`${check.backendKind}-${check.serverId}`}>
                     {check.settings.length ? check.settings.map((setting, index) => <Table.Row key={`${setting.file}-${setting.setting}`}>
                       {index === 0 && backendCell}
-                      <Table.Cell className={cn("max-w-96 min-w-48 align-top whitespace-normal", index > 0 && "pl-3!")}>
+                      <Table.Cell data-field="wide" className={cn("max-w-96 min-w-48 align-top whitespace-normal", index > 0 && "@min-3xl/section:pl-3!")}>
                         <code className="text-sm break-words">{setting.setting}</code>
-                        <span className="ml-2 text-xs break-words text-kumo-subtle">{setting.file}</span>
+                        <span className="mt-0.5 block text-xs break-words text-kumo-subtle">{setting.file}</span>
                         <p className="mt-0.5 text-sm text-kumo-subtle">{setting.message}</p>
                       </Table.Cell>
-                      <Table.Cell className="max-w-40 align-top font-mono text-xs break-words whitespace-normal">{setting.currentValue}</Table.Cell>
-                      <Table.Cell className="max-w-40 align-top font-mono text-xs break-words whitespace-normal">{setting.expectedValue}</Table.Cell>
-                    </Table.Row>) : <Table.Row>{backendCell}<Table.Cell colSpan={3} className="whitespace-normal">{[...check.problems, ...check.warnings].map((message) => <p key={message} className="text-sm">{message}</p>)}</Table.Cell></Table.Row>}
-                  </Fragment>
-                })}</Table.Body>
+                      <Table.Cell data-label="Current" className="max-w-40 align-top font-mono text-xs break-words whitespace-normal">{setting.currentValue}</Table.Cell>
+                      <Table.Cell data-label="Expected" className="max-w-40 align-top font-mono text-xs break-words whitespace-normal">{setting.expectedValue}</Table.Cell>
+                    </Table.Row>) : <Table.Row>{backendCell}<Table.Cell data-field="wide" colSpan={3} className="whitespace-normal">{[...check.problems, ...check.warnings].map((message) => <p key={message} className="text-sm">{message}</p>)}</Table.Cell></Table.Row>}
+                  </Table.Body>
+                })}
               </Table>
               {matchingCount > 0 && <p className="border-t border-kumo-hairline px-4 py-3 text-sm text-kumo-subtle">{matchingCount} other {matchingCount === 1 ? "backend has" : "backends have"} no mismatches.</p>}
             </>

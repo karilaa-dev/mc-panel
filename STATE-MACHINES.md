@@ -29,7 +29,7 @@ The worker claims and terminal updates are conditional SQL writes. Keep decision
 | Reconciliation and repair | The persistent runtime supplies process observations. Regular reconciliation preserves an in-progress backup or update when the process is running, stopped, or absent. A reported crash still takes precedence. A recovery-required record carries a reason and blocks changes. Successful journal repair clears the flag. |
 | Restart required | Changes to live configuration can set this flag alongside Running. A successful launch clears it. |
 | Editing | Files, icons, properties, mod installation and player-list actions check that the process agrees with Running, Stopped or Crashed. Inventory writes and backups have narrower eligibility. Restore requires a stopped server. |
-| Browser request | Idle → submitting → awaiting observation if HTTP finishes first, or awaiting response if the observed state changes first. A matching error or display timeout releases the pending label. The request belongs to its server ID. |
+| Browser request | Idle → submitting → awaiting observation if HTTP finishes first, or awaiting response if the observed state changes first. A matching request error, unsuccessful job, or display timeout releases the pending label. The request belongs to its server ID. |
 
 Sources include [server transitions](src/McPanel.Api/Services/ServerLifecycle.cs), [supervision](src/McPanel.Api/Services/ProcessSupervisor.cs), [runtime](src/McPanel.Api/Services/PersistentRuntime.cs), [UI controls](src/McPanel.Web/src/lib/server-lifecycle.ts) and [request tracking](src/McPanel.Web/src/hooks/use-server-lifecycle.ts).
 

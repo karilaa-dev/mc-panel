@@ -8,10 +8,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { z } from "zod"
 import {
-  Badge, Banner, Button, Checkbox, ClipboardText, CommandPalette, Input, InputArea, InputGroup, Label, LayerCard,
+  Badge, Banner, Button, Checkbox, ClipboardText, CommandPalette, Input, InputArea, InputGroup, Label,
   LinkButton, Select, Switch, Tabs, cn,
 } from "@cloudflare/kumo"
-import { AlertCircleFilledIcon, AlertTriangleFilledIcon, ArrowRightIcon, CheckIcon, CircleCheckFilledIcon, CpuIcon, CubeIcon, DatabaseIcon, EyeIcon, EyeOffIcon, GaugeIcon, InfoCircleFilledIcon, MemoryIcon, PlayerPlayIcon, PlayerStopIcon, PlusIcon, RefreshIcon, SearchIcon, ShareIcon, TrashIcon, UsersIcon } from "@/components/icons"
+import { AlertCircleFilledIcon, AlertTriangleFilledIcon, ArrowRightIcon, CheckIcon, CircleCheckFilledIcon, CpuIcon, CubeIcon, DatabaseIcon, EyeIcon, EyeOffIcon, HistoryIcon, InfoCircleFilledIcon, MemoryIcon, PlayerPlayIcon, PlayerStopIcon, PlusIcon, RefreshIcon, SearchIcon, Terminal2Icon, ShareIcon, TrashIcon, UsersIcon } from "@/components/icons"
 import { ApiError, api } from "@/lib/api"
 import { createClientRequestId } from "@/lib/client-request-id"
 import { recommendedJavaMajor } from "@/lib/java-version"
@@ -47,30 +47,43 @@ const duration = (seconds: number) => seconds < 60 ? `${seconds}s` : seconds < 3
 const gib = (mb: number) => `${(mb / 1024).toFixed(1)} GiB`
 const kindDescription = (server: Pick<ServerSummaryDto, "kind" | "version">) => server.kind === "Gate" ? `Gate Proxy · ${server.version}` : `${serverKindLabel(server.kind)} · Minecraft ${server.version}`
 
-function ServerCard({ server }: { server: ServerSummaryDto }) {
+function needsAttention(server: ServerSummaryDto) {
+  return server.state === "Crashed" || server.state === "Error" || server.restartRequired
+}
+
+function ServerRow({ server }: { server: ServerSummaryDto }) {
   const href = `/servers/${server.id}`
   return (
-    <LayerCard className="min-w-0">
-      <LayerCard.Secondary className="items-start gap-3 py-4 font-normal">
-        <ServerAvatar server={server} className="size-10" />
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <Link to={href} className="truncate text-base font-semibold text-kumo-default hover:underline focus-visible:underline focus-visible:outline-none" title={server.name}>{server.name}</Link>
-          <span className="truncate text-sm text-kumo-subtle">{kindDescription(server)}</span>
+    <tr>
+      <th scope="row" className="roster-identity font-normal">
+        <div className="flex min-w-0 items-center gap-3">
+          <ServerAvatar server={server} className="size-9" />
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-kumo-strong [overflow-wrap:anywhere]">
+              <Link to={href} className="rounded-xs hover:underline focus-visible:outline-2 focus-visible:outline-kumo-brand">{server.name}</Link>
+            </h3>
+            <p className="text-sm text-kumo-subtle [overflow-wrap:anywhere]">{kindDescription(server)}</p>
+          </div>
         </div>
+      </th>
+      <td className="roster-status">
         <StatusBadge state={server.state} />
-      </LayerCard.Secondary>
-      <LayerCard.Primary className="gap-4 p-4">
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm tabular-nums">
-          <div className="flex min-w-0 flex-col gap-0.5"><dt className="text-kumo-subtle">{server.kind === "Gate" ? "Connections" : "Players"}</dt><dd className="font-medium">{server.kind === "Gate" ? server.playerCount : `${server.playerCount} / ${server.maxPlayers}`}</dd></div>
-          <div className="flex min-w-0 flex-col gap-0.5"><dt className="text-kumo-subtle">Memory</dt><dd className="font-medium">{server.memoryUsedMb.toFixed(0)} / {server.memoryMb} MiB</dd></div>
-          <div className="flex min-w-0 flex-col gap-0.5"><dt className="text-kumo-subtle">Address</dt><dd className="truncate font-mono text-xs" title={server.resolvedConnectionAddress ?? undefined}>{server.resolvedConnectionAddress ?? "Unavailable"}</dd></div>
-          <div className="flex min-w-0 flex-col gap-0.5"><dt className="text-kumo-subtle">Uptime</dt><dd className="font-medium">{server.state === "Running" ? duration(server.uptimeSeconds) : "—"}</dd></div>
-        </dl>
-        <div className="-mx-1 -mb-1 flex justify-end">
-          <LinkButton href={href} size="sm" variant="ghost">Manage<ArrowRightIcon size={16} /></LinkButton>
-        </div>
-      </LayerCard.Primary>
-    </LayerCard>
+        {server.restartRequired && <p className="mt-1 flex items-center gap-1.5 text-xs font-medium text-kumo-warning"><RefreshIcon size={14} className="shrink-0" aria-hidden="true" />Restart required</p>}
+      </td>
+      <td className="roster-address">
+        <span className="sr-only">Join address </span>
+        <span className="select-all font-mono text-[0.9em] text-kumo-subtle [overflow-wrap:anywhere]">{server.resolvedConnectionAddress ?? "Unavailable"}</span>
+      </td>
+      <td className="roster-online">
+        <span className="roster-label">{server.kind === "Gate" ? "Connections" : "Players"}</span>
+        {server.kind === "Gate" ? <>{server.playerCount}<span className="roster-wide-label"> connections</span></> : `${server.playerCount} / ${server.maxPlayers}`}
+      </td>
+      <td className="roster-memory"><span className="roster-label">Memory</span>{server.memoryUsedMb.toFixed(0)} / {server.memoryMb} MiB</td>
+      <td className="roster-uptime"><span className="roster-label">Uptime</span>{server.state === "Running" ? duration(server.uptimeSeconds) : "—"}</td>
+      <td className="roster-action">
+        <LinkButton href={`${href}/console`} size="sm" variant="secondary" icon={Terminal2Icon} aria-label={`Open console for ${server.name}`}>Console</LinkButton>
+      </td>
+    </tr>
   )
 }
 
@@ -80,29 +93,43 @@ export function DashboardPage() {
   const { data: servers, isLoading: serversLoading } = serversQuery
   const { data: host, isLoading: hostLoading } = hostQuery
   const running = servers?.filter((server) => server.state === "Running").length ?? 0
-  const grid = "grid grid-cols-[repeat(auto-fill,minmax(min(100%,20rem),1fr))] gap-4"
+  const [attentionOnly, setAttentionOnly] = useState(false)
+  const attention = servers?.filter(needsAttention) ?? []
+  const visibleServers = attentionOnly ? attention : servers
 
-  return <Page title="Dashboard" description="Host health and every Minecraft server at a glance." actions={<LinkButton href="/create" variant="primary" icon={PlusIcon}>Create server</LinkButton>}>
-    <section aria-labelledby="servers-heading" className="flex flex-col gap-3">
-      <div className="flex items-baseline justify-between gap-3">
-        <h2 id="servers-heading" className="text-lg font-semibold text-kumo-strong">Servers</h2>
-        {Boolean(servers?.length) && <span className="text-sm text-kumo-subtle">{running} of {servers!.length} running</span>}
+  return <Page title="Dashboard" actions={servers?.length === 0 ? undefined : <LinkButton href="/create" variant="primary" icon={PlusIcon}>Create server</LinkButton>}>
+    <section aria-labelledby="servers-heading" className="@container flex flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-baseline gap-x-3">
+          <h2 id="servers-heading" className="text-lg font-semibold text-kumo-strong">Servers</h2>
+          {servers && servers.length > 0 && <span className="text-sm text-kumo-subtle">{running} of {servers.length} running</span>}
+        </div>
+        {(attention.length > 0 || attentionOnly) && <Button size="sm" variant={attentionOnly ? "primary" : "secondary"} icon={AlertTriangleFilledIcon} aria-pressed={attentionOnly} onClick={() => setAttentionOnly(!attentionOnly)}>Needs attention ({attention.length})</Button>}
       </div>
       <QueryFeedback query={serversQuery} />
       {serversQuery.isError && !servers ? null
-        : serversLoading ? <div className={grid}>{Array.from({ length: 3 }, (_, index) => <SectionSkeleton key={index} rows={3} />)}</div>
-          : servers?.length ? <div className={grid}>{servers.map((server) => <ServerCard key={server.id} server={server} />)}</div>
-            : <EmptyState icon={<CubeIcon />} title="No servers yet" description="Create a Vanilla, Paper, Fabric, Forge, or NeoForge server, or a Gate proxy, without leaving the panel." action={<LinkButton href="/create" variant="primary" icon={PlusIcon}>Create your first server</LinkButton>} />}
+        : serversLoading ? <SectionSkeleton rows={3} header={false} />
+          : visibleServers?.length ? <div className="rounded-xl bg-kumo-base ring ring-kumo-line">
+            <table aria-labelledby="servers-heading" className="server-roster">
+              <thead><tr>
+                <th scope="col">Server</th><th scope="col">Status</th><th scope="col">Join address</th>
+                <th scope="col">Online</th><th scope="col">Memory</th><th scope="col">Uptime</th>
+                <th scope="col"><span className="sr-only">Actions</span></th>
+              </tr></thead>
+              <tbody>{visibleServers.map((server) => <ServerRow key={server.id} server={server} />)}</tbody>
+            </table>
+          </div>
+            : attentionOnly ? <EmptyState title="No servers need attention" action={<Button size="sm" onClick={() => setAttentionOnly(false)}>Show all servers</Button>} />
+            : <EmptyState icon={<CubeIcon />} title="No servers yet" description="Create a Minecraft server or a Gate proxy to get started." action={<LinkButton href="/create" variant="primary" icon={PlusIcon}>Create your first server</LinkButton>} />}
     </section>
     <section aria-labelledby="host-heading" className="flex flex-col gap-3">
       <h2 id="host-heading" className="text-lg font-semibold text-kumo-strong">Host</h2>
       <div className="flex flex-col gap-4">
-        <div aria-label="Host metrics" role="group" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {hostQuery.isError && !host ? <div className="col-span-full"><QueryFeedback query={hostQuery} /></div> : hostLoading ? Array.from({ length: 4 }, (_, index) => <Skeleton key={index} className="h-[7.5rem]" />) : <>
+        <div aria-label="Host metrics" role="group" className="grid gap-3 @2xl:grid-cols-3">
+          {hostQuery.isError && !host ? <div className="col-span-full"><QueryFeedback query={hostQuery} /></div> : hostLoading ? Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-[7.5rem]" />) : <>
             <StatTile label="Host CPU" value={`${host?.cpuPercent.toFixed(0) ?? 0}%`} icon={CpuIcon} progress={host?.cpuPercent ?? 0} />
             <StatTile label="Host memory" value={usage(host?.memoryUsedBytes ?? 0, host?.memoryTotalBytes ?? 0)} icon={MemoryIcon} progress={(host?.memoryUsedBytes ?? 0) / Math.max(host?.memoryTotalBytes ?? 1, 1) * 100} />
             <StatTile label="Panel disk" value={usage(host?.diskUsedBytes ?? 0, host?.diskTotalBytes ?? 0)} icon={DatabaseIcon} progress={(host?.diskUsedBytes ?? 0) / Math.max(host?.diskTotalBytes ?? 1, 1) * 100} />
-            <StatTile label="Running servers" value={`${running} / ${servers?.length ?? 0}`} icon={CubeIcon} />
           </>}
         </div>
         {host && <QueryFeedback query={hostQuery} />}
@@ -348,8 +375,8 @@ export function CreateServerPage() {
           {step === "type" && <FormStack>
             <ChoiceField label="Server category">{(labelId) => <ChoiceCards aria-labelledby={labelId} value={category} options={categoryOptions} onValueChange={(next) => { setCategory(next); if (next === "Regular") setSource("Official") }} />}</ChoiceField>
             {category === "Regular" ? <>
-              <ChoiceField label="Installation source">{(labelId) => <ChoiceCards aria-labelledby={labelId} className="sm:grid-cols-3" value={source} options={sourceOptions} onValueChange={setSource} />}</ChoiceField>
-              {source === "Official" && <ChoiceField label="Server core">{(labelId) => <ChoiceCards aria-labelledby={labelId} className="sm:grid-cols-3" value={kind as (typeof coreOptions)[number]["value"]} options={coreOptions} onValueChange={setKind} />}</ChoiceField>}
+              <ChoiceField label="Installation source">{(labelId) => <ChoiceCards aria-labelledby={labelId} className="@2xl/section:grid-cols-3" value={source} options={sourceOptions} onValueChange={setSource} />}</ChoiceField>
+              {source === "Official" && <ChoiceField label="Server core">{(labelId) => <ChoiceCards aria-labelledby={labelId} className="@2xl/section:grid-cols-3" value={kind as (typeof coreOptions)[number]["value"]} options={coreOptions} onValueChange={setKind} />}</ChoiceField>}
             </> : <Banner icon={<InfoCircleFilledIcon />} title="Minekube Gate" description="Gate uses a separate two-step setup and keeps its files and forwarding secrets private." />}
           </FormStack>}
 
@@ -385,7 +412,7 @@ export function CreateServerPage() {
               ? <ErrorBanner title="Catalog unavailable" description="Check the panel’s network connection and retry." />
               : <Select label="Minecraft version" className="w-full" loading={catalogLoading} placeholder="Choose a release" items={versions.map((item) => ({ value: item, label: item }))} value={version} onValueChange={(value) => value && setSelectedVersion(value as string)} />}
             {serverKind === "Paper" && visibleBuilds.length > 0 && <Select label="Paper build" className="w-full" items={visibleBuilds.map((item) => ({ value: item.id, label: `${item.id} · ${item.channel}${item.experimental ? " (experimental)" : ""}` }))} value={build} onValueChange={(value) => value && setSelectedBuild(value as string)} />}
-            {serverKind === "Fabric" && <div className="grid gap-5 sm:grid-cols-2">
+            {serverKind === "Fabric" && <div className="grid gap-5 @xl/section:grid-cols-2">
               <Select label="Fabric loader" className="w-full" placeholder="Choose loader" items={fabricLoaders.map((item) => ({ value: item.version, label: `${item.version}${item.stable ? "" : " (unstable)"}` }))} value={loaderVersion} onValueChange={(value) => value && setSelectedLoader(value as string)} />
               <Select label="Fabric installer" className="w-full" placeholder="Choose installer" items={installers.map((item) => ({ value: item.version, label: `${item.version}${item.stable ? "" : " (unstable)"}` }))} value={installerVersion} onValueChange={(value) => value && setSelectedInstaller(value as string)} />
             </div>}
@@ -402,7 +429,7 @@ export function CreateServerPage() {
           </FormStack>}
 
           {step === "confirm" && <form id="create-form" onSubmit={handleSubmit(submit)} noValidate className="flex flex-col gap-5">
-            <div className="grid gap-5 sm:grid-cols-[minmax(0,1fr)_10rem]">
+            <div className="grid gap-5 @xl/section:grid-cols-[minmax(0,1fr)_10rem]">
               <Input label="Server name" error={errors.name?.message} {...register("name")} />
               <Input label="Game port" type="number" error={errors.port?.message} {...register("port", { valueAsNumber: true })} />
             </div>
@@ -496,14 +523,15 @@ export function ServerCreationPage() {
 }
 
 function OverviewSkeleton() {
-  return <Page title="Server overview"><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{Array.from({ length: 4 }, (_, index) => <Skeleton key={index} className="h-[7.5rem]" />)}</div><SectionSkeleton rows={2} /><SectionSkeleton rows={2} /></Page>
+  return <Page title="Server overview"><div className="grid grid-cols-2 gap-3 xl:grid-cols-4">{Array.from({ length: 4 }, (_, index) => <Skeleton key={index} className="h-[7.5rem]" />)}</div><SectionSkeleton rows={2} /><SectionSkeleton rows={2} /></Page>
 }
 
 export function ServerOverviewPage() {
   const { serverId = "" } = useParams()
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteError, setDeleteError] = useState<string>()
-  const { data: server, isLoading } = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
+  const serverQuery = useQuery({ queryKey: ["server", serverId], queryFn: () => api.server(serverId), refetchInterval: 3_000 })
+  const { data: server, isPending } = serverQuery
   const lifecycle = useServerLifecycle(server)
   const remove = useMutation({
     mutationFn: () => api.deleteServer(serverId),
@@ -517,7 +545,8 @@ export function ServerOverviewPage() {
       setDeleteError(error.message)
     },
   })
-  if (isLoading || !server) return <OverviewSkeleton />
+  if (isPending) return <OverviewSkeleton />
+  if (!server) return <Page title="Server overview"><QueryFeedback query={serverQuery} title="Could not load server" /><Link to="/" className="w-fit text-sm underline">Back to dashboard</Link></Page>
   const pending = lifecycle.pendingAction
   const stopped = server.state === "Stopped"
   const running = server.state === "Running"
@@ -527,18 +556,13 @@ export function ServerOverviewPage() {
   const primaryLabel = pending ? pendingLifecycleLabels[pending] : serverLifecycle[server.state]?.label ?? server.state
 
   return <Page
-    title={<span className="flex min-w-0 items-center gap-3"><ServerAvatar server={server} className="size-10" /><span className="min-w-0">{server.name}</span></span>}
-    description={kindDescription(server)}
+    leading={<ServerAvatar server={server} className="size-10" />}
+    title={server.name}
+    description={<span className="flex flex-wrap items-center gap-x-4 gap-y-1.5"><span>{kindDescription(server)}</span><StatusBadge state={server.state} /></span>}
     actions={<>
-      {server.kind === "Gate"
-        ? <LinkButton href={`/servers/${server.id}/gate`} variant="ghost">Gate settings</LinkButton>
-        : server.kind === "CustomJar"
-          ? <LinkButton href={`/servers/${server.id}/runtime`} variant="ghost">Change server core</LinkButton>
-          : <HintButton disabled={lifecycle.busy || !stopped} hint={stopped ? undefined : "Updates require a stopped server."} onClick={() => lifecycle.run("update")}>Update</HintButton>}
-      <HintButton icon={RefreshIcon} disabled={lifecycle.busy || !running} hint={running ? undefined : "Restart is available while the server is running."} onClick={() => lifecycle.run("restart")}>Restart</HintButton>
       <HintButton
         aria-label={primaryLabel}
-        variant={running && !pending ? "secondary" : "primary"}
+        variant="primary"
         icon={pending || transitional ? undefined : running ? PlayerStopIcon : lifecycleAction === "start" ? PlayerPlayIcon : undefined}
         loading={Boolean(pending) || transitional}
         disabled={lifecycle.busy || !lifecycleAction}
@@ -547,12 +571,19 @@ export function ServerOverviewPage() {
       >
         {primaryLabel}
       </HintButton>
+      {server.kind === "Gate"
+        ? <LinkButton href={`/servers/${server.id}/gate`} variant="ghost">Gate settings</LinkButton>
+        : server.kind === "CustomJar"
+          ? <LinkButton href={`/servers/${server.id}/runtime`} variant="ghost">Change server core</LinkButton>
+          : <HintButton disabled={lifecycle.busy || !stopped} hint={stopped ? undefined : "Updates require a stopped server."} onClick={() => lifecycle.run("update")}>Update</HintButton>}
+      <HintButton icon={RefreshIcon} disabled={lifecycle.busy || !running} hint={running ? undefined : "Restart is available while the server is running."} onClick={() => lifecycle.run("restart")}>Restart</HintButton>
       <ImmediateStopButton server={server} />
     </>}
   >
+    <QueryFeedback query={serverQuery} />
     {server.restartRequired && <Banner variant="alert" icon={<AlertTriangleFilledIcon />} title="Restart required" description="Saved settings take effect after the next graceful restart." />}
-    <section aria-label="Server metrics" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      <StatTile label="State" value={server.state === "BackingUp" ? "Backing up" : server.state} icon={GaugeIcon} detail={server.state === "Running" ? `Up ${duration(server.uptimeSeconds)}` : undefined} />
+    <section aria-label="Server metrics" className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+      <StatTile label="Uptime" value={running ? duration(server.uptimeSeconds) : "—"} icon={HistoryIcon} />
       <StatTile label={server.kind === "Gate" ? "Connections" : "Players"} value={server.kind === "Gate" ? String(server.playerCount) : `${server.playerCount} / ${server.maxPlayers}`} icon={UsersIcon} />
       <StatTile label="CPU" value={`${server.cpuPercent.toFixed(0)}%`} icon={CpuIcon} progress={server.cpuPercent} />
       <StatTile label="Memory" value={`${server.memoryUsedMb.toFixed(0)} / ${server.memoryMb} MiB`} icon={MemoryIcon} progress={server.memoryUsedMb / Math.max(server.memoryMb, 1) * 100} />
@@ -560,19 +591,19 @@ export function ServerOverviewPage() {
     <div className="grid gap-x-4 gap-y-6 lg:grid-cols-2">
       <Section
         title="Connection"
-        description="The address players use to join. Leave the override empty to inherit the global server address."
+        description="The address players use to join."
         actions={<Badge variant="outline">{server.connectionAddressSource ?? "Unavailable"}</Badge>}
       >
         {server.resolvedConnectionAddress
           ? <ClipboardText text={server.resolvedConnectionAddress} className="w-full" />
           : <p className="text-sm text-kumo-subtle">No connection address is available until a global or custom address is set.</p>}
-        <PublicHostEditor serverId={server.id} value={server.advertisedAddressOverride} addressRevision={server.addressRevision ?? ""} inheritedPreview={server.connectionAddressSource === "Global" ? server.resolvedConnectionAddress : undefined} compact />
+        <details className="min-w-0">
+          <summary className="w-fit cursor-pointer rounded-xs text-sm font-medium text-kumo-default hover:underline focus-visible:outline-2 focus-visible:outline-kumo-brand">Edit advertised address</summary>
+          <div className="mt-3"><PublicHostEditor serverId={server.id} value={server.advertisedAddressOverride} addressRevision={server.addressRevision ?? ""} inheritedPreview={server.connectionAddressSource === "Global" ? server.resolvedConnectionAddress : undefined} compact /></div>
+        </details>
       </Section>
-      <Section title="Runtime details" actions={<StatusBadge state={server.state} />}>
-        <DetailList className="sm:grid-cols-3" items={[
-          { label: "Uptime", value: server.state === "Running" ? duration(server.uptimeSeconds) : "—" },
-          { label: "Server build", value: `${serverKindLabel(server.kind)} ${server.version}` },
-          { label: "Memory limit", value: server.kind === "Gate" ? `${server.memoryMb} MiB` : gib(server.memoryMb) },
+      <Section title="Runtime details" actions={<LinkButton size="sm" variant="ghost" icon={Terminal2Icon} href={`/servers/${server.id}/console`}>Open console</LinkButton>}>
+        <DetailList className="grid-cols-2" items={[
           { label: "Game port", value: String(server.port) },
           { label: "Start on boot", value: server.startOnBoot ? "Enabled" : "Disabled" },
         ]} />
@@ -755,7 +786,7 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
     const metaId = `${id}-meta`
     const name = <div className="flex min-w-0 flex-col gap-0.5">
       <Label htmlFor={id} className="w-fit">{label}</Label>
-      <span id={metaId} className="flex flex-wrap items-center gap-1.5">
+      <span id={metaId} className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <code className="text-xs text-kumo-subtle [overflow-wrap:anywhere]">{entry.key}</code>
         {entry.compatibility !== "Supported" && entry.catalogued && <Badge variant={entry.compatibility === "UnknownVersion" ? "outline" : "warning"}>Supported {supportedRange(entry.supportedRanges)}</Badge>}
         {!entry.catalogued && <Badge variant="outline">Uncatalogued</Badge>}
@@ -794,14 +825,14 @@ function ServerPropertiesEditor({ serverId, serverState, initial }: { serverId: 
         setBaseline(latest); setValues({ ...latest, ...changed }); setEntries([...conflict.entries, ...entries.filter((entry) => !(entry.key in latest))]); setRevision(conflict.revision); setConflict(undefined)
       }}>Reapply draft</Banner.Action>}
     />}
-    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+    <div className="flex flex-col gap-3 @4xl:flex-row @4xl:items-center @4xl:justify-between">
       <Tabs
         variant="segmented"
         value={activeTab}
         onValueChange={(value) => setActiveTab(value as PropertyTab)}
         tabs={tabGroups.map((tab) => ({ value: tab.value, label: <span className="flex items-center gap-1.5">{tab.label}{normalizedSearch && <span className="text-xs text-kumo-subtle tabular-nums">{tab.entries.length}</span>}</span> }))}
       />
-      <InputGroup className="md:max-w-xs">
+      <InputGroup className="@4xl:max-w-xs">
         <InputGroup.Addon><SearchIcon className="text-kumo-subtle" /></InputGroup.Addon>
         <InputGroup.Input aria-label="Search server properties" placeholder="Search properties" value={search} onChange={(event) => changeSearch(event.target.value)} />
       </InputGroup>

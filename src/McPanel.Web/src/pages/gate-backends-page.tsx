@@ -161,7 +161,7 @@ function GateBackendsEditor({ gate, servers }: { gate: GateStatusDto; servers: S
                 <fieldset key={backend.id} aria-label={`Backend ${backend.name}`} className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 py-3 @2xl/backends:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_4rem_2rem]">
                   {backend.external
                     ? <Input aria-label={`Display name for ${backend.name}`} value={backend.name} maxLength={64} placeholder="Display name" onChange={(event) => updateExternal(backend.id, { name: event.target.value })} />
-                    : <div className="flex min-w-0 items-center gap-2"><span className="truncate font-medium" title={backend.name}>{backend.name}</span><Badge variant="outline">{backend.kind}</Badge></div>}
+                    : <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1"><span className="min-w-0 font-medium [overflow-wrap:anywhere]">{backend.name}</span><Badge variant="outline">{backend.kind}</Badge></div>}
                   <div className="col-span-full min-w-0 @2xl/backends:col-auto">
                     {backend.external
                       ? <Input aria-label={`Address for ${backend.name}`} value={backend.address} placeholder="Backend address" onChange={(event) => updateExternal(backend.id, { address: event.target.value })} />
@@ -230,13 +230,13 @@ function GateBackendsEditor({ gate, servers }: { gate: GateStatusDto; servers: S
         contentClassName={routesOpen ? undefined : "hidden"}
       >
         {routesOpen && (gate.routes.length
-          ? <Table aria-label="Saved routes">
-            <Table.Header><Table.Row><Table.Head>Backend</Table.Head><Table.Head>Address</Table.Head><Table.Head>Hostname</Table.Head><Table.Head>Route</Table.Head></Table.Row></Table.Header>
+          ? <Table className="record-table" aria-label="Saved routes">
+            <Table.Header><Table.Row><th scope="col">Backend</th><th scope="col">Address</th><th scope="col">Hostname</th><th scope="col">Route</th></Table.Row></Table.Header>
             <Table.Body>{gate.routes.map((route) => <Table.Row key={`${route.backendKind}-${route.serverId}`}>
-              <Table.Cell className="font-medium">{route.serverName}</Table.Cell>
-              <Table.Cell className="font-mono text-xs">{route.backendAddress}</Table.Cell>
-              <Table.Cell className="font-mono text-xs">{route.publicHost ?? <span className="text-kumo-subtle">None</span>}</Table.Cell>
-              <Table.Cell className="min-w-48 whitespace-normal">
+              <Table.Cell data-field="title" className="font-medium">{route.serverName}</Table.Cell>
+              <Table.Cell data-label="Address" className="font-mono text-xs">{route.backendAddress}</Table.Cell>
+              <Table.Cell data-label="Hostname" className="font-mono text-xs">{route.publicHost ?? <span className="text-kumo-subtle">None</span>}</Table.Cell>
+              <Table.Cell data-label="Route" data-field="wide" className="min-w-48 whitespace-normal">
                 <Badge variant="outline" icon={<SignRightIcon className="size-3.5!" />}>{route.routeKind}</Badge>
                 {route.note && <p className="mt-1 text-xs text-kumo-subtle">{route.note}</p>}
               </Table.Cell>

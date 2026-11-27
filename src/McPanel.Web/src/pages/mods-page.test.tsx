@@ -159,14 +159,14 @@ describe("ModsPage", () => {
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "Selected mod details" })).not.toBeInTheDocument())
   })
 
-  it("opens the detail content in a titled left-side sheet on mobile", async () => {
-    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: 390 })
+  it.each([390, 900])("opens the detail sheet at %ipx", async (width) => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: width })
     const user = userEvent.setup()
     renderPage("NeoForge")
 
     await user.click(await screen.findByRole("row", { name: /Example Mod/ }))
     const sheet = await screen.findByRole("dialog", { name: "Example Mod (+1)" })
-    expect(sheet).toHaveAttribute("data-side", "left")
+    expect(sheet).toHaveAttribute("data-side", "right")
     expect(sheet).toHaveTextContent("Primary description")
   })
 

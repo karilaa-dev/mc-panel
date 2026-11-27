@@ -5,7 +5,7 @@ import { Badge, Banner, Button, Table, Tabs, cn } from "@cloudflare/kumo"
 import { AlertTriangleFilledIcon, CubeIcon, PackageIcon, RefreshIcon } from "@/components/icons"
 import { api } from "@/lib/api"
 import type { ModFileDto, ModParseStatus, ServerKind } from "@/lib/contracts"
-import { useIsMobile } from "@/hooks/use-mobile"
+import { useBelowWidth } from "@/hooks/use-mobile"
 import { useRetained } from "@/hooks/use-retained"
 import { EmptyState, ErrorBanner, SectionSkeleton, Skeleton } from "@/components/feedback"
 import { Sheet } from "@/components/modal"
@@ -49,11 +49,11 @@ function DetailsContent({ file, kind }: { file: ModFileDto; kind: ExtensionKind 
     ]} />
     {file.message && <Banner variant={file.status === "Invalid" ? "error" : "alert"} icon={<AlertTriangleFilledIcon />} title={`${file.status} metadata`} description={file.message} />}
     {file.mods.map((declaration, index) => <section key={`${declaration.id ?? kind}-${index}`} aria-labelledby={`${kind}-declaration-${index}`} className="flex flex-col gap-3 border-t border-kumo-hairline pt-4">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
         <h3 id={`${kind}-declaration-${index}`} className="font-semibold text-kumo-default">{declaration.name || declaration.id || `${title} ${index + 1}`}</h3>
         {declaration.version && <Badge variant="outline">{declaration.version}</Badge>}
       </div>
-      <DetailList className="sm:grid-cols-1" items={[
+      <DetailList className="@md:grid-cols-1" items={[
         { label: `${title} ID`, value: declaration.id || "Not specified", mono: true },
         { label: "Authors", value: declaration.authors.length ? declaration.authors.join(", ") : "Not specified" },
         { label: "Description", value: <span className="font-normal whitespace-pre-wrap text-kumo-subtle">{declaration.description || "No description provided."}</span> },
@@ -77,13 +77,13 @@ function ChangesTab({ serverId }: { serverId: string }) {
     </Section>
     {data.changes.length
       ? <Section title="Changed files" description="Only pack-owned changes and added top-level mod JARs are listed." flush>
-        <Table>
-          <Table.Header><Table.Row><Table.Head>Status</Table.Head><Table.Head>Path</Table.Head><Table.Head>Original size</Table.Head><Table.Head>Current size</Table.Head></Table.Row></Table.Header>
+        <Table className="record-table">
+          <Table.Header><Table.Row><th scope="col">Status</th><th scope="col">Path</th><th scope="col">Original size</th><th scope="col">Current size</th></Table.Row></Table.Header>
           <Table.Body>{data.changes.map((change) => <Table.Row key={`${change.status}-${change.path}`}>
-            <Table.Cell><Badge variant={change.status === "Modified" ? "warning" : change.status === "Added" ? "info" : "error"}>{change.status}</Badge></Table.Cell>
-            <Table.Cell className="font-mono text-xs">{change.path}</Table.Cell>
-            <Table.Cell className="whitespace-nowrap tabular-nums">{change.expectedSize == null ? "—" : fileSize(change.expectedSize)}</Table.Cell>
-            <Table.Cell className="whitespace-nowrap tabular-nums">{change.currentSize == null ? "—" : fileSize(change.currentSize)}</Table.Cell>
+            <Table.Cell data-field="status"><Badge variant={change.status === "Modified" ? "warning" : change.status === "Added" ? "info" : "error"}>{change.status}</Badge></Table.Cell>
+            <Table.Cell data-label="Path" data-field="title" className="font-mono text-xs">{change.path}</Table.Cell>
+            <Table.Cell data-label="Original size" className="whitespace-nowrap tabular-nums">{change.expectedSize == null ? "—" : fileSize(change.expectedSize)}</Table.Cell>
+            <Table.Cell data-label="Current size" className="whitespace-nowrap tabular-nums">{change.currentSize == null ? "—" : fileSize(change.currentSize)}</Table.Cell>
           </Table.Row>)}</Table.Body>
         </Table>
       </Section>
@@ -93,7 +93,7 @@ function ChangesTab({ serverId }: { serverId: string }) {
 
 function ExtensionsPage({ kind }: { kind: ExtensionKind }) {
   const { serverId = "" } = useParams()
-  const isMobile = useIsMobile()
+  const showDetailsInSheet = useBelowWidth(1024)
   const [tab, setTab] = useState("installed")
   const [selection, setSelection] = useState<{ fileName?: string; inventory?: ModFileDto[] }>({})
   const [sheetOpen, setSheetOpen] = useState(false)
@@ -123,7 +123,7 @@ function ExtensionsPage({ kind }: { kind: ExtensionKind }) {
 
   function select(file: ModFileDto) {
     setSelection({ inventory: inventory.data, fileName: file.fileName })
-    if (isMobile) setSheetOpen(true)
+    if (showDetailsInSheet) setSheetOpen(true)
   }
 
   const list = inventory.isLoading || server.isLoading
@@ -137,8 +137,8 @@ function ExtensionsPage({ kind }: { kind: ExtensionKind }) {
           actions={<Button size="sm" variant="ghost" icon={RefreshIcon} loading={inventory.isFetching} onClick={() => void inventory.refetch()}>Refresh</Button>}
           flush
         >
-          <Table>
-            <Table.Header><Table.Row><Table.Head>{kind === "plugin" ? "Plugin" : "Mod"}</Table.Head><Table.Head>File name</Table.Head><Table.Head>Version</Table.Head><Table.Head>File size</Table.Head></Table.Row></Table.Header>
+          <Table className="record-table">
+            <Table.Header><Table.Row><th scope="col" className="w-[29%]">{kind === "plugin" ? "Plugin" : "Mod"}</th><th scope="col">File name</th><th scope="col">Version</th><th scope="col">File size</th></Table.Row></Table.Header>
             <Table.Body>{inventory.data.map((file) => {
               const active = selectedFile === file.fileName
               return <Table.Row
@@ -150,10 +150,10 @@ function ExtensionsPage({ kind }: { kind: ExtensionKind }) {
                 onClick={() => select(file)}
                 onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(file) } }}
               >
-                <Table.Cell className="min-w-40 font-medium"><span className="flex items-center gap-2">{primaryName(file)}{file.status !== "Parsed" && <StatusBadge status={file.status} />}</span></Table.Cell>
-                <Table.Cell className="max-w-56 truncate font-mono text-xs text-kumo-subtle" title={file.fileName}>{file.fileName}</Table.Cell>
-                <Table.Cell className="whitespace-nowrap">{primaryVersion(file)}</Table.Cell>
-                <Table.Cell className="whitespace-nowrap tabular-nums">{fileSize(file.size)}</Table.Cell>
+                <Table.Cell data-field="title" className="min-w-40 font-medium"><span className="flex flex-wrap items-center gap-x-4 gap-y-1"><span className="min-w-0 [overflow-wrap:anywhere]">{primaryName(file)}</span>{file.status !== "Parsed" && <StatusBadge status={file.status} />}</span></Table.Cell>
+                <Table.Cell data-label="File name" data-field="wide" className="max-w-56 truncate font-mono text-xs text-kumo-subtle" title={file.fileName}>{file.fileName}</Table.Cell>
+                <Table.Cell data-label="Version" className="whitespace-nowrap">{primaryVersion(file)}</Table.Cell>
+                <Table.Cell data-label="File size" className="whitespace-nowrap tabular-nums">{fileSize(file.size)}</Table.Cell>
               </Table.Row>
             })}</Table.Body>
           </Table>
@@ -172,9 +172,9 @@ function ExtensionsPage({ kind }: { kind: ExtensionKind }) {
   >
     <Tabs variant="underline" value={tab} onValueChange={setTab} tabs={tabs} />
     <div role="tabpanel">
-      {tab === "installed" && <div className={cn("grid min-w-0 items-start gap-6", selected && !isMobile && "lg:grid-cols-[minmax(0,3fr)_minmax(16rem,1fr)]")}>
+      {tab === "installed" && <div className={cn("grid min-w-0 items-start gap-6", selected && !showDetailsInSheet && "lg:grid-cols-[minmax(0,3fr)_minmax(16rem,1fr)]")}>
         <div className="min-w-0">{list}</div>
-        {!isMobile && selected && <aside className="min-w-0 lg:sticky lg:top-20" aria-label={`Selected ${kind} details`}>
+        {!showDetailsInSheet && selected && <aside className="min-w-0 lg:sticky lg:top-[calc(var(--panel-header-height,3.5rem)+1rem)]" aria-label={`Selected ${kind} details`}>
           <Section title={primaryName(selected)} description={selected.fileName} actions={<StatusBadge status={selected.status} />}>
             <DetailsContent file={selected} kind={kind} />
           </Section>
@@ -183,7 +183,7 @@ function ExtensionsPage({ kind }: { kind: ExtensionKind }) {
       {tab === "browse" && server.data && canBrowse && <ModrinthBrowser serverId={serverId} server={server.data} kind={kind} />}
       {tab === "changes" && kind === "mod" && <ChangesTab serverId={serverId} />}
     </div>
-    {isMobile && <Sheet side="left" open={sheetOpen && Boolean(selected)} onOpenChange={setSheetOpen} title={sheetFile ? primaryName(sheetFile) : `${title} details`} description={sheetFile?.fileName}>
+    {showDetailsInSheet && <Sheet side="right" open={sheetOpen && Boolean(selected)} onOpenChange={setSheetOpen} title={sheetFile ? primaryName(sheetFile) : `${title} details`} description={sheetFile?.fileName}>
       {sheetFile && <><div><StatusBadge status={sheetFile.status} /></div><DetailsContent file={sheetFile} kind={kind} /></>}
     </Sheet>}
   </Page>

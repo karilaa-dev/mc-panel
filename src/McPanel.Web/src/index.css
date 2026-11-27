@@ -78,6 +78,73 @@
     animation: delayed-appear 180ms ease-out 250ms both;
   }
 
+  .server-roster {
+    @apply w-full table-fixed border-separate border-spacing-0 text-left text-sm tabular-nums;
+
+    th, td {
+      @apply px-3 py-2.5 align-middle;
+    }
+
+    @container (width >= 54rem) {
+      :is(th, td):first-child { @apply pl-4; }
+      :is(th, td):last-child { @apply pr-4; }
+    }
+
+    thead th {
+      @apply border-b border-kumo-line bg-kumo-recessed py-2 font-medium text-kumo-subtle;
+    }
+
+    thead th:first-child { @apply rounded-tl-xl; }
+    thead th:last-child { @apply w-28 rounded-tr-xl; }
+    thead th:nth-child(2) { width: 15%; }
+    thead th:nth-child(3) { width: 18%; }
+    thead th:nth-child(4) { width: 11%; }
+    thead th:nth-child(5) { width: 15%; }
+    thead th:nth-child(6) { width: 10%; }
+    :where(tbody tr + tr) > * { @apply border-t border-kumo-line; }
+    .roster-action { text-align: end; }
+    .roster-label { display: none; }
+  }
+
+  /* Reflow each server's fields together when its columns no longer fit beside the sidebar. */
+  @container (width < 54rem) {
+    .server-roster {
+      &, tbody { display: block; }
+      thead, .roster-wide-label { display: none; }
+      tr {
+        @apply grid items-center gap-x-3 gap-y-2.5 px-4 py-3;
+        grid-template-columns: minmax(min-content, 1fr) minmax(0, 0.85fr) 1.25rem minmax(5.25rem, 0.9fr);
+        grid-template-areas:
+          "identity identity status  status"
+          "online   memory   memory  uptime"
+          "address  address  address action";
+      }
+
+      tbody tr + tr { @apply border-t border-kumo-line; }
+      tr > :is(th, td) { @apply min-w-0 border-0 p-0; }
+      .roster-identity { grid-area: identity; }
+      .roster-status { grid-area: status; justify-self: end; text-align: end; }
+      .roster-status p { justify-content: end; }
+      .roster-address { grid-area: address; }
+      .roster-online { grid-area: online; }
+      .roster-memory { grid-area: memory; }
+      .roster-uptime { grid-area: uptime; }
+      .roster-action { grid-area: action; justify-self: end; }
+      .roster-label { @apply block text-kumo-subtle; }
+    }
+  }
+
+  @container (36rem <= width < 54rem) {
+    .server-roster tr {
+      grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1.25fr) auto;
+      grid-template-areas:
+        "identity status status action"
+        "address  online memory uptime";
+    }
+    .server-roster .roster-status { justify-self: start; text-align: start; }
+    .server-roster .roster-status p { justify-content: start; }
+  }
+
   .image-preview {
     background-color: var(--color-kumo-base);
     background-image: conic-gradient(var(--color-kumo-recessed) 25%, transparent 0 50%, var(--color-kumo-recessed) 0 75%, transparent 0);
@@ -90,5 +157,60 @@
   [data-kumo-part="item"] > .tabler-icon {
     width: 1.125rem;
     height: 1.125rem;
+  }
+}
+
+/* Management records keep their table headers on desktop. Each field stays with its
+   record when a sidebar, inspector or phone leaves too little room for columns. */
+@layer utilities {
+  table.record-table {
+    @apply text-sm;
+
+    thead th { @apply bg-kumo-recessed py-2 text-sm font-medium text-kumo-subtle; }
+    tbody td { @apply py-2; }
+    td[data-field="actions"], td[data-field="menu"] { width: 1%; }
+    td[data-field="actions"] > div { @apply flex-nowrap; }
+    &.file-list { table-layout: fixed; }
+  }
+
+  @container section (width >= 48rem) {
+    table.record-table tbody + tbody > tr:first-child > td { @apply border-t border-kumo-hairline; }
+  }
+
+  @container section (width < 48rem) {
+    table.record-table {
+      &, tbody { display: block; }
+      thead { display: none; }
+      tbody tr {
+        @apply relative grid grid-cols-2 items-start gap-x-4 gap-y-2 px-4 py-3;
+      }
+      tbody tr:has(> [data-field="status"]) { grid-template-columns: minmax(0, 1fr) fit-content(45%); }
+      tbody tr + tr, tbody + tbody { @apply border-t border-kumo-hairline; }
+      tbody tr > td,
+      tbody tr > td:first-child,
+      tbody tr > td:last-child {
+        @apply block w-auto min-w-0 max-w-none overflow-visible p-0 text-left whitespace-normal;
+        overflow-wrap: anywhere;
+      }
+      td[data-label]::before {
+        content: attr(data-label);
+        @apply mb-1 block font-sans text-xs font-normal text-kumo-subtle;
+      }
+      td:is([data-field="title"], [data-field="wide"], [data-field="actions"]) {
+        grid-column: 1 / -1;
+      }
+      tr:has(> [data-field="status"]) > [data-field="title"] {
+        grid-column: 1;
+        grid-row: 1;
+      }
+      td[data-field="status"] { grid-area: 1 / 2; justify-self: end; }
+      td[data-field="menu"], td[data-field="actions"] { width: auto; }
+      td[data-field="actions"] > div { @apply flex-wrap justify-start gap-2; }
+      td[data-field="actions"]:has(> div:empty) { display: none; }
+
+      /* A single menu belongs beside the record name, including long file names. */
+      tr:has(> [data-field="menu"]) > [data-field="title"] { padding-inline-end: 3rem; }
+      td[data-field="menu"] { position: absolute; inset-block-start: 0.5rem; inset-inline-end: 1rem; }
+    }
   }
 }

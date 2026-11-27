@@ -152,7 +152,7 @@ describe("PlayersPage", () => {
     await user.click(await screen.findByRole("tab", { name: "Operators" }))
     const input = screen.getByRole("textbox", { name: "Player nickname" })
     await user.type(input, "Alex")
-    expect(screen.getByRole("button", { name: "Add operator" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Add operator" })).toHaveAttribute("aria-disabled", "true")
   })
 
   it.each([
@@ -200,7 +200,7 @@ describe("PlayersPage", () => {
     const user = userEvent.setup(); renderPage()
 
     await user.click(await screen.findByRole("button", { name: "Inventory" }))
-    expect(await screen.findByRole("button", { name: "Restore" })).toBeDisabled()
+    expect(await screen.findByRole("button", { name: "Restore" })).toHaveAttribute("aria-disabled", "true")
     await user.click(await screen.findByRole("button", { name: "Preview" }))
     expect(await screen.findByRole("dialog", { name: "Inventory backup preview" })).toBeVisible()
     expect(await screen.findByTitle(/Ender Pearl/)).toBeVisible()

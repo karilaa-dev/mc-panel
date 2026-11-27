@@ -1,5 +1,6 @@
 import { forwardRef, useId, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from "react"
 import { Button, InputGroup, Label, Switch, Tooltip, cn, type ButtonProps } from "@cloudflare/kumo"
+import { Button as ButtonPrimitive } from "@cloudflare/kumo/primitives/button"
 import { Progress } from "@cloudflare/kumo/primitives/progress"
 import { CircleCheckFilledIcon, EyeIcon, EyeOffIcon, InfoCircleIcon, UploadIcon } from "@/components/icons"
 import { Slider as SliderPrimitive } from "@cloudflare/kumo/primitives/slider"
@@ -245,12 +246,15 @@ export function FileInput({ id, label, description, accept, disabled, pending, f
   )
 }
 
-/**
- * A button that explains why it is unavailable. Unlike Kumo's `title` prop, the tooltip wrapper is
- * always rendered, so the button is not remounted (losing focus) when it becomes enabled.
- */
-export const HintButton = forwardRef<HTMLButtonElement, ButtonProps & { hint?: ReactNode }>(function HintButton({ hint, ...props }, ref) {
-  return <Tooltip content={hint} disabled={!hint} render={<span className="inline-flex" />}><Button ref={ref} {...props} /></Tooltip>
+/** Keep unavailable actions with a hint in the tab order. The primitive guards pointer and keyboard activation. */
+export const HintButton = forwardRef<HTMLButtonElement, ButtonProps & { hint?: string }>(function HintButton({
+  hint, disabled, loading, className, onClick, onKeyDown, onKeyUp, onMouseDown, onPointerDown, ...props
+}, ref) {
+  return <Tooltip content={hint} disabled={!hint} render={
+    <ButtonPrimitive ref={ref} type={props.type} disabled={disabled || loading} focusableWhenDisabled={Boolean(disabled && hint && !loading)}
+      onClick={onClick} onKeyDown={onKeyDown} onKeyUp={onKeyUp} onMouseDown={onMouseDown} onPointerDown={onPointerDown}
+      aria-description={hint} render={<Button {...props} loading={loading} className={cn("aria-disabled:cursor-not-allowed aria-disabled:opacity-50", className)} />} />
+  } />
 })
 
 /** Determinate progress for long-running work such as installs, styled like Kumo's Meter. */

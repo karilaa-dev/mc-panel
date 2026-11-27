@@ -50,9 +50,9 @@ export function InstanceExports() {
         <ul className="flex max-h-72 flex-col divide-y divide-kumo-hairline overflow-y-auto rounded-lg ring ring-kumo-hairline">
           {servers.data.map((server) => <li key={server.id}>
             <label className="flex cursor-pointer items-center gap-3 px-3 py-2.5 hover:bg-kumo-tint">
-              <Checkbox checked={selectedIds.includes(server.id)} onCheckedChange={(checked) => setSelected((ids) => checked ? [...ids.filter((id) => id !== server.id), server.id] : ids.filter((id) => id !== server.id))} />
+              <Checkbox aria-labelledby={`export-name-${server.id}`} aria-describedby={`export-kind-${server.id}`} checked={selectedIds.includes(server.id)} onCheckedChange={(checked) => setSelected((ids) => checked ? [...ids.filter((id) => id !== server.id), server.id] : ids.filter((id) => id !== server.id))} />
               <ServerAvatar server={server} className="size-6" />
-              <span className="flex min-w-0 flex-col"><span className="truncate text-sm font-medium text-kumo-default">{server.name}</span><span className="text-xs text-kumo-subtle">{serverKindLabel(server.kind)} · {server.version}</span></span>
+              <span className="flex min-w-0 flex-col"><span id={`export-name-${server.id}`} className="truncate text-sm font-medium text-kumo-default">{server.name}</span><span id={`export-kind-${server.id}`} className="text-xs text-kumo-subtle">{serverKindLabel(server.kind)} · {server.version}</span></span>
             </label>
           </li>)}
         </ul>
@@ -62,14 +62,14 @@ export function InstanceExports() {
     {exports.length > 0 && <div className="flex flex-col gap-2">
       <h3 className="text-base font-semibold text-kumo-default">Recent instance exports</h3>
       <ul className="flex flex-col divide-y divide-kumo-hairline rounded-lg ring ring-kumo-hairline">
-        {exports.map((job) => <li key={job.id} className="flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+        {exports.map((job) => <li key={job.id} className="flex flex-col gap-3 px-3 py-3 @md/section:flex-row @md/section:items-center @md/section:justify-between">
           <div className="flex min-w-0 flex-col gap-1.5">
             {job.createdAt && <time dateTime={job.createdAt} className="text-sm font-medium text-kumo-default">{new Date(job.createdAt).toLocaleString()}</time>}
             <div><Badge variant={job.state === "Failed" || job.state === "Interrupted" ? "error" : job.state === "Completed" ? "success" : "info"} appearance="dot">{job.state}{job.state === "Running" ? ` · ${job.progress}%` : ""}</Badge></div>
             {job.message && job.state === "Running" && <p className="text-sm text-kumo-subtle">{job.message}</p>}
             {job.error && <p className="text-sm text-kumo-danger [overflow-wrap:anywhere]">{job.error}</p>}
           </div>
-          {job.state === "Completed" && <LinkButton className="self-start sm:self-auto" size="sm" variant="secondary" icon={DownloadIcon} href={api.exportDownloadUrl(job.id)} download>Download instance export</LinkButton>}
+          {job.state === "Completed" && <LinkButton className="self-start @md/section:self-auto" size="sm" variant="secondary" icon={DownloadIcon} href={api.exportDownloadUrl(job.id)} download>Download instance export</LinkButton>}
         </li>)}
       </ul>
     </div>}

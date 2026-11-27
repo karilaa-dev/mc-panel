@@ -80,12 +80,27 @@ describe("ServerOverviewPage lifecycle controls", () => {
     renderPage(state)
     await screen.findByText("Test server")
 
-    expect(screen.getByRole("button", { name: "Update" })).toHaveProperty("disabled", !update)
-    expect(screen.getByRole("button", { name: "Restart" })).toHaveProperty("disabled", !restart)
-    expect(screen.getByRole("button", { name: primary })).toHaveProperty("disabled", !["Start", "Stop"].includes(primary))
+    expect(screen.getByRole("button", { name: "Update" }).matches(":disabled, [aria-disabled=true]")).toBe(!update)
+    expect(screen.getByRole("button", { name: "Restart" }).matches(":disabled, [aria-disabled=true]")).toBe(!restart)
+    expect(screen.getByRole("button", { name: primary }).matches(":disabled, [aria-disabled=true]")).toBe(!["Start", "Stop"].includes(primary))
     expect(screen.queryByRole("button", { name: "Stop immediately" }) !== null).toBe(kill)
     expect(screen.queryByRole("button", { name: "Delete server" }) !== null).toBe(remove)
     if (!["Start"].includes(primary)) expect(screen.queryByRole("button", { name: "Start" })).not.toBeInTheDocument()
+  })
+
+  it("focuses the unavailable Update button and explains why activation is blocked", async () => {
+    const user = userEvent.setup()
+    renderPage("Running")
+    const stop = await screen.findByRole("button", { name: "Stop" })
+    stop.focus()
+    await user.tab()
+    const update = screen.getByRole("button", { name: "Update" })
+    expect(update).toHaveFocus()
+    expect(update).toHaveAccessibleDescription("Updates require a stopped server.")
+    expect(update).toHaveAttribute("aria-disabled", "true")
+    await user.keyboard("{Enter} ")
+    await user.click(update)
+    expect(mockedApi.lifecycle).not.toHaveBeenCalled()
   })
 
   it("stops during startup even while the start request is pending", async () => {
@@ -103,10 +118,13 @@ describe("ServerOverviewPage lifecycle controls", () => {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
   })
 
-  it("shows the compact advertised-address editor on Overview", async () => {
+  it("reveals the advertised-address editor on request", async () => {
     renderPage("Stopped")
 
     expect(await screen.findByText("Runtime details")).toBeVisible()
+    const toggle = screen.getByText("Edit advertised address")
+    expect(toggle.parentElement).not.toHaveAttribute("open")
+    await userEvent.click(toggle)
     expect(screen.getByRole("textbox", { name: "Advertised connection address" })).toBeVisible()
     expect(screen.getByText("Connection")).toBeVisible()
   })
