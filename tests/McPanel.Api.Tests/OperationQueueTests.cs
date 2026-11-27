@@ -44,6 +44,32 @@ public sealed class OperationQueueTests : IDisposable
         Assert.Equal(ServerState.Error, (await verify.Servers.FindAsync(server.Id))!.State);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Queued_cancellation_releases_staged_input_without_a_worker(bool cancelBeforeHandoff)
+    {
+        var factory = new TestStateDbContextFactory(new DbContextOptionsBuilder<StateDbContext>()
+            .UseSqlite($"Data Source={_database};Cache=Shared").Options);
+        var job = OperationQueue.CreatePending("Install", Guid.NewGuid());
+        await using (var db = await factory.CreateDbContextAsync())
+        {
+            await db.Database.EnsureCreatedAsync();
+            db.Jobs.Add(job);
+            await db.SaveChangesAsync();
+        }
+        var services = new ServiceCollection(); services.AddLogging(); services.AddSignalR();
+        await using var provider = services.BuildServiceProvider();
+        using var queue = new OperationQueue(provider, factory, provider.GetRequiredService<IHubContext<PanelHub>>(),
+            new SessionAudience(), new TestApplicationLifetime(), NullLogger<OperationQueue>.Instance);
+        using var upload = new MemoryStream();
+        if (cancelBeforeHandoff) await queue.CancelAsync(job.Id, default);
+        await queue.HandoffCommittedAsync(job, (_, _, _) => throw new InvalidOperationException(), default, upload);
+        if (!cancelBeforeHandoff) await queue.CancelAsync(job.Id, default);
+        Assert.False(upload.CanRead);
+        Assert.Equal(JobState.Canceled, (await queue.GetAsync(job.Id, default))!.State);
+    }
+
     [Fact]
     public async Task Failed_worker_claim_releases_queue_owned_input()
     {

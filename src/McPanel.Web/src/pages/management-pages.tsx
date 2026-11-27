@@ -80,7 +80,7 @@ function describeTrigger(schedule: ScheduleDto) {
   return schedule.runAt ? `Once · ${formatDate(schedule.runAt)}` : "Once"
 }
 
-function ScheduleEditor({ initial, onSave }: { initial: ScheduleWriteDto; onSave: (value: ScheduleWriteDto) => void }) {
+function ScheduleEditor({ initial, saving, onSave }: { initial: ScheduleWriteDto; saving: boolean; onSave: (value: ScheduleWriteDto) => void }) {
   const [form, setForm] = useState(() => withFrequencyDefaults(initial, initial.frequency))
   const update = <K extends keyof ScheduleWriteDto>(key: K, value: ScheduleWriteDto[K]) => {
     setForm((current) => ({ ...current, [key]: value }))
@@ -98,48 +98,51 @@ function ScheduleEditor({ initial, onSave }: { initial: ScheduleWriteDto; onSave
 
   function submit(event: FormEvent) {
     event.preventDefault()
-    if (!form.name.trim() || !form.actions.length) return
+    if (saving || !form.name.trim() || !form.actions.length) return
     onSave(form)
   }
 
   return (
-    <form id="schedule-form" className="flex flex-col gap-5" onSubmit={submit}>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Input label="Name" maxLength={96} value={form.name} onChange={(event) => update("name", event.target.value)} description="Up to 96 characters." />
-        <Select label="Frequency" className="w-full" items={frequencies.map((value) => ({ value, label: value }))} value={form.frequency} onValueChange={(value) => value && setForm((current) => withFrequencyDefaults(current, value as ScheduleFrequency))} />
-      </div>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Input label="Time zone" value={form.timeZone} onChange={(event) => update("timeZone", event.target.value)} description="An IANA name such as Europe/London or America/New_York." />
-        {form.frequency === "Once" && <Input label="Run at" type="datetime-local" value={form.runAt?.slice(0, 16) ?? ""} onChange={(event) => update("runAt", event.target.value)} />}
-        {form.frequency === "Interval" && <Input label="Interval in minutes" type="number" min={1} value={form.intervalMinutes ?? ""} onChange={(event) => update("intervalMinutes", Number(event.target.value))} />}
-        {(form.frequency === "Daily" || form.frequency === "Weekly") && <Input label="Time of day" type="time" value={form.timeOfDay ?? ""} onChange={(event) => update("timeOfDay", event.target.value)} />}
-        {form.frequency === "Cron" && <Input label="Restricted five-field cron" className="font-mono" placeholder="0 4 * * *" value={form.cron ?? ""} onChange={(event) => update("cron", event.target.value)} description="Shell commands and seconds fields are not accepted." />}
-      </div>
-      {form.frequency === "Weekly" && <div className="flex flex-col gap-2">
-        <Label>Days</Label>
-        <SegmentedControl multiple aria-label="Days" value={(form.daysOfWeek ?? []).map(String)} onValueChange={(values) => update("daysOfWeek", values.map(Number))} options={weekDays} />
-      </div>}
-      <fieldset className="flex flex-col gap-3">
-        <legend className="mb-1 text-base font-medium text-kumo-default">Actions, in order</legend>
-        <p className="-mt-2 text-sm text-kumo-subtle">Each action waits for the previous one. The run stops at the first failure.</p>
-        <ol className="flex flex-col gap-2">
-          {form.actions.map((action, index) => (
-            <li key={`${index}-${action.action}`} className="flex flex-col gap-2 rounded-lg bg-kumo-elevated p-3 ring ring-kumo-hairline sm:flex-row sm:items-center">
-              <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-kumo-base text-xs font-semibold text-kumo-subtle tabular-nums ring ring-kumo-line" aria-hidden="true">{index + 1}</span>
-              <Select aria-label={`Action for step ${index + 1}`} className="w-full sm:w-56" items={actionTypes.map((value) => ({ value, label: actionLabel(value) }))} value={action.action} onValueChange={(value) => value && updateAction(index, { action: value as ScheduleActionType, command: value === "Command" ? action.command : undefined })} />
-              {action.action === "Command" && <Input aria-label={`Command for step ${index + 1}`} className="font-mono" maxLength={4096} value={action.command ?? ""} placeholder="say Backup complete" onChange={(event) => updateAction(index, { command: event.target.value.replace(/[\r\n]/g, "") })} />}
-              <div className="flex gap-1 sm:ml-auto">
-                <Button type="button" variant="ghost" size="sm" shape="square" icon={<ArrowUpIcon size={16} />} aria-label="Move up" disabled={index === 0} onClick={() => moveAction(index, -1)} />
-                <Button type="button" variant="ghost" size="sm" shape="square" icon={<ArrowDownIcon size={16} />} aria-label="Move down" disabled={index === form.actions.length - 1} onClick={() => moveAction(index, 1)} />
-                <Button type="button" variant="ghost" size="sm" shape="square" icon={<TrashIcon size={16} />} aria-label="Remove action" disabled={form.actions.length === 1} onClick={() => update("actions", form.actions.filter((_, current) => current !== index))} />
-              </div>
-            </li>
-          ))}
-        </ol>
-        <Button type="button" className="self-start" icon={PlusIcon} onClick={() => update("actions", [...form.actions, { action: "Restart" }])}>Add action</Button>
+    <form id="schedule-form" aria-busy={saving} onSubmit={submit}>
+      <fieldset className="flex min-w-0 flex-col gap-5" disabled={saving}>
+        <legend className="sr-only">Schedule settings</legend>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Input label="Name" maxLength={96} value={form.name} onChange={(event) => update("name", event.target.value)} description="Up to 96 characters." />
+          <Select label="Frequency" className="w-full" items={frequencies.map((value) => ({ value, label: value }))} value={form.frequency} onValueChange={(value) => value && setForm((current) => withFrequencyDefaults(current, value as ScheduleFrequency))} />
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Input label="Time zone" value={form.timeZone} onChange={(event) => update("timeZone", event.target.value)} description="An IANA name such as Europe/London or America/New_York." />
+          {form.frequency === "Once" && <Input label="Run at" type="datetime-local" value={form.runAt?.slice(0, 16) ?? ""} onChange={(event) => update("runAt", event.target.value)} />}
+          {form.frequency === "Interval" && <Input label="Interval in minutes" type="number" min={1} value={form.intervalMinutes ?? ""} onChange={(event) => update("intervalMinutes", Number(event.target.value))} />}
+          {(form.frequency === "Daily" || form.frequency === "Weekly") && <Input label="Time of day" type="time" value={form.timeOfDay ?? ""} onChange={(event) => update("timeOfDay", event.target.value)} />}
+          {form.frequency === "Cron" && <Input label="Restricted five-field cron" className="font-mono" placeholder="0 4 * * *" value={form.cron ?? ""} onChange={(event) => update("cron", event.target.value)} description="Shell commands and seconds fields are not accepted." />}
+        </div>
+        {form.frequency === "Weekly" && <div className="flex flex-col gap-2">
+          <Label>Days</Label>
+          <SegmentedControl multiple aria-label="Days" value={(form.daysOfWeek ?? []).map(String)} onValueChange={(values) => update("daysOfWeek", values.map(Number))} options={weekDays} />
+        </div>}
+        <fieldset className="flex flex-col gap-3">
+          <legend className="mb-1 text-base font-medium text-kumo-default">Actions, in order</legend>
+          <p className="-mt-2 text-sm text-kumo-subtle">Each action waits for the previous one. The run stops at the first failure.</p>
+          <ol className="flex flex-col gap-2">
+            {form.actions.map((action, index) => (
+              <li key={`${index}-${action.action}`} className="flex flex-col gap-2 rounded-lg bg-kumo-elevated p-3 ring ring-kumo-hairline sm:flex-row sm:items-center">
+                <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-kumo-base text-xs font-semibold text-kumo-subtle tabular-nums ring ring-kumo-line" aria-hidden="true">{index + 1}</span>
+                <Select aria-label={`Action for step ${index + 1}`} className="w-full sm:w-56" items={actionTypes.map((value) => ({ value, label: actionLabel(value) }))} value={action.action} onValueChange={(value) => value && updateAction(index, { action: value as ScheduleActionType, command: value === "Command" ? action.command : undefined })} />
+                {action.action === "Command" && <Input aria-label={`Command for step ${index + 1}`} className="font-mono" maxLength={4096} value={action.command ?? ""} placeholder="say Backup complete" onChange={(event) => updateAction(index, { command: event.target.value.replace(/[\r\n]/g, "") })} />}
+                <div className="flex gap-1 sm:ml-auto">
+                  <Button type="button" variant="ghost" size="sm" shape="square" icon={<ArrowUpIcon size={16} />} aria-label="Move up" disabled={index === 0} onClick={() => moveAction(index, -1)} />
+                  <Button type="button" variant="ghost" size="sm" shape="square" icon={<ArrowDownIcon size={16} />} aria-label="Move down" disabled={index === form.actions.length - 1} onClick={() => moveAction(index, 1)} />
+                  <Button type="button" variant="ghost" size="sm" shape="square" icon={<TrashIcon size={16} />} aria-label="Remove action" disabled={form.actions.length === 1} onClick={() => update("actions", form.actions.filter((_, current) => current !== index))} />
+                </div>
+              </li>
+            ))}
+          </ol>
+          <Button type="button" className="self-start" icon={PlusIcon} onClick={() => update("actions", [...form.actions, { action: "Restart" }])}>Add action</Button>
+        </fieldset>
+        <SwitchField id="schedule-enabled" label="Enabled" description="Disabled schedules stay saved but do not run." checked={form.enabled} onCheckedChange={(value) => update("enabled", value)} />
+        <button className="sr-only" type="submit" tabIndex={-1}>Save</button>
       </fieldset>
-      <SwitchField id="schedule-enabled" label="Enabled" description="Disabled schedules stay saved but do not run." checked={form.enabled} onCheckedChange={(value) => update("enabled", value)} />
-      <button className="sr-only" type="submit" tabIndex={-1}>Save</button>
     </form>
   )
 }
@@ -185,6 +188,7 @@ function ServerSchedules({ serverId }: { serverId: string }) {
     onSuccess: () => { toast.success("Schedule deleted"); void refresh() },
     onError: (error) => toast.error(error.message),
   })
+  const savingEditor = save.isPending && save.variables.target === dialog
   const editorValue = shownEditing === "new" ? emptySchedule() : shownEditing ? toWrite(shownEditing) : undefined
   const historyName = schedules.data?.find((schedule) => schedule.id === shownHistoryId)?.name
 
@@ -234,9 +238,9 @@ function ServerSchedules({ serverId }: { serverId: string }) {
         size="xl"
         title={shownEditing === "new" ? "New schedule" : "Edit schedule"}
         description="Choose when this ordered action sequence should run."
-        footer={<><ModalClose /><Button variant="primary" form="schedule-form" type="submit" loading={save.isPending}>Save schedule</Button></>}
+        footer={<><ModalClose /><Button variant="primary" form="schedule-form" type="submit" disabled={savingEditor} loading={savingEditor}>Save schedule</Button></>}
       >
-        {editorValue && <ScheduleEditor key={shownEditing === "new" ? "new" : shownEditing?.id} initial={editorValue} onSave={(value) => dialog.kind === "edit" && save.mutate({ target: dialog, value })} />}
+        {editorValue && <ScheduleEditor key={shownEditing === "new" ? "new" : shownEditing?.id} initial={editorValue} saving={savingEditor} onSave={(value) => dialog.kind === "edit" && save.mutate({ target: dialog, value })} />}
       </Modal>
       <ConfirmDialog
         open={Boolean(deleting)}

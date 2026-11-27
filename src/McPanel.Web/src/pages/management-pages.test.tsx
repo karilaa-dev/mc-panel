@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen, waitFor, within } from "@testing-library/react"
+import { act, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -70,6 +70,23 @@ describe("schedule defaults", () => {
       "server-1",
       expect.objectContaining({ frequency: "Interval", intervalMinutes: 60 }),
     )
+  })
+
+  it("locks the submitted form and restores the draft after a save failure", async () => {
+    let fail!: (error: Error) => void
+    mockedApi.createSchedule.mockReturnValueOnce(new Promise((_, reject) => { fail = reject }))
+    const user = userEvent.setup()
+    renderSchedules()
+    await user.click(await screen.findByRole("button", { name: "New schedule" }))
+    const dialog = screen.getByRole("dialog", { name: "New schedule" })
+    const name = within(dialog).getByRole("textbox", { name: "Name" })
+    await user.clear(name)
+    await user.type(name, "Nightly backup")
+    await user.click(within(dialog).getByRole("button", { name: "Save schedule" }))
+    await waitFor(() => expect(name).toBeDisabled())
+    await act(async () => fail(new Error("Save failed")))
+    await waitFor(() => expect(name).toBeEnabled())
+    expect(name).toHaveValue("Nightly backup")
   })
 
   it("materializes Daily and Weekly visible time defaults in form state", () => {

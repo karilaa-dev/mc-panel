@@ -18,6 +18,7 @@ public sealed class OperationQueue(
     ILogger<OperationQueue> logger) : BackgroundService
 {
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _activeCancellation = new();
+    private readonly ConcurrentDictionary<Guid, IDisposable> _stagedInputs = new();
     private readonly Channel<QueuedOperation> _channel = Channel.CreateBounded<QueuedOperation>(new BoundedChannelOptions(256)
     {
         FullMode = BoundedChannelFullMode.Wait, SingleReader = false, SingleWriter = false
@@ -36,12 +37,22 @@ public sealed class OperationQueue(
         {
             // The database row is authoritative. Cancellation of the HTTP request after commit
             // must not make a successfully-created server look like it never existed.
-            await _channel.Writer.WriteAsync(new QueuedOperation(job.Id, action, unclaimedResource), lifetime.ApplicationStopping);
+            if (unclaimedResource is not null)
+            {
+                _stagedInputs[job.Id] = unclaimedResource;
+                // Cancellation can commit after the row is created and before ownership is registered here.
+                if (await GetAsync(job.Id, lifetime.ApplicationStopping) is { State: JobState.Canceled } canceled)
+                {
+                    ReleaseStagedInput(job.Id);
+                    return canceled;
+                }
+            }
+            await _channel.Writer.WriteAsync(new QueuedOperation(job.Id, action), lifetime.ApplicationStopping);
         }
         catch (Exception exception)
         {
             logger.LogError(exception, "Committed job {JobId} could not be handed to the operation queue", job.Id);
-            ReleaseStagedInput(job.Id, unclaimedResource);
+            ReleaseStagedInput(job.Id);
             job.State = JobState.Failed;
             job.Progress = 100;
             job.Message = "Queue handoff failed";
@@ -159,7 +170,6 @@ public sealed class OperationQueue(
         await foreach (var item in _channel.Reader.ReadAllAsync(stoppingToken))
         {
             using var execution = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-            var stagedInput = item.UnclaimedResource;
             _activeCancellation[item.JobId] = execution;
             try
             {
@@ -171,7 +181,7 @@ public sealed class OperationQueue(
                     if (claimed == 0) continue;
                 }
                 execution.Token.ThrowIfCancellationRequested();
-                stagedInput = null; // The installer now owns the claim.
+                _stagedInputs.TryRemove(item.JobId, out _); // The installer now owns the claim.
                 await item.Action(serviceProvider, item.JobId, execution.Token);
                 await SetStateAsync(item.JobId, JobState.Completed, 100, "Completed", null, stoppingToken);
             }
@@ -191,14 +201,15 @@ public sealed class OperationQueue(
             finally
             {
                 _activeCancellation.TryRemove(item.JobId, out _);
-                ReleaseStagedInput(item.JobId, stagedInput);
+                ReleaseStagedInput(item.JobId);
             }
         }
     }
 
-    private void ReleaseStagedInput(Guid id, IDisposable? resource)
+    private void ReleaseStagedInput(Guid id)
     {
-        try { resource?.Dispose(); }
+        if (!_stagedInputs.TryRemove(id, out var resource)) return;
+        try { resource.Dispose(); }
         catch (Exception error) { logger.LogWarning(error, "Could not release staged input for {JobId}", id); }
     }
 
@@ -228,7 +239,9 @@ public sealed class OperationQueue(
                 .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), token);
         if (changed == 0) throw PanelProblems.Conflict("JOB_NOT_CANCELABLE", "This operation has completed or cannot be safely canceled while running.");
         await ReleaseUnfinishedInstallAsync(db, id, token);
+        var canceled = await db.Jobs.AnyAsync(job => job.Id == id && job.State == JobState.Canceled, token);
         await transaction.CommitAsync(token);
+        if (canceled) ReleaseStagedInput(id);
         if (_activeCancellation.TryGetValue(id, out var execution))
         { try { await execution.CancelAsync(); } catch (ObjectDisposedException) { } }
         await PublishCurrentAsync(id, token);
@@ -273,5 +286,5 @@ public sealed class OperationQueue(
     public static bool IsTerminal(JobState state) => JobLifecycle.IsTerminal(state);
     private static JobDto Map(JobEntity job) => new(job.Id, job.Type, job.State, job.Progress, job.Message, job.Error, job.ServerId,
         job.CreatedAt, job.UpdatedAt, JobLifecycle.CanCancel(job), JobLifecycle.CanRetry(job), job.RetryOf);
-    private sealed record QueuedOperation(Guid JobId, Func<IServiceProvider, Guid, CancellationToken, Task> Action, IDisposable? UnclaimedResource);
+    private sealed record QueuedOperation(Guid JobId, Func<IServiceProvider, Guid, CancellationToken, Task> Action);
 }
