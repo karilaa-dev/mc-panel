@@ -234,7 +234,12 @@ function AppSidebar({ servers, serversLoading, currentServer, serverId }: { serv
 }
 
 /** Keep the normal stop and restart paths visible on server work pages. */
-function ServerHeaderActions({ server, compact }: { server: ServerSummaryDto; compact: boolean }) {
+function ServerHeaderActions({ server: summary, compact }: { server: ServerSummaryDto; compact: boolean }) {
+  // Overview and the header must observe the same state before releasing a pending action.
+  const { data: server } = useQuery({
+    queryKey: ["server", summary.id], queryFn: () => api.server(summary.id),
+    initialData: summary, initialDataUpdatedAt: 0, refetchInterval: 3_000,
+  })
   const lifecycle = useServerLifecycle(server)
   const pending = lifecycle.pendingAction
   const action = serverLifecycle[server.state]?.action
